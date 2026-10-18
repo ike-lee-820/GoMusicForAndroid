@@ -432,6 +432,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             prefs.playCounts = m
         }
         updateCover(songMap[id]?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        // 离线模式：直接读本地歌词，绝不发网络请求
+        // （否则会走 3 次重试 + 退避等待，歌词要十几秒才出来，还会拖住其他请求）
+        if (offline) {
+            viewModelScope.launch {
+                val t = withContext(Dispatchers.IO) { localLyrics(id) }
+                if (curSsid == id) lyric = lyricLines(t)
+            }
+            return
+        }
         viewModelScope.launch {
             try {
                 val d = withContext(Dispatchers.IO) { Api.detail(id) }
@@ -523,6 +532,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 下载歌曲本体 + 封面 + 歌词 + 歌曲信息，并写入本地记录（离线可用） */
     fun download(list: List<Song>) {
         if (list.isEmpty()) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
         val todo = list.filter { it.ssid !in downloading }
         if (todo.isEmpty()) return
         downloading = downloading + todo.map { it.ssid }

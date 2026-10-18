@@ -82,7 +82,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -99,7 +98,6 @@ import androidx.compose.ui.zIndex
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import kotlin.math.roundToInt
 
 fun fmt(ms: Long): String {
@@ -183,34 +181,15 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 
 // ---------- 图片 ----------
 
-/**
- * 封面图。
- * [sizePx] 限制解码尺寸：列表里用 96px 左右即可，避免滑动时反复解码大图造成卡顿。
- */
 @Composable
-fun Cover(
-    url: String?,
-    modifier: Modifier = Modifier,
-    radius: Dp = 8.dp,
-    circle: Boolean = false,
-    sizePx: Int = 128,
-) {
+fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
     val go = LocalGo.current
-    val ctx = LocalContext.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)
     val model = remember(url) { imageModel(url) }
-    val req = remember(url, sizePx, model) {
-        if (model == null) null else {
-            val b = ImageRequest.Builder(ctx).data(model).size(sizePx).crossfade(false)
-            // 只有 data: URI 需要显式短键；http/本地文件交给 Coil 自己生成键
-            coverMemoryKey(url, sizePx)?.let { b.memoryCacheKey(it) }
-            b.build()
-        }
-    }
     Box(modifier.clip(shape).background(go.surfaceHi), contentAlignment = Alignment.Center) {
         Icon(Icons.Outlined.MusicNote, null, tint = go.muted.copy(alpha = 0.5f), modifier = Modifier.size(24.dp))
-        if (req != null) {
-            AsyncImage(req, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (model != null) {
+            AsyncImage(model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
     }
 }
@@ -229,14 +208,8 @@ fun IconBtn(
     onClick: () -> Unit,
 ) {
     val hit = if (size < 40.dp) 40.dp else size
-    // 直接在这里做按压缩放：列表里每行都有按钮，用 Modifier.composed 会明显拖慢组合
-    val src = remember { MutableInteractionSource() }
-    val pressed by src.collectIsPressedAsState()
-    val s by animateFloatAsState(if (pressed) 0.96f else 1f, tween(120), label = "press")
     Box(
-        modifier.size(hit)
-            .graphicsLayer { scaleX = s; scaleY = s }
-            .clickable(src, null, role = Role.Button, onClick = onClick),
+        modifier.size(hit).clickScale(true, onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.size(size).background(bg, CircleShape), contentAlignment = Alignment.Center) {
@@ -258,15 +231,11 @@ fun GoButton(
     val go = LocalGo.current
     val bg = if (primary) go.primary else go.surfaceHi
     val fg = if (primary) OnPrimary else go.on
-    val src = remember { MutableInteractionSource() }
-    val pressed by src.collectIsPressedAsState()
-    val s by animateFloatAsState(if (pressed && enabled) 0.96f else 1f, tween(120), label = "press")
     Row(
         modifier
             .alpha(if (enabled) 1f else 0.4f)
             .height(40.dp)
-            .graphicsLayer { scaleX = s; scaleY = s }
-            .clickable(src, null, enabled = enabled && !loading, role = Role.Button, onClick = onClick)
+            .clickScale(enabled && !loading, onClick)
             .clip(RoundedCornerShape(20.dp))
             .background(bg)
             .padding(horizontal = 16.dp),
@@ -380,7 +349,7 @@ fun SongRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-            Cover(song.coverUrl, Modifier.fillMaxSize(), 8.dp, sizePx = 96)
+            Cover(song.coverUrl, Modifier.fillMaxSize(), 8.dp)
             if (current) {
                 Box(
                     Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
@@ -416,7 +385,7 @@ fun GroupRow(title: String, subtitle: String, cover: String?, onClick: () -> Uni
         Modifier.fillMaxWidth().height(64.dp).clickable(onClick = onClick).padding(start = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(cover, Modifier.size(48.dp), 8.dp, sizePx = 96)
+        Cover(cover, Modifier.size(48.dp), 8.dp)
         HS(12)
         Column(Modifier.weight(1f)) {
             Txt(title, 15, weight = FontWeight.Medium, maxLines = 1)
@@ -432,7 +401,7 @@ fun GroupCard(title: String, subtitle: String, cover: String?, onClick: () -> Un
     val go = LocalGo.current
     Column(modifier.clickable(onClick = onClick)) {
         Box(Modifier.fillMaxWidth()) {
-            Cover(cover, Modifier.fillMaxWidth().aspectRatio(1f), 16.dp, sizePx = 256)
+            Cover(cover, Modifier.fillMaxWidth().aspectRatio(1f), 16.dp)
             IconBtn(
                 Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
                 modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),

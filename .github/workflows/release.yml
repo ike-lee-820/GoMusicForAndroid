@@ -10,6 +10,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -73,3 +75,18 @@ jobs:
         with:
           name: GoMusic-release-apk
           path: app/build/outputs/apk/release/*.apk
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v1.1.0"
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG 已存在，更新 APK"
+          else
+            gh release create "$TAG" --title "GoMusic $TAG" --notes "自动构建的正式版 APK（固定 keystore 签名）"
+          fi
+          gh release upload "$TAG" "$APK#GoMusic-$TAG.apk" --clobber
+          echo "已发布到 Releases：$TAG"

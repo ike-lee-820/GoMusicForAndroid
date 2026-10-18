@@ -53,9 +53,4 @@ class Prefs(ctx: Context) {
             json.decodeFromString<List<DownloadRecord>>(sp.getString("downloads", "[]")!!)
         }.getOrDefault(emptyList())
         set(v) { sp.edit().putString("downloads", json.encodeToString(v)).apply() }
-
-    /** 服务器地址，空表示默认线上地址 */
-    var baseUrl: String?
-        get() = sp.getString("base_url", null)?.takeIf { it.isNotBlank() }
-        set(v) { sp.edit().putString("base_url", v ?: "").apply() }
 }

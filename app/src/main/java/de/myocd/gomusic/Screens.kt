@@ -44,6 +44,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -71,7 +72,6 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.RepeatOne
 import androidx.compose.material.icons.outlined.Settings
@@ -230,7 +230,7 @@ fun MiniPlayer(vm: MainViewModel) {
             .clickable { vm.showPlayer = true }.padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(s.coverUrl, Modifier.size(40.dp), 8.dp)
+        Cover(s.coverUrl, Modifier.size(40.dp), 8.dp, sizePx = 96)
         HS(12)
         Column(Modifier.weight(1f)) {
             Txt(s.title, 15, weight = FontWeight.Medium, maxLines = 1)
@@ -323,7 +323,7 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
         else ranked.filter { it.title.contains(q, true) || it.artist.contains(q, true) }
     }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
-        itemsIndexed(list) { i, s ->
+        itemsIndexed(list, key = { _, s -> s.ssid }, contentType = { _, _ -> "song" }) { i, s ->
             SongRow(
                 s, s.ssid == vm.curSsid, vm.isPlaying,
                 downloaded = vm.isDownloaded(s.ssid),
@@ -343,7 +343,7 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
         vm.albums(vm.songs).filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
     }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
-        itemsIndexed(groups) { _, g ->
+        itemsIndexed(groups, key = { _, g -> g.artist to g.album }, contentType = { _, _ -> "album" }) { _, g ->
             GroupRow(
                 g.title, g.subtitle, g.cover,
                 onClick = { vm.stack.add(Screen.Album(g.artist, g.album)) },
@@ -367,7 +367,7 @@ fun ArtistsTab(vm: MainViewModel) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(groups) { g ->
+        items(groups, key = { it.title }, contentType = { "artist" }) { g ->
             GroupCard(
                 g.title, g.subtitle, g.cover,
                 onClick = { vm.stack.add(Screen.Artist(g.artist)) },
@@ -408,7 +408,7 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                 GoButton("新建歌单", icon = Icons.Outlined.Add) { creating = true }
             }
         }
-        itemsIndexed(list) { _, p ->
+        itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
             val songs = vm.songsByIds(p.songs)
             var menu by remember { mutableStateOf(false) }
             GroupRow(
@@ -491,7 +491,7 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val w = minOf(LocalConfiguration.current.screenWidthDp * 0.72f, 320f).dp
-                    Cover(cover, Modifier.size(w), 24.dp)
+                    Cover(cover, Modifier.size(w), 24.dp, sizePx = 512)
                     VS(16)
                     Txt(s.album.ifBlank { "未知专辑" }, 20, weight = FontWeight.Bold, align = TextAlign.Center)
                     VS(4)
@@ -503,7 +503,7 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
                     ActionRow(vm, list, s.album, cover, vm.albumLink(s.artist, s.album))
                 }
             }
-            itemsIndexed(list) { i, song ->
+            itemsIndexed(list, key = { _, s -> s.ssid }, contentType = { _, _ -> "song" }) { i, song ->
                 SongRow(
                     song, song.ssid == vm.curSsid, vm.isPlaying,
                     downloaded = vm.isDownloaded(song.ssid),
@@ -531,7 +531,7 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Cover(img, Modifier.size(160.dp), circle = true)
+                    Cover(img, Modifier.size(160.dp), circle = true, sizePx = 320)
                     VS(12)
                     Txt(s.name, 20, weight = FontWeight.Bold, align = TextAlign.Center)
                     val bio = info?.bio
@@ -564,7 +564,7 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
                 }
             }
             if (sub == 0) {
-                itemsIndexed(albums) { _, g ->
+                itemsIndexed(albums, key = { _, g -> g.artist to g.album }, contentType = { _, _ -> "album" }) { _, g ->
                     GroupRow(
                         g.title, g.subtitle, g.cover,
                         onClick = { vm.stack.add(Screen.Album(g.artist, g.album)) },
@@ -572,7 +572,7 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
                     )
                 }
             } else {
-                itemsIndexed(list) { i, song ->
+                itemsIndexed(list, key = { _, s -> s.ssid }, contentType = { _, _ -> "song" }) { i, song ->
                     SongRow(
                         song, song.ssid == vm.curSsid, vm.isPlaying,
                         downloaded = vm.isDownloaded(song.ssid),
@@ -623,7 +623,7 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                         Box(handle.size(40.dp), contentAlignment = Alignment.Center) {
                             Icon(Icons.Outlined.DragHandle, "拖动排序", tint = go.muted)
                         }
-                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp)
+                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp, sizePx = 96)
                         HS(12)
                         Column(Modifier.weight(1f)) {
                             Txt(
@@ -691,6 +691,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     vm.stack.add(Screen.Album(s.artist, s.album))
                 },
                 20.dp,
+                sizePx = 512,
             )
             VS(20)
             MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
@@ -893,7 +894,7 @@ fun QueueSheet(vm: MainViewModel) {
                     Box(handle.size(40.dp), contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.DragHandle, "拖动排序", tint = go.muted)
                     }
-                    Cover(e.cover, Modifier.size(48.dp), 8.dp)
+                    Cover(e.cover, Modifier.size(48.dp), 8.dp, sizePx = 96)
                     HS(12)
                     Column(Modifier.weight(1f)) {
                         Txt(e.title, 15, weight = FontWeight.Medium, color = if (cur) go.primary else go.on, maxLines = 1)
@@ -946,9 +947,7 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
 fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
     var hex by remember { mutableStateOf("") }
-    var baseUrl by remember { mutableStateOf(BASE) }
     var confirmClear by remember { mutableStateOf(false) }
-    val ctx = LocalContext.current
     val presets = listOf(
         0xFFD0BCFF, 0xFFFF8A80, 0xFFFFB74D, 0xFFFFF176,
         0xFF81C784, 0xFF4DD0E1, 0xFF64B5F6, 0xFFF48FB1,
@@ -969,19 +968,6 @@ fun SettingsSheet(vm: MainViewModel) {
                     13, Modifier.weight(1f), color = go.muted,
                 )
                 GoButton("重试", primary = vm.offline) { vm.reconnect() }
-            }
-            VS(8)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { SearchField(baseUrl, { baseUrl = it }, "服务器地址", showIcon = false) }
-                HS(8)
-                GoButton("保存") {
-                    if (baseUrl.startsWith("http")) vm.setBaseUrl(baseUrl) else vm.toast("地址需以 http 开头")
-                }
-            }
-            VS(8)
-            GoButton("在浏览器打开管理页 /dev", icon = Icons.Outlined.Public) {
-                runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$BASE/dev"))) }
-                    .onFailure { vm.toast("无法打开浏览器") }
             }
             VS(16)
 
@@ -1049,8 +1035,9 @@ fun DownloadsSheet(vm: MainViewModel) {
                 contentAlignment = Alignment.Center,
             ) { Txt("还没有下载歌曲", 14, color = go.muted) }
         } else {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                vm.downloads.sortedByDescending { it.time }.forEach { rec ->
+            val list = remember(vm.downloads) { vm.downloads.sortedByDescending { it.time } }
+            LazyColumn(contentPadding = PaddingValues(bottom = 8.dp)) {
+                items(list, key = { it.ssid }, contentType = { "dl" }) { rec ->
                     val song = Song(rec.ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })
                     Row(
                         Modifier.fillMaxWidth().height(64.dp)
@@ -1058,7 +1045,7 @@ fun DownloadsSheet(vm: MainViewModel) {
                             .padding(start = 16.dp, end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp)
+                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp, sizePx = 96)
                         HS(12)
                         Column(Modifier.weight(1f)) {
                             Txt(rec.title, 15, weight = FontWeight.Medium, maxLines = 1)
@@ -1070,7 +1057,6 @@ fun DownloadsSheet(vm: MainViewModel) {
                         IconBtn(Icons.Outlined.Delete, "删除下载") { vm.deleteDownload(rec.ssid) }
                     }
                 }
-                VS(8)
             }
         }
     }

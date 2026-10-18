@@ -82,6 +82,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -95,6 +96,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import kotlin.math.roundToInt
 
 fun fmt(ms: Long): String {
@@ -103,6 +105,9 @@ fun fmt(ms: Long): String {
 }
 
 // ---------- 基础文字与间距 ----------
+
+/** 等宽数字的样式常量：复用同一实例，避免每次组合都新建 TextStyle 影响文本测量缓存 */
+private val Tnum = TextStyle(fontFeatureSettings = "tnum")
 
 @Composable
 fun Txt(
@@ -113,6 +118,7 @@ fun Txt(
     color: Color = LocalGo.current.on,
     maxLines: Int = Int.MAX_VALUE,
     align: TextAlign? = null,
+    tnum: Boolean = false,
 ) {
     Text(
         text,
@@ -123,7 +129,8 @@ fun Txt(
         maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
         textAlign = align,
-        style = TextStyle(fontFeatureSettings = "tnum"),
+        // 列表里不用等宽数字：字体特性会让文本排版变慢，滚动时能省下不少开销
+        style = if (tnum) Tnum else LocalTextStyle.current,
     )
 }
 
@@ -173,15 +180,34 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 
 // ---------- 图片 ----------
 
+/**
+ * 封面图。
+ * [sizePx] 限制解码尺寸：列表里用 96px 左右即可，避免滑动时反复解码大图造成卡顿。
+ */
 @Composable
-fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
+fun Cover(
+    url: String?,
+    modifier: Modifier = Modifier,
+    radius: Dp = 8.dp,
+    circle: Boolean = false,
+    sizePx: Int = 128,
+) {
     val go = LocalGo.current
+    val ctx = LocalContext.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)
     val model = remember(url) { imageModel(url) }
+    val req = remember(model, sizePx, url) {
+        model?.let {
+            val b = ImageRequest.Builder(ctx).data(it).size(sizePx).crossfade(false)
+            // 统一用原始 url 作为内存缓存键（data: URI 默认按 byte[] 身份哈希，命中不了缓存）
+            if (url != null) b.memoryCacheKey(url)
+            b.build()
+        }
+    }
     Box(modifier.clip(shape).background(go.surfaceHi), contentAlignment = Alignment.Center) {
         Icon(Icons.Outlined.MusicNote, null, tint = go.muted.copy(alpha = 0.5f), modifier = Modifier.size(24.dp))
-        if (model != null) {
-            AsyncImage(model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (req != null) {
+            AsyncImage(req, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
     }
 }
@@ -290,12 +316,14 @@ fun SearchField(
 
 // ---------- 列表行 / 卡片 ----------
 
+/** 暂停时用静态柱，避免每帧重组 */
 @Composable
 fun Bars(playing: Boolean, color: Color) {
-    val t = rememberInfiniteTransition(label = "bars")
-    val a by t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(500, easing = LinearEasing), RepeatMode.Reverse), label = "a")
-    val b by t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(650, easing = LinearEasing), RepeatMode.Reverse), label = "b")
-    val c by t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(400, easing = LinearEasing), RepeatMode.Reverse), label = "c")
+    if (playing) AnimatedBars(color) else StaticBars(color)
+}
+
+@Composable
+private fun BarRow(a: Float, b: Float, c: Float, color: Color) {
     Row(
         Modifier.height(16.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -303,11 +331,23 @@ fun Bars(playing: Boolean, color: Color) {
     ) {
         listOf(a, b, c).forEach { v ->
             Box(
-                Modifier.width(3.dp).fillMaxHeight(if (playing) v else 0.5f)
+                Modifier.width(3.dp).fillMaxHeight(v)
                     .background(color, RoundedCornerShape(1.dp))
             )
         }
     }
+}
+
+@Composable
+private fun StaticBars(color: Color) = BarRow(0.5f, 0.5f, 0.5f, color)
+
+@Composable
+private fun AnimatedBars(color: Color) {
+    val t = rememberInfiniteTransition(label = "bars")
+    val a by t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(500, easing = LinearEasing), RepeatMode.Reverse), label = "a")
+    val b by t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(650, easing = LinearEasing), RepeatMode.Reverse), label = "b")
+    val c by t.animateFloat(0.3f, 1f, infiniteRepeatable(tween(400, easing = LinearEasing), RepeatMode.Reverse), label = "c")
+    BarRow(a, b, c, color)
 }
 
 @Composable
@@ -326,11 +366,11 @@ fun SongRow(
         Modifier.fillMaxWidth().height(64.dp).clickable(onClick = onClick).padding(start = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(48.dp)) {
-            Cover(song.coverUrl, Modifier.fillMaxSize(), 8.dp)
+        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+            Cover(song.coverUrl, Modifier.fillMaxSize(), 8.dp, sizePx = 96)
             if (current) {
                 Box(
-                    Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.45f)),
+                    Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
                     contentAlignment = Alignment.Center,
                 ) { Bars(playing, go.primary) }
             }
@@ -363,7 +403,7 @@ fun GroupRow(title: String, subtitle: String, cover: String?, onClick: () -> Uni
         Modifier.fillMaxWidth().height(64.dp).clickable(onClick = onClick).padding(start = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(cover, Modifier.size(48.dp), 8.dp)
+        Cover(cover, Modifier.size(48.dp), 8.dp, sizePx = 96)
         HS(12)
         Column(Modifier.weight(1f)) {
             Txt(title, 15, weight = FontWeight.Medium, maxLines = 1)
@@ -379,7 +419,7 @@ fun GroupCard(title: String, subtitle: String, cover: String?, onClick: () -> Un
     val go = LocalGo.current
     Column(modifier.clickable(onClick = onClick)) {
         Box(Modifier.fillMaxWidth()) {
-            Cover(cover, Modifier.fillMaxWidth().aspectRatio(1f), 16.dp)
+            Cover(cover, Modifier.fillMaxWidth().aspectRatio(1f), 16.dp, sizePx = 256)
             IconBtn(
                 Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
                 modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),
@@ -474,12 +514,12 @@ fun SeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
                             -with(density) { 28.dp.toPx() }.roundToInt(),
                         )
                     }.clip(RoundedCornerShape(8.dp)).background(go.surfaceHi).padding(horizontal = 8.dp, vertical = 4.dp)
-                ) { Txt(fmt((frac * duration).toLong()), 12) }
+                ) { Txt(fmt((frac * duration).toLong()), 12, tnum = true) }
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Txt(fmt(if (drag != null) (frac * duration).toLong() else position), 12, color = go.muted)
-            Txt(fmt(duration), 12, color = go.muted)
+            Txt(fmt(if (drag != null) (frac * duration).toLong() else position), 12, color = go.muted, tnum = true)
+            Txt(fmt(duration), 12, color = go.muted, tnum = true)
         }
     }
 }

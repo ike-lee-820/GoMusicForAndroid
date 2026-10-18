@@ -19,14 +19,8 @@ import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-/** 服务器地址，可在「设置」里修改；默认线上地址 */
-const val DEFAULT_BASE = "https://gomusic.myocd.de5.net"
-var BASE: String = DEFAULT_BASE
-    private set
-
-fun setBase(u: String?) {
-    BASE = u?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: DEFAULT_BASE
-}
+/** 服务器地址 */
+const val BASE = "https://gomusic.myocd.de5.net"
 
 @Serializable
 data class Song(
@@ -141,8 +135,6 @@ object Api {
 
     fun lyrics(ssid: String): String = get("/api/lyrics/$ssid")
 
-    fun clearCache() { detailCache.clear() }
-
     private fun JsonElement?.str(): String? =
         (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
 
@@ -217,13 +209,21 @@ fun lyricLines(t: String): List<LrcLine> {
     return t.lines().map { it.trim() }.filter { it.isNotEmpty() }.map { LrcLine(-1, it) }
 }
 
+/** data: URI 解码结果缓存：byte[] 自身没有稳定的 hashCode，不缓存会每次重组都重新解码 */
+private val dataUriCache = ConcurrentHashMap<String, ByteArray>()
+
 /** 图片模型：data: URI 解码为字节，本地文件/Uri 直接加载，其余补全为绝对地址 */
 fun imageModel(u: String?): Any? {
     if (u.isNullOrBlank()) return null
     if (u.startsWith("data:")) {
+        dataUriCache[u]?.let { return it }
         val i = u.indexOf("base64,")
         if (i < 0) return null
-        return runCatching { Base64.decode(u.substring(i + 7), Base64.DEFAULT) }.getOrNull()
+        val bytes = runCatching { Base64.decode(u.substring(i + 7), Base64.DEFAULT) }.getOrNull()
+            ?: return null
+        if (dataUriCache.size > 300) dataUriCache.clear()
+        dataUriCache[u] = bytes
+        return bytes
     }
     if (u.startsWith("content://") || u.startsWith("file://")) return android.net.Uri.parse(u)
     if (u.startsWith("/")) return java.io.File(u)

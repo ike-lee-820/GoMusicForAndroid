@@ -76,6 +76,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 正在下载的 ssid */
     var downloading by mutableStateOf<Set<String>>(emptySet()); private set
 
+    /** 已下载 ssid 集合：列表里做 O(1) 判断，避免滑动时逐首线性扫描 */
+    val downloadedIds: Set<String> by derivedStateOf { downloads.mapTo(HashSet()) { it.ssid } }
+
     // ---------- 设置 ----------
     var quality by mutableStateOf(prefs.quality); private set
     var playMode by mutableIntStateOf(prefs.playMode); private set
@@ -109,7 +112,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var lyric by mutableStateOf<List<LrcLine>>(emptyList()); private set
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
 
-    val currentSong: Song? by derivedStateOf { songs.firstOrNull { it.ssid == curSsid } }
+    val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] } }
     val lyricIndex: Int by derivedStateOf {
         if (lyric.isEmpty() || lyric[0].timeMs < 0) -1
         else lyric.indexOfLast { it.timeMs <= positionMs }
@@ -173,13 +176,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 设置里手动重连 */
     fun reconnect() = load()
 
-    fun setBaseUrl(u: String) {
-        setBase(u)
-        prefs.baseUrl = u.trim().trimEnd('/')
-        Api.clearCache()
-        load()
-    }
-
     // ================= 列表派生 =================
     fun rank(l: List<Song>): List<Song> {
         val c = counts
@@ -207,8 +203,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             )
         }
 
+    /** ssid -> Song 索引，随 songs 变化重建一次，避免每个列表项都重建整张表 */
+    private val songMap: Map<String, Song> by derivedStateOf { songs.associateBy { it.ssid } }
+
     fun songsByIds(ids: List<String>): List<Song> {
-        val m = songs.associateBy { it.ssid }
+        val m = songMap
         return ids.mapNotNull { m[it] }
     }
 
@@ -345,7 +344,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             counts = m
             prefs.playCounts = m
         }
-        updateCover(songs.firstOrNull { it.ssid == id }?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        updateCover(songMap[id]?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
         viewModelScope.launch {
             try {
                 val d = withContext(Dispatchers.IO) { Api.detail(id) }
@@ -432,7 +431,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         savePl(playlists.map { p -> if (p.id == id) p.copy(songs = p.songs - ssid) else p })
 
     // ================= 下载 / 提示 / 链接 =================
-    fun isDownloaded(ssid: String): Boolean = downloads.any { it.ssid == ssid }
+    fun isDownloaded(ssid: String): Boolean = ssid in downloadedIds
 
     /** 下载歌曲本体 + 封面 + 歌词 + 歌曲信息，并写入本地记录（离线可用） */
     fun download(list: List<Song>) {
@@ -527,7 +526,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // 放在最后：初始化顺序依赖上面的属性
     init {
-        setBase(prefs.baseUrl)
         load()
         val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
         val f = MediaController.Builder(app, token).buildAsync()
@@ -542,10 +540,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }, ContextCompat.getMainExecutor(app))
         viewModelScope.launch {
             while (true) {
-                delay(250)
-                controller?.let { c ->
-                    positionMs = c.currentPosition.coerceAtLeast(0)
-                    durationMs = if (c.duration == C.TIME_UNSET) 0 else c.duration.coerceAtLeast(0)
+                // 只有播放页/歌词页可见时才写进度状态：
+                // 否则每 250ms 的 state 写入会让整个界面（含正在滑动的长列表）反复重组
+                if (showPlayer || showLyrics) {
+                    delay(250)
+                    controller?.let { c ->
+                        positionMs = c.currentPosition.coerceAtLeast(0)
+                        durationMs = if (c.duration == C.TIME_UNSET) 0 else c.duration.coerceAtLeast(0)
+                    }
+                } else {
+                    delay(1000)
                 }
             }
         }

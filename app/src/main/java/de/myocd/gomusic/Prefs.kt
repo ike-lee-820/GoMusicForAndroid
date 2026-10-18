@@ -2,6 +2,7 @@ package de.myocd.gomusic
 
 import android.content.Context
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 
 @Serializable
 data class Playlist(

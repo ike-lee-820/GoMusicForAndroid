@@ -52,7 +52,7 @@ object Api {
     private val detailCache = ConcurrentHashMap<String, SongDetail>()
 
     /** 音质从高到低的已知排序，未知键排在最后 */
-    private val ORDER = listOf('normal', 'high', 'low', 'extreme', 'source', 'lossless')
+    private val ORDER = listOf("normal", "high", "low", "extreme", "source", "lossless")
     fun rank(k: String): Int = ORDER.indexOf(k).let { if (it < 0) 99 else it }
 
     fun abs(u: String?): String? = when {

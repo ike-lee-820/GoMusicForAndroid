@@ -733,7 +733,7 @@ fun QualityMenu(vm: MainViewModel) {
             opts.forEach { k ->
                 DropdownMenuItem(
                     text = { Text(qualityLabel(k), color = if (k == vm.quality) go.primary else go.on) },
-                    onClick = { vm.setQuality(k); open = false },
+                    onClick = { vm.updateQuality(k); open = false },
                 )
             }
         }
@@ -751,7 +751,7 @@ fun SpeedMenu(vm: MainViewModel) {
             speeds.forEach { v ->
                 DropdownMenuItem(
                     text = { Text("${v}×", color = if (v == vm.speed) go.primary else go.on) },
-                    onClick = { vm.setSpeed(v); open = false },
+                    onClick = { vm.updateSpeed(v); open = false },
                 )
             }
         }

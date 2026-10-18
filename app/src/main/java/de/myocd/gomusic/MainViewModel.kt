@@ -220,12 +220,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setSpeed(v: Float) {
+    fun updateSpeed(v: Float) {
         speed = v
         controller?.setPlaybackSpeed(v)
     }
 
-    fun setQuality(k: String) {
+    fun updateQuality(k: String) {
         quality = k
         prefs.quality = k
         // 重新解析当前曲目地址并回到原位置

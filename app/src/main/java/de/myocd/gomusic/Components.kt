@@ -94,7 +94,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import kotlin.math.roundToInt
-import kotlin.time.Duration.Companion.milliseconds
 
 fun fmt(ms: Long): String {
     val s = (ms.coerceAtLeast(0)) / 1000
@@ -146,8 +145,8 @@ fun MarqueeText(
         text,
         modifier.basicMarquee(
             iterations = Int.MAX_VALUE,
-            delay = 1500.milliseconds,
-            initialDelay = 1500.milliseconds,
+            repeatDelayMillis = 1500,
+            initialDelayMillis = 1500,
             velocity = 40.dp,
         ),
         color = color,

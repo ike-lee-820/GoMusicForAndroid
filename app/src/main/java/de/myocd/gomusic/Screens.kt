@@ -231,7 +231,7 @@ fun MiniPlayer(vm: MainViewModel) {
             .clickable { vm.showPlayer = true }.padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(s.coverUrl, Modifier.size(40.dp), 8.dp, sizePx = 96)
+        Cover(s.coverUrl, Modifier.size(40.dp), 8.dp)
         HS(12)
         Column(Modifier.weight(1f)) {
             Txt(s.title, 15, weight = FontWeight.Medium, maxLines = 1)
@@ -492,7 +492,7 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val w = minOf(LocalConfiguration.current.screenWidthDp * 0.72f, 320f).dp
-                    Cover(cover, Modifier.size(w), 24.dp, sizePx = 512)
+                    Cover(cover, Modifier.size(w), 24.dp)
                     VS(16)
                     Txt(s.album.ifBlank { "未知专辑" }, 20, weight = FontWeight.Bold, align = TextAlign.Center)
                     VS(4)
@@ -532,7 +532,7 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Cover(img, Modifier.size(160.dp), circle = true, sizePx = 320)
+                    Cover(img, Modifier.size(160.dp), circle = true)
                     VS(12)
                     Txt(s.name, 20, weight = FontWeight.Bold, align = TextAlign.Center)
                     val bio = info?.bio
@@ -628,7 +628,7 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                     Box(handle.size(40.dp), contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.DragHandle, "拖动排序", tint = go.muted)
                     }
-                    Cover(song.coverUrl, Modifier.size(48.dp), 8.dp, sizePx = 96)
+                    Cover(song.coverUrl, Modifier.size(48.dp), 8.dp)
                     HS(12)
                     Column(Modifier.weight(1f)) {
                         Txt(
@@ -695,7 +695,6 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     vm.stack.add(Screen.Album(s.artist, s.album))
                 },
                 20.dp,
-                sizePx = 512,
             )
             VS(20)
             MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
@@ -909,7 +908,7 @@ fun QueueSheet(vm: MainViewModel) {
                     Box(handle.size(40.dp), contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.DragHandle, "拖动排序", tint = go.muted)
                     }
-                    Cover(e.cover, Modifier.size(48.dp), 8.dp, sizePx = 96)
+                    Cover(e.cover, Modifier.size(48.dp), 8.dp)
                     HS(12)
                     Column(Modifier.weight(1f)) {
                         Txt(e.title, 15, weight = FontWeight.Medium, color = if (cur) go.primary else go.on, maxLines = 1)
@@ -1085,7 +1084,7 @@ fun DownloadsSheet(vm: MainViewModel) {
                             .padding(start = 16.dp, end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp, sizePx = 96)
+                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp)
                         HS(12)
                         Column(Modifier.weight(1f)) {
                             Txt(rec.title, 15, weight = FontWeight.Medium, maxLines = 1)

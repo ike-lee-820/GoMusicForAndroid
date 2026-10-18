@@ -547,8 +547,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun download(list: List<Song>) {
         if (list.isEmpty()) return
         if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
-        val todo = list.filter { it.ssid !in downloading }
-        if (todo.isEmpty()) return
+        // 已下载过、或正在下载的直接跳过，避免重复下载
+        val todo = list.filter { it.ssid !in downloading && !isDownloaded(it.ssid) }
+        if (todo.isEmpty()) {
+            toast(
+                when {
+                    list.all { isDownloaded(it.ssid) } -> "已下载过，可在「设置 → 已下载」删除后重新下载"
+                    else -> "已在下载队列中"
+                }
+            )
+            return
+        }
         downloading = downloading + todo.map { it.ssid }
         toast("开始下载 ${todo.size} 首")
         val noti = Noti(app)
@@ -599,6 +608,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) {
                 dlStatus = null
                 noti.cancel()
+            }
+        }
+    }
+
+    /** 重新下载：先删掉旧文件与记录，再下一次（文件丢失/损坏时用） */
+    fun redownload(ssid: String) {
+        val rec = prefs.downloads.firstOrNull { it.ssid == ssid } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            LocalLib.delete(app, rec)
+            val l = prefs.downloads.filter { it.ssid != ssid }
+            prefs.downloads = l
+            withContext(Dispatchers.Main) {
+                downloads = l
+                download(listOf(Song(ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })))
             }
         }
     }

@@ -74,6 +74,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.RepeatOne
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Shuffle
@@ -1135,6 +1136,7 @@ fun DownloadsSheet(vm: MainViewModel) {
                                 12, color = go.muted, maxLines = 1,
                             )
                         }
+                        IconBtn(Icons.Outlined.Refresh, "重新下载") { vm.redownload(rec.ssid) }
                         IconBtn(Icons.Outlined.Delete, "删除下载") { vm.deleteDownload(rec.ssid) }
                     }
                 }

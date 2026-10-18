@@ -46,4 +46,16 @@ class Prefs(ctx: Context) {
             if (v == null) e.remove("theme_color") else e.putInt("theme_color", v)
             e.apply()
         }
+
+    /** 已下载歌曲索引（离线模式的数据来源） */
+    var downloads: List<DownloadRecord>
+        get() = runCatching {
+            json.decodeFromString<List<DownloadRecord>>(sp.getString("downloads", "[]")!!)
+        }.getOrDefault(emptyList())
+        set(v) { sp.edit().putString("downloads", json.encodeToString(v)).apply() }
+
+    /** 服务器地址，空表示默认线上地址 */
+    var baseUrl: String?
+        get() = sp.getString("base_url", null)?.takeIf { it.isNotBlank() }
+        set(v) { sp.edit().putString("base_url", v ?: "").apply() }
 }

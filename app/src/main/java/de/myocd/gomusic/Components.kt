@@ -49,7 +49,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
@@ -313,8 +315,11 @@ fun SongRow(
     song: Song,
     current: Boolean,
     playing: Boolean,
+    downloaded: Boolean = false,
+    downloading: Boolean = false,
     onClick: () -> Unit,
     onAdd: () -> Unit,
+    onDownload: (() -> Unit)? = null,
 ) {
     val go = LocalGo.current
     Row(
@@ -334,6 +339,18 @@ fun SongRow(
         Column(Modifier.weight(1f)) {
             Txt(song.title, 15, weight = FontWeight.Medium, color = if (current) go.primary else go.on, maxLines = 1)
             Txt("${song.artist} · ${song.album}", 12, color = go.muted, maxLines = 1)
+        }
+        if (onDownload != null) {
+            IconBtn(
+                if (downloaded) Icons.Outlined.CheckCircle else Icons.Outlined.Download,
+                if (downloaded) "已下载" else "下载歌曲",
+                tint = when {
+                    downloaded -> go.primary
+                    downloading -> go.muted
+                    else -> go.on
+                },
+                onClick = onDownload,
+            )
         }
         IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", onClick = onAdd)
     }

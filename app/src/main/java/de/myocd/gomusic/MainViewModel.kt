@@ -69,6 +69,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var playlists by mutableStateOf(prefs.playlists); private set
     var counts by mutableStateOf(prefs.playCounts); private set
 
+    /** 连不上服务器时为 true：只展示已下载内容 */
+    var offline by mutableStateOf(false); private set
+    /** 已下载索引 */
+    var downloads by mutableStateOf(prefs.downloads); private set
+    /** 正在下载的 ssid */
+    var downloading by mutableStateOf<Set<String>>(emptySet()); private set
+
     // ---------- 设置 ----------
     var quality by mutableStateOf(prefs.quality); private set
     var playMode by mutableIntStateOf(prefs.playMode); private set
@@ -85,6 +92,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var showLyrics by mutableStateOf(false)
     var showQueue by mutableStateOf(false)
     var showTheme by mutableStateOf(false)
+    var showSettings by mutableStateOf(false)
+    var showDownloads by mutableStateOf(false)
     var pickReq by mutableStateOf<PickRequest?>(null)
     var toastMsg by mutableStateOf<String?>(null); private set
 
@@ -111,19 +120,64 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private var toastJob: Job? = null
 
     // ================= 加载 =================
+    /** 把异常翻译成人能看懂的提示 */
+    private fun netMsg(e: Throwable): String {
+        val m = e.message ?: ""
+        return when {
+            m.contains("Software caused connection abort", true) ||
+                m.contains("ECONNABORTED", true) ||
+                m.contains("Connection reset", true) ||
+                m.contains("Connection timed out", true) ||
+                m.contains("timeout", true) -> "连接服务器超时（网络不稳定），已进入离线模式"
+            m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true) -> "无法解析服务器地址，已进入离线模式"
+            m.contains("Failed to connect", true) || m.contains("ECONNREFUSED", true) -> "无法连接服务器，已进入离线模式"
+            m.startsWith("HTTP ") -> "服务器返回 $m"
+            else -> "加载失败：$m"
+        }
+    }
+
     fun load() {
         viewModelScope.launch {
             loading = true
             error = null
-            try {
-                songs = withContext(Dispatchers.IO) { Api.songs() }
-            } catch (e: Exception) {
-                error = e.message ?: "加载失败"
+            var attempt = 0
+            var ok = false
+            // 首次进入（WiFi 刚连上）多试一次，避免瞬间抖动直接报失败
+            while (attempt < 2 && !ok) {
+                attempt++
+                try {
+                    val s = withContext(Dispatchers.IO) { Api.songs() }
+                    songs = s
+                    ok = true
+                } catch (e: Exception) {
+                    error = netMsg(e)
+                    if (attempt < 2) delay(800)
+                }
+            }
+            if (ok) {
+                offline = false
+                error = null
+            } else {
+                // 进入离线模式：用已下载的内容填充
+                offline = true
+                songs = LocalLib.songs(prefs.downloads)
             }
             loading = false
-            runCatching { artistInfo = withContext(Dispatchers.IO) { Api.artists() } }
+            if (!offline) {
+                runCatching { artistInfo = withContext(Dispatchers.IO) { Api.artists() } }
+            }
             pendingLink?.let { pendingLink = null; handleLink(it) }
         }
+    }
+
+    /** 设置里手动重连 */
+    fun reconnect() = load()
+
+    fun setBaseUrl(u: String) {
+        setBase(u)
+        prefs.baseUrl = u.trim().trimEnd('/')
+        Api.clearCache()
+        load()
     }
 
     // ================= 列表派生 =================
@@ -159,6 +213,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     // ================= 播放 =================
+    private fun artworkUri(u: String?): Uri? {
+        if (u.isNullOrBlank()) return null
+        return when {
+            u.startsWith("content://") || u.startsWith("file://") || u.startsWith("/") ->
+                runCatching { Uri.parse(u) }.getOrNull()
+            else -> Api.abs(u)?.takeIf { it.startsWith("http") }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        }
+    }
+
     private fun toItem(s: Song): MediaItem = MediaItem.Builder()
         .setMediaId(s.ssid)
         .setUri("gomusic:///${s.ssid}")
@@ -167,7 +230,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 .setTitle(s.title)
                 .setArtist(s.artist)
                 .setAlbumTitle(s.album)
-                .setArtworkUri(Api.abs(s.coverUrl)?.takeIf { it.startsWith("http") }?.let { Uri.parse(it) })
+                .setArtworkUri(artworkUri(s.coverUrl))
                 .build()
         )
         .build()
@@ -290,8 +353,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 qualities = d.audio.keys.sortedBy { Api.rank(it) }
                 var t = d.lyrics
                 if (t.isBlank()) t = withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
+                if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
                 if (curSsid == id) lyric = lyricLines(t)
             } catch (ignored: Exception) {
+                val t = withContext(Dispatchers.IO) { localLyrics(id) }
+                if (curSsid == id && t.isNotBlank()) lyric = lyricLines(t)
             }
         }
     }
@@ -366,27 +432,69 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         savePl(playlists.map { p -> if (p.id == id) p.copy(songs = p.songs - ssid) else p })
 
     // ================= 下载 / 提示 / 链接 =================
+    fun isDownloaded(ssid: String): Boolean = downloads.any { it.ssid == ssid }
+
+    /** 下载歌曲本体 + 封面 + 歌词 + 歌曲信息，并写入本地记录（离线可用） */
     fun download(list: List<Song>) {
         if (list.isEmpty()) return
-        toast("开始下载 ${list.size} 首")
-        viewModelScope.launch(Dispatchers.IO) {
-            val dm = app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            for (s in list) {
-                try {
-                    val url = Api.audioUrl(s.ssid, quality)
-                    val ext = url.substringBefore('?').substringAfterLast('.', "mp3")
-                        .takeIf { it.length in 2..4 } ?: "mp3"
-                    val name = "${s.artist} - ${s.title}".replace(Regex("[\\\\/:*?\"<>|]"), "_")
-                    val r = DownloadManager.Request(Uri.parse(url))
-                        .setTitle(s.title)
-                        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                        .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "GoMusic/$name.$ext")
-                    dm.enqueue(r)
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) { toast("下载失败：${s.title}") }
+        val todo = list.filter { it.ssid !in downloading }
+        if (todo.isEmpty()) return
+        downloading = downloading + todo.map { it.ssid }
+        toast("开始下载 ${todo.size} 首")
+        Noti(app).ensureChannel()
+        todo.forEachIndexed { i, s ->
+            viewModelScope.launch(Dispatchers.IO) {
+                Noti(app).progress(s.title, i + 1, todo.size)
+                val r = runCatching { LocalLib.download(app, s, quality) }
+                withContext(Dispatchers.Main) {
+                    downloading = downloading - s.ssid
+                    r.onSuccess { rec ->
+                        val l = prefs.downloads.filter { it.ssid != rec.ssid } + rec
+                        prefs.downloads = l
+                        downloads = l
+                        if (offline) songs = LocalLib.songs(l)
+                        Noti(app).done("${s.title} 下载完成")
+                        toast("已下载：${s.title}")
+                    }.onFailure {
+                        Noti(app).done("${s.title} 下载失败")
+                        toast("下载失败：${s.title}")
+                    }
                 }
             }
         }
+    }
+
+    /** 删除单条下载（同时删除文件） */
+    fun deleteDownload(ssid: String) {
+        val rec = prefs.downloads.firstOrNull { it.ssid == ssid } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            LocalLib.delete(app, rec)
+            val l = prefs.downloads.filter { it.ssid != ssid }
+            prefs.downloads = l
+            withContext(Dispatchers.Main) {
+                downloads = l
+                if (offline) songs = LocalLib.songs(l)
+                toast("已删除下载")
+            }
+        }
+    }
+
+    fun clearDownloads() {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.downloads.forEach { LocalLib.delete(app, it) }
+            prefs.downloads = emptyList()
+            withContext(Dispatchers.Main) {
+                downloads = emptyList()
+                if (offline) songs = emptyList()
+                toast("已清空下载")
+            }
+        }
+    }
+
+    /** 本地歌词：在线取不到时用 */
+    fun localLyrics(ssid: String): String {
+        val rec = downloads.firstOrNull { it.ssid == ssid } ?: return ""
+        return LocalLib.readText(app, rec.lyric)
     }
 
     fun toast(m: String) {
@@ -419,6 +527,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // 放在最后：初始化顺序依赖上面的属性
     init {
+        setBase(prefs.baseUrl)
         load()
         val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
         val f = MediaController.Builder(app, token).buildAsync()

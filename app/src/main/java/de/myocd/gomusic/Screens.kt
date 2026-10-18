@@ -57,6 +57,8 @@ import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DragHandle
@@ -69,8 +71,10 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.RepeatOne
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material.icons.outlined.SkipNext
@@ -180,7 +184,8 @@ fun MainScreen(vm: MainViewModel) {
         ) { LyricsPage(vm) }
 
         if (vm.showQueue) QueueSheet(vm)
-        if (vm.showTheme) ThemeSheet(vm)
+        if (vm.showSettings) SettingsSheet(vm)
+        if (vm.showDownloads) DownloadsSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
     }
 }
@@ -252,11 +257,12 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
         Column(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Txt(titles[vm.tab], 20, Modifier.weight(1f), FontWeight.Bold)
-                IconBtn(Icons.Outlined.Palette, "主题色", size = 44.dp) { vm.showTheme = true }
+                IconBtn(Icons.Outlined.Settings, "设置", size = 44.dp) { vm.showSettings = true }
             }
             VS(8)
             SearchField(vm.query, { vm.query = it }, hints[vm.tab])
             VS(8)
+            if (vm.offline) OfflineBar(vm)
         }
         when {
             vm.loading && vm.songs.isEmpty() ->
@@ -269,9 +275,18 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    Txt("加载失败：${vm.error}", 14, color = go.muted)
+                    Icon(
+                        Icons.Outlined.CloudOff, null, tint = go.muted,
+                        modifier = Modifier.size(40.dp),
+                    )
                     VS(12)
-                    GoButton("重试", primary = true) { vm.load() }
+                    Txt("${vm.error}", 14, color = go.muted, align = TextAlign.Center)
+                    VS(8)
+                    if (vm.downloads.isEmpty()) {
+                        Txt("还没有下载歌曲，联网后可在歌曲右侧点下载", 13, color = go.muted, align = TextAlign.Center)
+                        VS(12)
+                    }
+                    GoButton("重试", primary = true) { vm.reconnect() }
                 }
             else -> when (vm.tab) {
                 0 -> SongsTab(vm, listStates[0])
@@ -281,6 +296,22 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
             }
         }
     }
+}
+
+@Composable
+fun OfflineBar(vm: MainViewModel) {
+    val go = LocalGo.current
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.CloudOff, null, tint = go.primary, modifier = Modifier.size(20.dp))
+        HS(8)
+        Txt("离线模式 · 已下载 ${vm.downloads.size} 首", 13, Modifier.weight(1f), color = go.muted)
+        GoButton("重试", primary = true) { vm.reconnect() }
+    }
+    VS(8)
 }
 
 @Composable
@@ -295,8 +326,11 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
         itemsIndexed(list) { i, s ->
             SongRow(
                 s, s.ssid == vm.curSsid, vm.isPlaying,
+                downloaded = vm.isDownloaded(s.ssid),
+                downloading = s.ssid in vm.downloading,
                 onClick = { vm.playSongs(list, i) },
                 onAdd = { vm.pick(listOf(s.ssid), s.title, s.coverUrl) },
+                onDownload = { vm.download(listOf(s)) },
             )
         }
     }
@@ -472,8 +506,11 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
             itemsIndexed(list) { i, song ->
                 SongRow(
                     song, song.ssid == vm.curSsid, vm.isPlaying,
+                    downloaded = vm.isDownloaded(song.ssid),
+                    downloading = song.ssid in vm.downloading,
                     onClick = { vm.playSongs(list, i) },
                     onAdd = { vm.pick(listOf(song.ssid), song.title, song.coverUrl) },
+                    onDownload = { vm.download(listOf(song)) },
                 )
             }
         }
@@ -538,8 +575,11 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
                 itemsIndexed(list) { i, song ->
                     SongRow(
                         song, song.ssid == vm.curSsid, vm.isPlaying,
+                        downloaded = vm.isDownloaded(song.ssid),
+                        downloading = song.ssid in vm.downloading,
                         onClick = { vm.playSongs(list, i) },
                         onAdd = { vm.pick(listOf(song.ssid), song.title, song.coverUrl) },
+                        onDownload = { vm.download(listOf(song)) },
                     )
                 }
             }
@@ -903,17 +943,51 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
 }
 
 @Composable
-fun ThemeSheet(vm: MainViewModel) {
+@Composable
+fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
-    val ctx = LocalContext.current
     var hex by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf(BASE) }
+    var confirmClear by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
     val presets = listOf(
         0xFFD0BCFF, 0xFFFF8A80, 0xFFFFB74D, 0xFFFFF176,
         0xFF81C784, 0xFF4DD0E1, 0xFF64B5F6, 0xFFF48FB1,
     ).map { Color(it) }
-    GoSheet({ vm.showTheme = false }) {
+    GoSheet({ vm.showSettings = false }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Txt("主题色", 16, weight = FontWeight.SemiBold)
+            // ---------- 连接 ----------
+            Txt("连接", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (vm.offline) Icons.Outlined.CloudOff else Icons.Outlined.CloudQueue,
+                    null, tint = if (vm.offline) go.muted else go.primary, modifier = Modifier.size(20.dp),
+                )
+                HS(8)
+                Txt(
+                    if (vm.offline) "离线模式：连接服务器失败" else "已连接服务器",
+                    13, Modifier.weight(1f), color = go.muted,
+                )
+                GoButton("重试", primary = vm.offline) { vm.reconnect() }
+            }
+            VS(8)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { SearchField(baseUrl, { baseUrl = it }, "服务器地址", showIcon = false) }
+                HS(8)
+                GoButton("保存") {
+                    if (baseUrl.startsWith("http")) vm.setBaseUrl(baseUrl) else vm.toast("地址需以 http 开头")
+                }
+            }
+            VS(8)
+            GoButton("在浏览器打开管理页 /dev", icon = Icons.Outlined.Public) {
+                runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$BASE/dev"))) }
+                    .onFailure { vm.toast("无法打开浏览器") }
+            }
+            VS(16)
+
+            // ---------- 主题色 ----------
+            Txt("主题色", 15, weight = FontWeight.SemiBold)
             VS(12)
             GoButton("跟随封面", primary = vm.fixedTheme == null) { vm.setTheme(null) }
             VS(12)
@@ -924,7 +998,9 @@ fun ThemeSheet(vm: MainViewModel) {
                             .clickable { vm.setTheme(c) },
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (vm.fixedTheme == c) Icon(Icons.Outlined.MusicNote, "当前主题色", tint = OnPrimary, modifier = Modifier.size(20.dp))
+                        if (vm.fixedTheme == c) {
+                            Icon(Icons.Outlined.MusicNote, "当前主题色", tint = OnPrimary, modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
             }
@@ -938,6 +1014,64 @@ fun ThemeSheet(vm: MainViewModel) {
                         .onSuccess { vm.setTheme(it) }
                         .onFailure { vm.toast("颜色格式不正确") }
                 }
+            }
+            VS(16)
+
+            // ---------- 下载 ----------
+            Txt("下载", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Txt("保存位置：${LocalLib.dirText()}（音乐 / 封面 / 歌词 / 歌曲信息）", 12, color = go.muted)
+            VS(8)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton("已下载 ${vm.downloads.size} 首", icon = Icons.Outlined.Download) { vm.showDownloads = true }
+                GoButton("清空下载", icon = Icons.Outlined.Delete) { confirmClear = true }
+            }
+            VS(8)
+            Txt("GoMusic Android 1.1.0", 12, color = go.muted)
+            VS(8)
+        }
+    }
+    if (confirmClear) {
+        ConfirmDialog("清空全部已下载歌曲？", { confirmClear = false }) {
+            confirmClear = false
+            vm.clearDownloads()
+        }
+    }
+}
+
+@Composable
+fun DownloadsSheet(vm: MainViewModel) {
+    val go = LocalGo.current
+    GoSheet({ vm.showDownloads = false }) {
+        Txt("已下载（${vm.downloads.size}）", 16, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), FontWeight.SemiBold)
+        if (vm.downloads.isEmpty()) {
+            Box(
+                Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                contentAlignment = Alignment.Center,
+            ) { Txt("还没有下载歌曲", 14, color = go.muted) }
+        } else {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                vm.downloads.sortedByDescending { it.time }.forEach { rec ->
+                    val song = Song(rec.ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })
+                    Row(
+                        Modifier.fillMaxWidth().height(64.dp)
+                            .clickable { vm.playSongs(listOf(song), 0) }
+                            .padding(start = 16.dp, end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp)
+                        HS(12)
+                        Column(Modifier.weight(1f)) {
+                            Txt(rec.title, 15, weight = FontWeight.Medium, maxLines = 1)
+                            Txt(
+                                "${rec.artist} · ${rec.album} · ${qualityLabel(rec.quality)}",
+                                12, color = go.muted, maxLines = 1,
+                            )
+                        }
+                        IconBtn(Icons.Outlined.Delete, "删除下载") { vm.deleteDownload(rec.ssid) }
+                    }
+                }
+                VS(8)
             }
         }
     }

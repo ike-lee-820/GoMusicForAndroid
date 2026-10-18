@@ -6,6 +6,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -27,19 +28,27 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        setBase(Prefs(applicationContext).baseUrl)
         val resolver = ResolvingDataSource.Resolver { spec ->
             if (spec.uri.scheme == "gomusic") {
                 val ssid = spec.uri.lastPathSegment ?: throw IOException("bad uri")
-                val url = try {
-                    Api.audioUrl(ssid, Prefs(applicationContext).quality)
-                } catch (e: Exception) {
-                    throw IOException(e)
+                // 已下载过的歌曲直接放本地文件，离线也能播
+                val local = LocalLib.audioUri(applicationContext, ssid)
+                if (local != null) {
+                    spec.withUri(local)
+                } else {
+                    val url = try {
+                        Api.audioUrl(ssid, Prefs(applicationContext).quality)
+                    } catch (e: Exception) {
+                        throw IOException(e)
+                    }
+                    spec.withUri(Uri.parse(url))
                 }
-                spec.withUri(Uri.parse(url))
             } else spec
         }
         val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
-        val dsFactory = ResolvingDataSource.Factory(http, resolver)
+        // 用 DefaultDataSource 包一层，才能播放本地 content:// / file:// 的音频
+        val dsFactory = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, http), resolver)
 
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dsFactory))

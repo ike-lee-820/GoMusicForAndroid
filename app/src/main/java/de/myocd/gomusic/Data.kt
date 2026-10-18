@@ -8,13 +8,25 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.io.OutputStream
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-const val BASE = "https://gomusic.myocd.de5.net"
+/** 服务器地址，可在「设置」里修改；默认线上地址 */
+const val DEFAULT_BASE = "https://gomusic.myocd.de5.net"
+var BASE: String = DEFAULT_BASE
+    private set
+
+fun setBase(u: String?) {
+    BASE = u?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: DEFAULT_BASE
+}
 
 @Serializable
 data class Song(
@@ -44,9 +56,29 @@ data class LrcLine(val timeMs: Long, val text: String)
 object Api {
     val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+    /**
+     * IPv4 优先：部分 WiFi 下 IPv6 不通、或路由器过早回收连接，
+     * 会抛 "Software caused connection abort"，优先解析 IPv4 可规避。
+     */
+    private val ipv4First = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val all = try {
+                InetAddress.getAllByName(hostname).toList()
+            } catch (e: Exception) {
+                throw UnknownHostException("$hostname: ${e.message}")
+            }
+            if (all.isEmpty()) throw UnknownHostException(hostname)
+            return all.sortedBy { if (it is Inet4Address) 0 else 1 }
+        }
+    }
+
+    val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(40, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .dns(ipv4First)
         .build()
 
     private val detailCache = ConcurrentHashMap<String, SongDetail>()
@@ -62,12 +94,44 @@ object Api {
         else -> "$BASE/$u"
     }
 
-    private fun get(path: String): String {
-        val req = Request.Builder().url(BASE + path).build()
+    /** 网络抖动（尤其 WiFi 刚连上、IPv6 不通）时重试，避免一上来就报加载失败 */
+    private fun get(path: String, tries: Int = 3): String {
+        var last: Exception? = null
+        repeat(tries) { i ->
+            try {
+                // Connection: close —— 禁用 keep-alive 复用，规避被中途断开的 "connection abort"
+                val req = Request.Builder().url(BASE + path).header("Connection", "close").build()
+                client.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                    return r.body!!.string()
+                }
+            } catch (e: Exception) {
+                last = e
+                if (i < tries - 1) {
+                    try { Thread.sleep(500L * (i + 1)) } catch (_: InterruptedException) {}
+                }
+            }
+        }
+        throw last ?: IOException("请求失败")
+    }
+
+    /** 下载到输出流（音频 / 封面） */
+    fun fetch(url: String, out: OutputStream) {
+        val req = Request.Builder().url(url).header("Connection", "close").build()
         client.newCall(req).execute().use { r ->
             if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
-            return r.body!!.string()
+            val body = r.body ?: throw IOException("空响应")
+            body.byteStream().use { it.copyTo(out) }
         }
+    }
+
+    fun bytes(url: String): ByteArray? = try {
+        val req = Request.Builder().url(url).header("Connection", "close").build()
+        client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) null else r.body?.bytes()
+        }
+    } catch (e: Exception) {
+        null
     }
 
     fun songs(): List<Song> = json.decodeFromString<List<Song>>(get("/api/songs"))
@@ -76,6 +140,8 @@ object Api {
         json.decodeFromString<Map<String, ArtistInfo>>(get("/api/artists"))
 
     fun lyrics(ssid: String): String = get("/api/lyrics/$ssid")
+
+    fun clearCache() { detailCache.clear() }
 
     private fun JsonElement?.str(): String? =
         (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
@@ -151,7 +217,7 @@ fun lyricLines(t: String): List<LrcLine> {
     return t.lines().map { it.trim() }.filter { it.isNotEmpty() }.map { LrcLine(-1, it) }
 }
 
-/** 图片模型：data: URI 解码为字节，其余补全为绝对地址 */
+/** 图片模型：data: URI 解码为字节，本地文件/Uri 直接加载，其余补全为绝对地址 */
 fun imageModel(u: String?): Any? {
     if (u.isNullOrBlank()) return null
     if (u.startsWith("data:")) {
@@ -159,5 +225,7 @@ fun imageModel(u: String?): Any? {
         if (i < 0) return null
         return runCatching { Base64.decode(u.substring(i + 7), Base64.DEFAULT) }.getOrNull()
     }
+    if (u.startsWith("content://") || u.startsWith("file://")) return android.net.Uri.parse(u)
+    if (u.startsWith("/")) return java.io.File(u)
     return Api.abs(u)
 }

@@ -60,6 +60,18 @@ data class QueueEntry(val ssid: String, val title: String, val artist: String, v
 
 val DefaultPrimary = Color(0xFFD0BCFF)
 
+/** 下载进度：已下载字节 / 总字节(-1 未知) / 速度(B/s) */
+data class DlStatus(
+    val title: String,
+    val index: Int,
+    val total: Int,
+    val done: Long,
+    val size: Long,
+    val bps: Long,
+) {
+    val percent: Int get() = if (size > 0) (done * 100 / size).toInt().coerceIn(0, 100) else -1
+}
+
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
 
@@ -77,6 +89,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var downloads by mutableStateOf(prefs.downloads); private set
     /** 正在下载的 ssid */
     var downloading by mutableStateOf<Set<String>>(emptySet()); private set
+    /** 当前下载进度（含速度），界面上显示用 */
+    var dlStatus by mutableStateOf<DlStatus?>(null); private set
 
     /** 已下载 ssid 集合：列表里做 O(1) 判断，避免滑动时逐首线性扫描 */
     val downloadedIds: Set<String> by derivedStateOf { downloads.mapTo(HashSet()) { it.ssid } }
@@ -161,7 +175,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             var ok = false
             // 只尝试一次：失败立即进入离线模式，不重试、不退避等待
             try {
-                songs = withContext(Dispatchers.IO) { Api.songs(quick = true) }
+                songs = withContext(Dispatchers.IO) {
+                    // 列表没给封面时，按文档用仓库里的「专辑名/cover.webp」兜底
+                    Api.songs(quick = true).map {
+                        if (it.coverUrl.isNullOrBlank()) it.copy(coverUrl = guessCoverUrl(it)) else it
+                    }
+                }
                 ok = true
             } catch (e: Exception) {
                 error = netMsg(e)
@@ -532,11 +551,36 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (todo.isEmpty()) return
         downloading = downloading + todo.map { it.ssid }
         toast("开始下载 ${todo.size} 首")
-        Noti(app).ensureChannel()
-        todo.forEachIndexed { i, s ->
-            viewModelScope.launch(Dispatchers.IO) {
-                Noti(app).progress(s.title, i + 1, todo.size)
-                val r = runCatching { LocalLib.download(app, s, quality) }
+        val noti = Noti(app)
+        noti.ensureChannel()
+        // 逐个顺序下载：速度才是当前这一首的真实速度，通知与进度条也才对得上
+        viewModelScope.launch(Dispatchers.IO) {
+            todo.forEachIndexed { i, s ->
+                noti.progress(s.title, i + 1, todo.size, -1, "", "")
+                withContext(Dispatchers.Main) {
+                    dlStatus = DlStatus(s.title, i + 1, todo.size, 0L, -1L, 0L)
+                }
+                var lastBytes = 0L
+                var lastTime = System.currentTimeMillis()
+                val r = runCatching {
+                    LocalLib.download(app, s, quality) { done, total ->
+                        val now = System.currentTimeMillis()
+                        val dt = now - lastTime
+                        if (dt < 400 && done < total) return@download
+                        val bps = if (dt > 0) (done - lastBytes) * 1000 / dt else 0
+                        lastBytes = done
+                        lastTime = now
+                        val pct = if (total > 0) (done * 100 / total).toInt() else -1
+                        viewModelScope.launch(Dispatchers.Main) {
+                            dlStatus = DlStatus(s.title, i + 1, todo.size, done, total, bps)
+                            noti.progress(
+                                s.title, i + 1, todo.size, pct,
+                                Noti.speed(bps),
+                                if (total > 0) "${Noti.size(done)} / ${Noti.size(total)}" else Noti.size(done),
+                            )
+                        }
+                    }
+                }
                 withContext(Dispatchers.Main) {
                     downloading = downloading - s.ssid
                     r.onSuccess { rec ->
@@ -544,13 +588,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         prefs.downloads = l
                         downloads = l
                         if (offline) songs = LocalLib.songs(l)
-                        Noti(app).done("${s.title} 下载完成")
+                        noti.done("${s.title} 下载完成")
                         toast("已下载：${s.title}")
                     }.onFailure {
-                        Noti(app).done("${s.title} 下载失败")
+                        noti.done("${s.title} 下载失败")
                         toast("下载失败：${s.title}")
                     }
                 }
+            }
+            withContext(Dispatchers.Main) {
+                dlStatus = null
+                noti.cancel()
             }
         }
     }

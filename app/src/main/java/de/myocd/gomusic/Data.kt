@@ -121,13 +121,33 @@ object Api {
         throw last ?: IOException("请求失败")
     }
 
-    /** 下载到输出流（音频 / 封面） */
-    fun fetch(url: String, out: OutputStream) {
+    /** 下载到输出流；[onProgress] 回调 (已读字节, 总字节，-1 表示未知) */
+    fun fetch(url: String, out: OutputStream, onProgress: ((Long, Long) -> Unit)? = null) {
         val req = Request.Builder().url(url).header("Connection", "close").build()
         client.newCall(req).execute().use { r ->
             if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
             val body = r.body ?: throw IOException("空响应")
-            body.byteStream().use { it.copyTo(out) }
+            val total = body.contentLength()
+            body.byteStream().use { input ->
+                if (onProgress == null) {
+                    input.copyTo(out)
+                    return
+                }
+                val buf = ByteArray(64 * 1024)
+                var read = 0L
+                var last = 0L
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    read += n
+                    if (read - last >= 128 * 1024) {
+                        last = read
+                        onProgress(read, total)
+                    }
+                }
+                onProgress(read, total)
+            }
         }
     }
 
@@ -228,6 +248,20 @@ fun lyricLines(t: String): List<LrcLine> {
     return t.lines().map { it.trim() }.filter { it.isNotEmpty() }.map { LrcLine(-1, it) }
 }
 
+/**
+ * 文档 6：仓库内「专辑名/cover.webp」即该专辑封面，通过
+ * `/api/proxy/raw/:repo/:path?o=<owner>` 代理访问。
+ * 列表里 coverUrl 缺失时用这个兜底。
+ */
+fun guessCoverUrl(s: Song): String? {
+    val repo = s.repoName?.takeIf { it.isNotBlank() } ?: return null
+    val owner = s.owner?.takeIf { it.isNotBlank() } ?: return null
+    val album = s.album.takeIf { it.isNotBlank() } ?: return null
+    val encAlbum = java.net.URLEncoder.encode(album, "UTF-8").replace("+", "%20")
+    val encOwner = java.net.URLEncoder.encode(owner, "UTF-8")
+    return "$BASE/api/proxy/raw/$repo/$encAlbum/cover.webp?o=$encOwner"
+}
+
 /** 图片模型：data: URI 解码为字节，本地文件/Uri 直接加载，其余补全为绝对地址 */
 fun imageModel(u: String?): Any? {
     if (u.isNullOrBlank()) return null
@@ -237,6 +271,11 @@ fun imageModel(u: String?): Any? {
         return runCatching { Base64.decode(u.substring(i + 7), Base64.DEFAULT) }.getOrNull()
     }
     if (u.startsWith("content://") || u.startsWith("file://")) return android.net.Uri.parse(u)
-    if (u.startsWith("/")) return java.io.File(u)
+    // 只有确实存在的本地绝对路径才当文件；
+    // 服务端返回的封面常是 /api/... 这类根相对路径，必须拼上 BASE，不能当成本地文件
+    if (u.startsWith("/")) {
+        val f = java.io.File(u)
+        if (f.exists()) return f
+    }
     return Api.abs(u)
 }

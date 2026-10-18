@@ -86,6 +86,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -264,6 +265,7 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
             SearchField(vm.query, { vm.query = it }, hints[vm.tab])
             VS(8)
             if (vm.offline) OfflineBar(vm)
+            DownloadBar(vm)
         }
         when {
             vm.loading && vm.songs.isEmpty() ->
@@ -296,6 +298,46 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                 else -> PlaylistsTab(vm, listStates[3])
             }
         }
+    }
+}
+
+@Composable
+fun DownloadBar(vm: MainViewModel) {
+    val d = vm.dlStatus ?: return
+    val go = LocalGo.current
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Download, null, tint = go.primary, modifier = Modifier.size(18.dp))
+            HS(8)
+            Txt(
+                "正在下载 ${d.index}/${d.total} · ${d.title}", 13,
+                Modifier.weight(1f), color = go.muted, maxLines = 1,
+            )
+            Txt(Noti.speed(d.bps).ifBlank { "准备中" }, 13, color = go.primary, tnum = true)
+        }
+        VS(6)
+        if (d.percent >= 0) {
+            LinearProgressIndicator(
+                progress = d.percent / 100f,
+                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                color = go.primary,
+                trackColor = go.surfaceHi,
+            )
+            VS(4)
+            Txt(
+                "${Noti.size(d.done)} / ${Noti.size(d.size)} · ${d.percent}%",
+                12, color = go.muted, tnum = true,
+            )
+        } else {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                color = go.primary,
+                trackColor = go.surfaceHi,
+            )
+            VS(4)
+            Txt("${Noti.size(d.done)} 已下载", 12, color = go.muted, tnum = true)
+        }
+        VS(8)
     }
 }
 

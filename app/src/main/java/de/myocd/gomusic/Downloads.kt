@@ -83,7 +83,12 @@ object LocalLib {
     }
 
     /** 下载一首歌：音频 + 封面 + 歌词 + 歌曲信息（meta.json），返回记录 */
-    fun download(ctx: Context, song: Song, quality: String): DownloadRecord {
+    fun download(
+        ctx: Context,
+        song: Song,
+        quality: String,
+        onProgress: ((readBytes: Long, totalBytes: Long) -> Unit)? = null,
+    ): DownloadRecord {
         val d = try {
             Api.detail(song.ssid)
         } catch (e: Exception) {
@@ -103,7 +108,7 @@ object LocalLib {
         // 1. 音频
         val (au, af) = openOut(ctx, AUDIO_DIR, "$base.$ext", "audio/$ext")
         val os = stream(ctx, au, af) ?: throw java.io.IOException("无法写入下载目录")
-        os.use { Api.fetch(url, it) }
+        os.use { Api.fetch(url, it, onProgress) }
         finish(ctx, au)
         val audioRef = uriText(au, af)
 

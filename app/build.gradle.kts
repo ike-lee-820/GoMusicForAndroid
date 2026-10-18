@@ -30,15 +30,15 @@ android {
 
     signingConfigs {
         create("release") {
-            val storePath = secret("KEYSTORE_PATH")
-            val storePassword = secret("KEYSTORE_PASSWORD")
-            val keyAlias = secret("KEY_ALIAS")
-            val keyPassword = secret("KEY_PASSWORD")
-            if (storePath != null && storePassword != null && keyAlias != null && keyPassword != null) {
-                storeFile = rootProject.file(storePath)
-                storePassword = storePassword
-                keyAlias = keyAlias
-                keyPassword = keyPassword
+            val ksPath = secret("KEYSTORE_PATH")
+            val ksStorePass = secret("KEYSTORE_PASSWORD")
+            val ksAlias = secret("KEY_ALIAS")
+            val ksKeyPass = secret("KEY_PASSWORD")
+            if (ksPath != null && ksStorePass != null && ksAlias != null && ksKeyPass != null) {
+                storeFile = rootProject.file(ksPath)
+                storePassword = ksStorePass
+                keyAlias = ksAlias
+                keyPassword = ksKeyPass
             }
         }
     }

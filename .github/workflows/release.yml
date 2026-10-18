@@ -36,6 +36,12 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools
+        run: sdkmanager "build-tools;34.0.0" || true
+
       - name: Verify signature
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -43,20 +49,26 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          APKSIGNER=$(find "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::找不到 apksigner"
+            exit 1
+          fi
+          echo "apksigner: $APKSIGNER"
           echo "== keystore entry =="
           $JAVA_HOME/bin/keytool -list -v -keystore keystore/gomusic-release.jks \
             -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" | grep -E "Alias name|Valid from|SHA256:"
           echo "== apk signer =="
-          $JAVA_HOME/bin/apksigner verify --print-certs app/build/outputs/apk/release/*.apk
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/*.apk
           echo "== compare =="
           KS_FP=$($JAVA_HOME/bin/keytool -list -v -keystore keystore/gomusic-release.jks \
             -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" \
             | grep "SHA256:" | awk '{print $2}' | tr -d ':' | tr 'A-Z' 'a-z')
-          APK_FP=$($JAVA_HOME/bin/apksigner verify --print-certs app/build/outputs/apk/release/*.apk \
+          APK_FP=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/*.apk \
             | grep -i "SHA-256 digest" | awk '{print $3}' | tr -d ':' | tr 'A-Z' 'a-z')
           echo "keystore: $KS_FP"
           echo "apk     : $APK_FP"
-          if [ "$KS_FP" != "$APK_FP" ]; then
+          if [ -z "$KS_FP" ] || [ -z "$APK_FP" ] || [ "$KS_FP" != "$APK_FP" ]; then
             echo "::error::APK 签名与固定 keystore 不一致，正式版构建失败"
             exit 1
           fi

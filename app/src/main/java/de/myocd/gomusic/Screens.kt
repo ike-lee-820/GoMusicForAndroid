@@ -136,7 +136,8 @@ fun MainScreen(vm: MainViewModel) {
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                 Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
-                    HomeContent(vm, listStates)
+                    // 进入二级页时不再组合主页长列表：省掉整屏重组，打开歌单/专辑更快
+                    if (top == null) HomeContent(vm, listStates)
                     AnimatedContent(
                         targetState = top,
                         modifier = Modifier.fillMaxSize(),
@@ -317,7 +318,7 @@ fun OfflineBar(vm: MainViewModel) {
 @Composable
 fun SongsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
-    val ranked = remember(vm.songs, vm.tab) { vm.rank(vm.songs) }
+    val ranked = vm.rankedSongs
     val list = remember(ranked, q) {
         if (q.isEmpty()) ranked
         else ranked.filter { it.title.contains(q, true) || it.artist.contains(q, true) }
@@ -339,8 +340,8 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
 @Composable
 fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
-    val groups = remember(vm.songs, q) {
-        vm.albums(vm.songs).filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+    val groups = remember(vm.albumGroupList, q) {
+        vm.albumGroupList.filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
     }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         itemsIndexed(groups, key = { _, g -> g.artist to g.album }, contentType = { _, _ -> "album" }) { _, g ->
@@ -356,8 +357,8 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
 @Composable
 fun ArtistsTab(vm: MainViewModel) {
     val q = vm.query.trim()
-    val groups = remember(vm.songs, vm.artistInfo, q) {
-        vm.artistGroups(vm.songs).filter { q.isEmpty() || it.title.contains(q, true) }
+    val groups = remember(vm.artistGroupList, q) {
+        vm.artistGroupList.filter { q.isEmpty() || it.title.contains(q, true) }
     }
     val cols = if (LocalConfiguration.current.screenWidthDp >= 768) 4 else 2
     LazyVerticalGrid(
@@ -409,7 +410,7 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
             }
         }
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
-            val songs = vm.songsByIds(p.songs)
+            val songs = remember(p.songs, vm.songs) { vm.songsByIds(p.songs) }
             var menu by remember { mutableStateOf(false) }
             GroupRow(
                 p.name, "${songs.size} 首", p.cover ?: songs.firstNotNullOfOrNull { it.coverUrl },
@@ -597,7 +598,8 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
         LaunchedEffect(Unit) { if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex) }
         return
     }
-    val songs = vm.songsByIds(p.songs)
+    val songs = remember(p.songs, vm.songs) { vm.songsByIds(p.songs) }
+    val rs = rememberReorderState()
     Column(Modifier.fillMaxSize()) {
         TopBar(vm) {
             IconBtn(Icons.Outlined.Edit, "重命名歌单") { renaming = true }
@@ -614,26 +616,28 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                     }
                 }
             }
-            item {
-                ReorderList(songs, 64.dp, onMove = { f, t -> vm.movePl(p.id, f, t) }) { i, song, handle ->
-                    Row(
-                        Modifier.fillMaxSize().clickable { vm.playSongs(songs, i) }.padding(start = 4.dp, end = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(handle.size(40.dp), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Outlined.DragHandle, "拖动排序", tint = go.muted)
-                        }
-                        Cover(song.coverUrl, Modifier.size(48.dp), 8.dp, sizePx = 96)
-                        HS(12)
-                        Column(Modifier.weight(1f)) {
-                            Txt(
-                                song.title, 15, weight = FontWeight.Medium,
-                                color = if (song.ssid == vm.curSsid) go.primary else go.on, maxLines = 1,
-                            )
-                            Txt("${song.artist} · ${song.album}", 12, color = go.muted, maxLines = 1)
-                        }
-                        IconBtn(Icons.Outlined.Close, "从歌单移除") { vm.removeFromPl(p.id, song.ssid) }
+            reorderItems(
+                rs, songs, 64.dp,
+                onMove = { f, t -> vm.movePl(p.id, f, t) },
+                key = { _, song -> song.ssid },
+            ) { i, song, handle ->
+                Row(
+                    Modifier.fillMaxSize().clickable { vm.playSongs(songs, i) }.padding(start = 4.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(handle.size(40.dp), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Outlined.DragHandle, "拖动排序", tint = go.muted)
                     }
+                    Cover(song.coverUrl, Modifier.size(48.dp), 8.dp, sizePx = 96)
+                    HS(12)
+                    Column(Modifier.weight(1f)) {
+                        Txt(
+                            song.title, 15, weight = FontWeight.Medium,
+                            color = if (song.ssid == vm.curSsid) go.primary else go.on, maxLines = 1,
+                        )
+                        Txt("${song.artist} · ${song.album}", 12, color = go.muted, maxLines = 1)
+                    }
+                    IconBtn(Icons.Outlined.Close, "从歌单移除") { vm.removeFromPl(p.id, song.ssid) }
                 }
             }
         }
@@ -883,9 +887,20 @@ fun LyricsPage(vm: MainViewModel) {
 fun QueueSheet(vm: MainViewModel) {
     val go = LocalGo.current
     GoSheet({ vm.showQueue = false }) {
+        val st = rememberLazyListState()
+        val rs = rememberReorderState()
+        // 打开播放列表时自动定位到当前播放的歌曲
+        LaunchedEffect(Unit) {
+            val i = vm.curIndex
+            if (i > 0) st.scrollToItem((i - 1).coerceAtLeast(0))
+        }
         Txt("播放列表（${vm.queue.size}）", 16, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), FontWeight.SemiBold)
-        Column(Modifier.verticalScroll(rememberScrollState())) {
-            ReorderList(vm.queue, 64.dp, onMove = { f, t -> vm.moveQueue(f, t) }) { i, e, handle ->
+        LazyColumn(state = st, contentPadding = PaddingValues(bottom = 8.dp)) {
+            reorderItems(
+                rs, vm.queue, 64.dp,
+                onMove = { f, t -> vm.moveQueue(f, t) },
+                key = { _, e -> e.ssid },
+            ) { i, e, handle ->
                 val cur = i == vm.curIndex
                 Row(
                     Modifier.fillMaxSize().clickable { vm.playIndex(i) }.padding(start = 4.dp, end = 8.dp),
@@ -924,7 +939,7 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
                 Txt("新建歌单", 15, color = go.primary, weight = FontWeight.Medium)
             }
             vm.playlists.forEach { p ->
-                val songs = vm.songsByIds(p.songs)
+                val songs = remember(p.songs, vm.songs) { vm.songsByIds(p.songs) }
                 GroupRow(
                     p.name, "${songs.size} 首", p.cover ?: songs.firstNotNullOfOrNull { it.coverUrl },
                     onClick = { vm.addToPlaylist(p.id, req.ssids); close() },
@@ -969,6 +984,31 @@ fun SettingsSheet(vm: MainViewModel) {
                 )
                 GoButton("重试", primary = vm.offline) { vm.reconnect() }
             }
+            VS(16)
+
+            // ---------- 后台播放 ----------
+            Txt("后台播放", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Txt("其他应用播放声音或来电时，本应用是否暂停", 12, color = go.muted)
+            VS(8)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    FOCUS_NORMAL to "允许被打断",
+                    FOCUS_CALL_ONLY to "仅通话暂停",
+                    FOCUS_ALWAYS to "始终播放",
+                ).forEach { (m, label) ->
+                    GoButton(label, primary = vm.playFocus == m) { vm.updateFocus(m) }
+                }
+            }
+            VS(8)
+            Txt(
+                when (vm.playFocus) {
+                    FOCUS_CALL_ONLY -> "其他应用播放声音不会打断，仅来电/通话时暂停，挂断后自动继续"
+                    FOCUS_ALWAYS -> "不被任何应用打断，来电仍会继续播放"
+                    else -> "其他应用播放声音或来电时自动暂停（系统默认行为）"
+                },
+                12, color = go.muted,
+            )
             VS(16)
 
             // ---------- 主题色 ----------

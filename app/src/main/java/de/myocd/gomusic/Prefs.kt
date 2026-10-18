@@ -4,6 +4,11 @@ import android.content.Context
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
+/** 后台播放被打断的策略 */
+const val FOCUS_NORMAL = 0   // 默认：可被任何应用打断（系统标准音频焦点）
+const val FOCUS_CALL_ONLY = 1 // 除电话外不会被打断
+const val FOCUS_ALWAYS = 2    // 不被任何应用打断，强行播放
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -28,6 +33,11 @@ class Prefs(ctx: Context) {
             json.decodeFromString<List<Playlist>>(sp.getString("user_playlists", "[]")!!)
         }.getOrDefault(emptyList())
         set(v) { sp.edit().putString("user_playlists", json.encodeToString(v)).apply() }
+
+    /** [FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
+    var playFocus: Int
+        get() = sp.getInt("play_focus", FOCUS_NORMAL)
+        set(v) { sp.edit().putInt("play_focus", v).apply() }
 
     /** 0 列表循环 1 随机 2 单曲循环 */
     var playMode: Int

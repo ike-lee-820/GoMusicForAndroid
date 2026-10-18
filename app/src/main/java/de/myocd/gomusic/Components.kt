@@ -96,6 +96,8 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlin.math.roundToInt
@@ -565,5 +567,55 @@ fun <T> ReorderList(
                     .background(if (dragIdx == i) go.surfaceHi else Color.Transparent)
             ) { row(i, item, handle) }
         }
+    }
+}
+
+/** 拖动排序状态：跨重组保留当前拖动项 */
+class ReorderState {
+    var dragIdx by mutableIntStateOf(-1)
+    var dy by mutableFloatStateOf(0f)
+}
+
+@Composable
+fun rememberReorderState(): ReorderState = remember { ReorderState() }
+
+/**
+ * 惰性版拖动排序：只组合可见行，用于歌单页 / 播放队列等可能很长的列表。
+ * 用法与 [ReorderList] 一致，但要在 LazyColumn 的 content 里调用。
+ */
+fun <T> LazyListScope.reorderItems(
+    state: ReorderState,
+    items: List<T>,
+    rowHeight: Dp,
+    onMove: (from: Int, to: Int) -> Unit,
+    key: ((index: Int, item: T) -> Any)? = null,
+    row: @Composable (index: Int, item: T, handle: Modifier) -> Unit,
+) {
+    itemsIndexed(items, key = key, contentType = { _, _ -> "reorder" }) { i, item ->
+        val go = LocalGo.current
+        val rowPx = with(LocalDensity.current) { rowHeight.toPx() }
+        val handle = Modifier.pointerInput(i) {
+            detectDragGestures(
+                onDragStart = { state.dragIdx = i; state.dy = 0f },
+                onDragEnd = {
+                    if (state.dragIdx >= 0) {
+                        val to = (state.dragIdx + (state.dy / rowPx).roundToInt()).coerceIn(0, items.lastIndex)
+                        if (to != state.dragIdx) onMove(state.dragIdx, to)
+                    }
+                    state.dragIdx = -1
+                    state.dy = 0f
+                },
+                onDragCancel = { state.dragIdx = -1; state.dy = 0f },
+            ) { change, amount ->
+                change.consume()
+                state.dy += amount.y
+            }
+        }
+        Box(
+            Modifier.fillMaxWidth().height(rowHeight)
+                .zIndex(if (state.dragIdx == i) 1f else 0f)
+                .graphicsLayer { translationY = if (state.dragIdx == i) state.dy else 0f }
+                .background(if (state.dragIdx == i) go.surfaceHi else Color.Transparent)
+        ) { row(i, item, handle) }
     }
 }

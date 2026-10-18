@@ -1,9 +1,11 @@
 package de.myocd.gomusic
 
+import android.Manifest
 import android.app.Application
-import android.app.DownloadManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.os.Environment
@@ -82,6 +84,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ---------- 设置 ----------
     var quality by mutableStateOf(prefs.quality); private set
     var playMode by mutableIntStateOf(prefs.playMode); private set
+    /** 后台播放被打断的策略：[FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
+    var playFocus by mutableIntStateOf(prefs.playFocus); private set
+    /** 「仅通话暂停」需要电话权限，由 Activity 监听并发起授权 */
+    var needPhonePerm by mutableStateOf(false); private set
+
+    /** 由界面调用：取出一次待处理的权限请求 */
+    fun consumePhonePerm(): Boolean {
+        if (!needPhonePerm) return false
+        needPhonePerm = false
+        return true
+    }
     var speed by mutableFloatStateOf(1f); private set
     var fixedTheme by mutableStateOf(prefs.themeColor?.let { Color(it) }); private set
     var coverColor by mutableStateOf<Color?>(null); private set
@@ -121,6 +134,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private var pendingLink: Uri? = null
     private var afterConnect: (() -> Unit)? = null
     private var toastJob: Job? = null
+    private var pendingFocus: Int? = null
 
     // ================= 加载 =================
     /** 把异常翻译成人能看懂的提示 */
@@ -177,10 +191,49 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun reconnect() = load()
 
     // ================= 列表派生 =================
+    // 排行结果缓存：只在歌曲列表本身变化时重算，
+    // 这样退出二级页回到歌曲页不会重新洗牌，顺序保持稳定
+    private var rankedInput: List<Song>? = null
+    private var rankedCache: List<Song> = emptyList()
+    val rankedSongs: List<Song>
+        get() {
+            val s = songs
+            if (rankedInput !== s) {
+                rankedCache = rank(s)
+                rankedInput = s
+            }
+            return rankedCache
+        }
+
     fun rank(l: List<Song>): List<Song> {
         val c = counts
         return l.shuffled().sortedByDescending { c[it.ssid] ?: 0 } // 稳定排序：并列项保持随机顺序
     }
+
+    // 分组结果同样缓存，搜索时只做过滤，不再重新分组
+    private var albumsInput: List<Song>? = null
+    private var albumsCache: List<Group> = emptyList()
+    val albumGroupList: List<Group>
+        get() {
+            val s = songs
+            if (albumsInput !== s) { albumsCache = albums(s); albumsInput = s }
+            return albumsCache
+        }
+
+    private var artistsInput: List<Song>? = null
+    private var artistsInfo: Map<String, ArtistInfo>? = null
+    private var artistsCache: List<Group> = emptyList()
+    val artistGroupList: List<Group>
+        get() {
+            val s = songs
+            val ai = artistInfo
+            if (artistsInput !== s || artistsInfo !== ai) {
+                artistsCache = artistGroups(s)
+                artistsInput = s
+                artistsInfo = ai
+            }
+            return artistsCache
+        }
 
     fun albums(l: List<Song>): List<Group> =
         l.groupBy { it.artist to it.album }.map { (k, v) ->
@@ -279,6 +332,40 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             0 -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = false }
             1 -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = true }
             else -> { c.repeatMode = Player.REPEAT_MODE_ONE; c.shuffleModeEnabled = false }
+        }
+    }
+
+    // ================= 后台播放 =================
+    fun updateFocus(m: Int) {
+        if (m == FOCUS_CALL_ONLY && ContextCompat.checkSelfPermission(app, Manifest.permission.READ_PHONE_STATE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingFocus = m
+            needPhonePerm = true
+            return
+        }
+        applyFocus(m)
+    }
+
+    private fun applyFocus(m: Int) {
+        playFocus = m
+        prefs.playFocus = m
+        // 通知播放服务重新设置音频焦点策略（同一进程内 startService 即可）
+        runCatching {
+            app.startService(Intent(app, PlaybackService::class.java).setAction(PlaybackService.ACTION_APPLY_FOCUS))
+        }
+    }
+
+    fun onPhonePermissionResult(granted: Boolean) {
+        val m = pendingFocus
+        pendingFocus = null
+        if (m == null) return
+        if (granted) {
+            applyFocus(m)
+        } else {
+            // 没有电话权限就检测不到通话，按「始终播放」处理
+            applyFocus(FOCUS_ALWAYS)
+            toast("未授予电话权限，已设为始终播放")
         }
     }
 

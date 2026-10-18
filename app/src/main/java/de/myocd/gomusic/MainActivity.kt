@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -18,6 +19,10 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
     private val storagePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val phonePermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            vm.onPhonePermissionResult(granted)
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,6 +35,10 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < 29) storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         if (savedInstanceState == null) vm.handleLink(intent?.data)
         setContent {
+            // 「仅通话暂停」需要电话状态权限，由设置面板触发
+            LaunchedEffect(vm.needPhonePerm) {
+                if (vm.consumePhonePerm()) phonePermission.launch(Manifest.permission.READ_PHONE_STATE)
+            }
             GoTheme(vm.primary) { MainScreen(vm) }
         }
     }

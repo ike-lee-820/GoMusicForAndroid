@@ -1,9 +1,20 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
+
+// 正式版签名：优先读环境变量（CI 用 GitHub Secrets 注入），本地可选 keystore.properties
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
+fun secret(name: String, fallback: String? = null): String? =
+    (System.getenv(name) ?: keystoreProps.getProperty(name))?.takeIf { it.isNotBlank() } ?: fallback
 
 android {
     namespace = "de.myocd.gomusic"
@@ -17,11 +28,30 @@ android {
         versionName = "1.0.0"
     }
 
+    signingConfigs {
+        create("release") {
+            val storePath = secret("KEYSTORE_PATH")
+            val storePassword = secret("KEYSTORE_PASSWORD")
+            val keyAlias = secret("KEY_ALIAS")
+            val keyPassword = secret("KEY_PASSWORD")
+            if (storePath != null && storePassword != null && keyAlias != null && keyPassword != null) {
+                storeFile = rootProject.file(storePath)
+                storePassword = storePassword
+                keyAlias = keyAlias
+                keyPassword = keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            // 个人使用：release 也用 debug 签名，保证 APK 可直接安装
-            signingConfig = signingConfigs.getByName("debug")
+            // 正式版用固定签名；缺少密钥时回退到 debug 签名，保证本地/CI 都不会构建失败
+            signingConfig = if (signingConfigs.findByName("release")?.storeFile != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {

@@ -148,6 +148,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 m.contains("timeout", true) -> "连接服务器超时（网络不稳定），已进入离线模式"
             m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true) -> "无法解析服务器地址，已进入离线模式"
             m.contains("Failed to connect", true) || m.contains("ECONNREFUSED", true) -> "无法连接服务器，已进入离线模式"
+            m.contains("SocketTimeout", true) || m.contains("timed out", true) -> "连接服务器超时，已进入离线模式"
             m.startsWith("HTTP ") -> "服务器返回 $m"
             else -> "加载失败：$m"
         }
@@ -157,19 +158,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loading = true
             error = null
-            var attempt = 0
             var ok = false
-            // 首次进入（WiFi 刚连上）多试一次，避免瞬间抖动直接报失败
-            while (attempt < 2 && !ok) {
-                attempt++
-                try {
-                    val s = withContext(Dispatchers.IO) { Api.songs() }
-                    songs = s
-                    ok = true
-                } catch (e: Exception) {
-                    error = netMsg(e)
-                    if (attempt < 2) delay(800)
-                }
+            // 只尝试一次：失败立即进入离线模式，不重试、不退避等待
+            try {
+                songs = withContext(Dispatchers.IO) { Api.songs(quick = true) }
+                ok = true
+            } catch (e: Exception) {
+                error = netMsg(e)
             }
             if (ok) {
                 offline = false

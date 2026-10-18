@@ -75,6 +75,18 @@ object Api {
         .dns(ipv4First)
         .build()
 
+    /**
+     * 连通性探测用：短超时 + 不重试。
+     * 用来快速判断「服务器到底连不连得上」，失败立刻进离线模式，不让用户干等。
+     */
+    private val probeClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
+        .dns(ipv4First)
+        .build()
+
     private val detailCache = ConcurrentHashMap<String, SongDetail>()
 
     /** 音质从高到低的已知排序，未知键排在最后 */
@@ -89,13 +101,13 @@ object Api {
     }
 
     /** 网络抖动（尤其 WiFi 刚连上、IPv6 不通）时重试，避免一上来就报加载失败 */
-    private fun get(path: String, tries: Int = 3): String {
+    private fun get(path: String, tries: Int = 3, http: OkHttpClient = client): String {
         var last: Exception? = null
         repeat(tries) { i ->
             try {
                 // Connection: close —— 禁用 keep-alive 复用，规避被中途断开的 "connection abort"
                 val req = Request.Builder().url(BASE + path).header("Connection", "close").build()
-                client.newCall(req).execute().use { r ->
+                http.newCall(req).execute().use { r ->
                     if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
                     return r.body!!.string()
                 }
@@ -128,7 +140,14 @@ object Api {
         null
     }
 
-    fun songs(): List<Song> = json.decodeFromString<List<Song>>(get("/api/songs"))
+    /**
+     * [quick] = true 时用短超时客户端、只请求一次：
+     * 一次失败就立刻判定为离线，不再重试等待。
+     */
+    fun songs(quick: Boolean = true): List<Song> = json.decodeFromString<List<Song>>(
+        if (quick) get("/api/songs", tries = 1, http = probeClient)
+        else get("/api/songs")
+    )
 
     fun artists(): Map<String, ArtistInfo> =
         json.decodeFromString<Map<String, ArtistInfo>>(get("/api/artists"))

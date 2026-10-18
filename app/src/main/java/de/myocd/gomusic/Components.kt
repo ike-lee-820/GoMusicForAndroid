@@ -199,11 +199,11 @@ fun Cover(
     val ctx = LocalContext.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)
     val model = remember(url) { imageModel(url) }
-    val req = remember(model, sizePx, url) {
-        model?.let {
-            val b = ImageRequest.Builder(ctx).data(it).size(sizePx).crossfade(false)
-            // 统一用原始 url 作为内存缓存键（data: URI 默认按 byte[] 身份哈希，命中不了缓存）
-            if (url != null) b.memoryCacheKey(url)
+    val req = remember(url, sizePx, model) {
+        if (model == null) null else {
+            val b = ImageRequest.Builder(ctx).data(model).size(sizePx).crossfade(false)
+            // 只有 data: URI 需要显式短键；http/本地文件交给 Coil 自己生成键
+            coverMemoryKey(url, sizePx)?.let { b.memoryCacheKey(it) }
             b.build()
         }
     }
@@ -229,8 +229,14 @@ fun IconBtn(
     onClick: () -> Unit,
 ) {
     val hit = if (size < 40.dp) 40.dp else size
+    // 直接在这里做按压缩放：列表里每行都有按钮，用 Modifier.composed 会明显拖慢组合
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val s by animateFloatAsState(if (pressed) 0.96f else 1f, tween(120), label = "press")
     Box(
-        modifier.size(hit).clickScale(true, onClick),
+        modifier.size(hit)
+            .graphicsLayer { scaleX = s; scaleY = s }
+            .clickable(src, null, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.size(size).background(bg, CircleShape), contentAlignment = Alignment.Center) {
@@ -252,11 +258,15 @@ fun GoButton(
     val go = LocalGo.current
     val bg = if (primary) go.primary else go.surfaceHi
     val fg = if (primary) OnPrimary else go.on
+    val src = remember { MutableInteractionSource() }
+    val pressed by src.collectIsPressedAsState()
+    val s by animateFloatAsState(if (pressed && enabled) 0.96f else 1f, tween(120), label = "press")
     Row(
         modifier
             .alpha(if (enabled) 1f else 0.4f)
             .height(40.dp)
-            .clickScale(enabled && !loading, onClick)
+            .graphicsLayer { scaleX = s; scaleY = s }
+            .clickable(src, null, enabled = enabled && !loading, role = Role.Button, onClick = onClick)
             .clip(RoundedCornerShape(20.dp))
             .background(bg)
             .padding(horizontal = 16.dp),

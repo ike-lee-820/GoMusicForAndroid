@@ -211,6 +211,23 @@ fun lyricLines(t: String): List<LrcLine> {
 
 /** data: URI 解码结果缓存：byte[] 自身没有稳定的 hashCode，不缓存会每次重组都重新解码 */
 private val dataUriCache = ConcurrentHashMap<String, ByteArray>()
+/** data: URI -> 短整数编号，用来拼内存缓存键（直接用原始 URI 当键会有几十 KB，拖垮缓存查找） */
+private val dataUriIds = ConcurrentHashMap<String, Int>()
+private val dataUriSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+private fun dataUriId(u: String): Int = dataUriIds[u] ?: run {
+    val id = dataUriSeq.incrementAndGet()
+    dataUriIds[u] = id
+    id
+}
+
+/**
+ * 封面内存缓存键：只有 data: URI 需要（ByteArray 默认不进内存缓存，会反复解码位图）。
+ * 键里带上尺寸，避免列表小图被大图视图复用成模糊图（反之亦然）。
+ * 其余类型交给 Coil 自己按 URL + 尺寸生成键。
+ */
+fun coverMemoryKey(url: String?, sizePx: Int): String? =
+    if (url != null && url.startsWith("data:")) "du${dataUriId(url)}@$sizePx" else null
 
 /** 图片模型：data: URI 解码为字节，本地文件/Uri 直接加载，其余补全为绝对地址 */
 fun imageModel(u: String?): Any? {
@@ -221,7 +238,7 @@ fun imageModel(u: String?): Any? {
         if (i < 0) return null
         val bytes = runCatching { Base64.decode(u.substring(i + 7), Base64.DEFAULT) }.getOrNull()
             ?: return null
-        if (dataUriCache.size > 300) dataUriCache.clear()
+        if (dataUriCache.size > 300) { dataUriCache.clear(); dataUriIds.clear() }
         dataUriCache[u] = bytes
         return bytes
     }

@@ -60,7 +60,7 @@ jobs:
             -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" \
             | grep "SHA256:" | awk '{print $2}' | tr -d ':' | tr 'A-Z' 'a-z')
           APK_FP=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/*.apk \
-            | grep -i "SHA-256 digest" | awk '{print $3}' | tr -d ':' | tr 'A-Z' 'a-z')
+            | grep -i "SHA-256 digest" | head -1 | awk '{print $NF}' | tr -d ':' | tr 'A-Z' 'a-z')
           echo "keystore: $KS_FP"
           echo "apk     : $APK_FP"
           if [ -z "$KS_FP" ] || [ -z "$APK_FP" ] || [ "$KS_FP" != "$APK_FP" ]; then

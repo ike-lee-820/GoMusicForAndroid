@@ -108,7 +108,7 @@ object Api {
             } catch (e: Exception) {
                 last = e
                 if (i < tries - 1) {
-                    try { Thread.sleep(500L * (i + 1)) } catch (_: InterruptedException) {}
+                    runCatching { Thread.sleep(500L * (i + 1)) }
                 }
             }
         }

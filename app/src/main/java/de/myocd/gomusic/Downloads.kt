@@ -171,16 +171,17 @@ object LocalLib {
             ?.audio?.takeIf { it.isNotBlank() }
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
-    /** 读取本地歌词文本 */
+    /** 读取本地歌词 / 信息文本 */
     fun readText(ctx: Context, ref: String): String {
         if (ref.isBlank()) return ""
         return runCatching {
             val u = Uri.parse(ref)
-            if (u.scheme == "content" || u.scheme == "file") {
-                ctx.contentResolver.openInputStream(u)?.use { it.readBytes() }?.decodeToString()
+            val bytes = if (u.scheme == "content" || u.scheme == "file") {
+                ctx.contentResolver.openInputStream(u)?.use { it.readBytes() }
             } else {
-                u.path?.let { File(it).readText() }
-            } ?: ""
+                u.path?.let { File(it).takeIf { f -> f.exists() }?.readBytes() }
+            }
+            bytes?.decodeToString() ?: ""
         }.getOrDefault("")
     }
 

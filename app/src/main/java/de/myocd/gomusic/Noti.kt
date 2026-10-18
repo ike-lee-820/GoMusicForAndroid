@@ -5,7 +5,6 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import de.myocd.gomusic.R
 
 /** 下载进度/结果通知（权限未授予时静默失败，不影响下载） */
 class Noti(private val ctx: Context) {

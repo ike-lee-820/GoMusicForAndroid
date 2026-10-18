@@ -18,7 +18,23 @@ jobs:
         with:
           gradle-version: 8.10.2
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        id: build
+        continue-on-error: true
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+          exit ${PIPESTATUS[0]}
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: |
+          echo "=== last 200 lines ==="
+          tail -n 200 build.log
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: GoMusic-debug-apk

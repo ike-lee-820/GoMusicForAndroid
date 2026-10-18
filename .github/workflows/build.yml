@@ -39,7 +39,7 @@ jobs:
       - name: Fail if build failed
         if: steps.build.outcome == 'failure'
         run: |
-          grep -E "^e:|^w: .*error|error:" build.log | head -60
+          grep -E "^e:" build.log | head -40
           exit 1
       - uses: actions/upload-artifact@v4
         with:

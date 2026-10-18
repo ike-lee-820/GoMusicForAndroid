@@ -943,7 +943,6 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
 }
 
 @Composable
-@Composable
 fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
     var hex by remember { mutableStateOf("") }

@@ -1247,7 +1247,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(8)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
-                    .clickable { vm.setFloatOn(!vm.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                    .clickable { vm.chooseFloatOn(!vm.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
@@ -1259,7 +1259,7 @@ fun SettingsSheet(vm: MainViewModel) {
                 }
                 Switch(
                     checked = vm.floatOn,
-                    onCheckedChange = { vm.setFloatOn(it) },
+                    onCheckedChange = { vm.chooseFloatOn(it) },
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = OnPrimary,
                         checkedTrackColor = go.primary,

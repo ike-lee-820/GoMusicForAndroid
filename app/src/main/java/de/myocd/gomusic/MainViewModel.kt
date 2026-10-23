@@ -356,7 +356,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setFloatOn(on: Boolean) {
+    fun chooseFloatOn(on: Boolean) {
         if (on && !canOverlay(app)) {
             needOverlayPerm = true
             return

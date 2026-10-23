@@ -108,6 +108,43 @@ object NmLog {
         os.flush()
     }
 
+    /**
+     * 安装全局崩溃捕获：闪退原因写进日志文件，方便定位。
+     * 装完仍会走系统默认处理（App 会退出），只多写一份栈到日志。
+     */
+    fun installCrashHandler(ctx: Context) {
+        val old = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                init(ctx)
+                w(buildString {
+                    append("\n[崩溃] ${now()}\n")
+                    append("  线程：${t.name}\n")
+                    append("  异常：${e.javaClass.name}: ${e.message}\n")
+                    append("  栈：\n")
+                    e.stackTrace.take(30).forEach { append("    at $it\n") }
+                    append("  原因：\n")
+                    var c: Throwable? = e.cause
+                    var n = 0
+                    while (c != null && n < 5) {
+                        append("    ${c.javaClass.name}: ${c.message}\n")
+                        c.stackTrace.take(10).forEach { append("      at $it\n") }
+                        c = c.cause
+                        n++
+                    }
+                    append("\n")
+                })
+            }
+            old?.uncaughtException(t, e)
+        }
+    }
+
+    /** 记录一次非致命异常（调用方自己 catch 到的） */
+    fun caught(where: String, e: Throwable) {
+        w("[捕获] ${now()}  $where\n  ${e.javaClass.name}: ${e.message}\n")
+        w("  " + e.stackTrace.take(12).joinToString("\n  ") { "at $it" } + "\n\n")
+    }
+
     /** 记录一次请求（含完整 URL；cookie 打码） */
     fun req(url: String) {
         w("[请求] ${now()}\n  URL: ${mask(url)}\n")
@@ -126,6 +163,20 @@ object NmLog {
     /** 记录一行说明（用在关键分支上，便于定位走了哪条路） */
     fun note(s: String) {
         w("[说明] ${now()}  $s\n")
+    }
+
+    /** 崩溃：写完整堆栈，用于定位闪退原因 */
+    fun crash(t: Throwable, where: String = "") {
+        val sw = java.io.StringWriter()
+        t.printStackTrace(java.io.PrintWriter(sw))
+        w(buildString {
+            append("\n[崩溃] ${now()}")
+            if (where.isNotBlank()) append("  位置：$where")
+            append("\n")
+            append("  ${t.javaClass.name}: ${t.message}\n")
+            append(sw.toString())
+            append("\n")
+        })
     }
 
     private fun now(): String =

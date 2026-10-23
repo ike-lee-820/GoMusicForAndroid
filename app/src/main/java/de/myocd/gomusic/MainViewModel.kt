@@ -83,12 +83,15 @@ data class DlStatus(
 /** 网易云搜索每次请求的条数（翻页步长） */
 const val NM_PAGE_SIZE = 20
 
+/** 歌曲快照上限：历史与界面随时能查到，但不让 Prefs 无限膨胀 */
+const val MAX_SNAPSHOTS = 3000
+
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
 
     // ---------- 界面状态 ----------
     /** 当前标签：0 歌曲 1 专辑 2 歌手 3 歌单 */
-    var tab by mutableIntStateOf(0); private set
+    var tab by mutableIntStateOf(TAB_HOME); private set
     /** 二级页面栈 */
     val stack = mutableStateListOf<Screen>()
     var query by mutableStateOf("")
@@ -172,15 +175,48 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var nmPageLoading by mutableStateOf(false); private set
     /** 播放历史（最近在前） */
     var history by mutableStateOf(prefs.history); private set
+    /** 歌曲信息快照（含网易云），保证历史随时能显示歌名 */
+    var snapshots by mutableStateOf(prefs.songSnapshots); private set
+
     val historySongs: List<Song> by derivedStateOf {
         val m = songMap
         val nm = nmSongs.associateBy { it.ssid }
+        // nmKnown 是累积的网易云歌曲：切界面后 nmSongs 会被清空，
+        // 只查 nmSongs 会让历史里的网易云歌曲查不到 —— 之前就是这样丢的
+        val known = nmKnown.toMap()
+        val sn = snapshots
         val dl = downloads.associateBy { it.ssid }
         history.mapNotNull { id: String ->
-            val s: Song? = m[id] ?: nm[id] ?: dl[id]?.let {
+            val s: Song? = m[id] ?: nm[id] ?: known[id] ?: sn[id] ?: dl[id]?.let {
                 Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
             }
             s
+        }
+    }
+
+    /** 记录歌曲快照：播放 / 搜索命中时调用，让历史与界面随时能查到 */
+    fun rememberSongs(list: List<Song>) {
+        if (list.isEmpty()) return
+        val cur = LinkedHashMap(snapshots)
+        var changed = false
+        for (s in list) {
+            if (s.title.isBlank()) continue
+            val old = cur[s.ssid]
+            // 有更完整信息（有封面 / 有专辑）就覆盖
+            if (old == null || (old.coverUrl.isNullOrBlank() && !s.coverUrl.isNullOrBlank())) {
+                cur.remove(s.ssid) // 重新插到末尾，保持「最近」顺序
+                cur[s.ssid] = s
+                changed = true
+            }
+        }
+        if (changed) {
+            // 限制容量，避免 Prefs 无限增长
+            while (cur.size > MAX_SNAPSHOTS) {
+                val first = cur.keys.firstOrNull() ?: break
+                cur.remove(first)
+            }
+            snapshots = cur
+            prefs.songSnapshots = cur
         }
     }
     private var nmJob: Job? = null
@@ -291,7 +327,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
     private val nmKnown = java.util.concurrent.ConcurrentHashMap<String, Song>()
     private fun keepNetease(l: List<Song>) {
-        l.forEach { if (it.source == SRC_NETEASE) nmKnown[it.ssid] = it }
+        val nm = l.filter { it.source == SRC_NETEASE }
+        if (nm.isEmpty()) return
+        nm.forEach { nmKnown[it.ssid] = it }
+        // 同时落一份快照（持久化），这样切界面 / 重启后历史仍能查到
+        rememberSongs(nm)
     }
     val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] ?: nmKnown[it] } }
     val lyricIndex: Int by derivedStateOf {
@@ -461,6 +501,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun searchNetease(q: String) {
         nmJob?.cancel()
         val kw = q.trim()
+        NmLog.note("searchNetease 调用：kw=$kw nmReady=$nmReady")
         nmKeyword = kw
         nmOffset = 0
         nmHasMore = false
@@ -485,6 +526,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val ar = artistsDeferred.await()
                 if (!nmReady) return@launch
                 keepNetease(s)
+                rememberSongs(s)
                 // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
                 val c = counts
                 nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
@@ -492,6 +534,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 nmArtists = ar
                 nmOffset = NM_PAGE_SIZE
                 nmHasMore = s.size >= NM_PAGE_SIZE
+                NmLog.note("搜索完成：歌曲 ${s.size} / 专辑 ${a.size} / 歌手 ${ar.size}")
             } catch (e: Throwable) {
                 // 切界面导致的取消属于正常行为，不提示、不报错
                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -525,6 +568,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val ar = dAr.await()
                 if (kw != nmKeyword || !nmReady) return@launch
                 keepNetease(s)
+                rememberSongs(s)
                 // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突
                 val seen = nmSongs.map { it.ssid }.toHashSet()
                 nmSongs = nmSongs + s.filter { it.ssid !in seen }
@@ -647,6 +691,64 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 历史页开关 */
     var showHistory by mutableStateOf(false)
+
+    // ================= 首页 =================
+    /** 每日推荐（需要登录） */
+    var homeRecommend by mutableStateOf<List<Song>>(emptyList()); private set
+    /** 新歌速递 */
+    var homeNewSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    /** 热搜词 */
+    var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
+    var homeLoading by mutableStateOf(false); private set
+    /** 新歌速递地区：0 全部 / 7 华语 / 96 欧美 / 8 日本 / 16 韩国 */
+    var newSongType by mutableIntStateOf(0); private set
+
+    private var homeJob: Job? = null
+
+    /** 加载首页数据：每日推荐 + 新歌速递 + 热搜，三路并行 */
+    fun loadHome() {
+        homeJob?.cancel()
+        if (!nmReady) {
+            homeRecommend = emptyList()
+            homeNewSongs = emptyList()
+            homeHotWords = emptyList()
+            homeLoading = false
+            return
+        }
+        homeLoading = true
+        homeJob = viewModelScope.launch {
+            try {
+                val dR = async(Dispatchers.IO) { Netease.recommendSongs() }
+                val dN = async(Dispatchers.IO) { Netease.topSongs(newSongType) }
+                val dH = async(Dispatchers.IO) { Netease.hotSearch() }
+                val r = dR.await()
+                val n = dN.await()
+                val h = dH.await()
+                keepNetease(r + n)
+                homeRecommend = r
+                homeNewSongs = n
+                homeHotWords = h
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadHome", e)
+            } finally {
+                homeLoading = false
+            }
+        }
+    }
+
+    /** 切换新歌速递地区 */
+    fun setNewSongType(t: Int) {
+        if (newSongType == t) return
+        newSongType = t
+        loadHome()
+    }
+
+    /** 点热搜词：填入搜索框并回到歌曲页 */
+    fun searchHotWord(w: String) {
+        query = w
+        chooseTab(TAB_SONGS)
+    }
 
     // ================= 列表派生 =================
     // 排行结果缓存：只在歌曲列表本身变化时重算，
@@ -890,6 +992,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             counts = m
             prefs.playCounts = m
             pushHistory(id) // 本站与网易云统一记录
+            rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
         }
         updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
         // 网易云歌曲：歌词走网易云接口，优先级高于本站
@@ -908,6 +1011,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         // 用详情里的完整信息刷新列表里的这一首
                         nmSongs = nmSongs.map { if (it.ssid == id) d else it }
                         updateCover(d.coverUrl)
+                        // 记进快照（会持久化），保证历史里始终能查到这首
+                        rememberSongs(listOf(d))
                     }
                 }
                 var t = ""

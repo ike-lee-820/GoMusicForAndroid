@@ -132,7 +132,8 @@ fun shareText(ctx: Context, text: String) {
 fun MainScreen(vm: MainViewModel) {
     val go = LocalGo.current
     val listStates = listOf(
-        rememberLazyListState(), rememberLazyListState(), rememberLazyListState(), rememberLazyListState()
+        rememberLazyListState(), rememberLazyListState(), rememberLazyListState(),
+        rememberLazyListState(), rememberLazyListState()
     )
     val top = vm.stack.lastOrNull()
 
@@ -205,20 +206,23 @@ fun MainScreen(vm: MainViewModel) {
 @Composable
 fun NavBar(vm: MainViewModel) {
     val go = LocalGo.current
+    // 顺序：歌曲 / 专辑 / 首页 / 歌手 / 歌单 —— 首页在正中间
     val tabs = listOf(
-        "歌曲" to Icons.Outlined.MusicNote,
-        "专辑" to Icons.Outlined.Album,
-        "歌手" to Icons.Outlined.Person,
-        "歌单" to Icons.Outlined.LibraryMusic,
+        TAB_SONGS to ("歌曲" to Icons.Outlined.MusicNote),
+        TAB_ALBUMS to ("专辑" to Icons.Outlined.Album),
+        TAB_HOME to ("首页" to Icons.AutoMirrored.Outlined.LibraryMusic),
+        TAB_ARTISTS to ("歌手" to Icons.Outlined.Person),
+        TAB_PLAYLISTS to ("歌单" to Icons.Outlined.LibraryMusic),
     )
     Column(Modifier.background(go.surface).navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().height(56.dp)) {
-            tabs.forEachIndexed { i, (label, icon) ->
-                val sel = vm.tab == i && vm.stack.isEmpty()
+            tabs.forEach { (t, pair) ->
+                val (label, icon) = pair
+                val sel = vm.tab == t && vm.stack.isEmpty()
                 Column(
                     Modifier.weight(1f).fillMaxHeight().clickable {
                         vm.stack.clear()
-                        vm.chooseTab(i)
+                        vm.chooseTab(t)
                         vm.query = ""
                     },
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -264,7 +268,7 @@ fun MiniPlayer(vm: MainViewModel) {
 fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
     val go = LocalGo.current
     val titles = listOf("歌曲", "专辑", "歌手", "歌单")
-    val hints = listOf("搜索歌名或歌手", "搜索专辑名或歌手", "搜索歌手", "搜索歌单")
+    val hints = listOf("搜索歌名或歌手", "搜索专辑名或歌手", "搜索歌名或歌手", "搜索歌手", "搜索歌单")
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -272,7 +276,13 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                 IconBtn(Icons.Outlined.Settings, "设置", size = 44.dp) { vm.showSettings = true }
             }
             VS(8)
-            SearchField(vm.query, { vm.query = it }, hints[vm.tab])
+            SearchField(
+                vm.query, { vm.query = it }, hints[vm.tab],
+                onSearch = {
+                    if (vm.tab == TAB_HOME) vm.searchHotWord(vm.query.trim())
+                    else vm.searchNetease(vm.query.trim())
+                },
+            )
             VS(8)
             if (vm.offline) OfflineBar(vm)
             DownloadBar(vm)
@@ -302,9 +312,10 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                     GoButton("重试", primary = true) { vm.reconnect() }
                 }
             else -> when (vm.tab) {
-                0 -> SongsTab(vm, listStates[0])
-                1 -> AlbumsTab(vm, listStates[1])
-                2 -> ArtistsTab(vm)
+                TAB_SONGS -> SongsTab(vm, listStates[0])
+                TAB_ALBUMS -> AlbumsTab(vm, listStates[1])
+                TAB_HOME -> HomeTab(vm)
+                TAB_ARTISTS -> ArtistsTab(vm)
                 else -> PlaylistsTab(vm, listStates[3])
             }
         }
@@ -365,6 +376,156 @@ fun OfflineBar(vm: MainViewModel) {
         GoButton("重试", primary = true) { vm.reconnect() }
     }
     VS(8)
+}
+
+/**
+ * 首页：每日推荐 / 新歌速递 / 历史记录 / 热搜歌曲。
+ * 排版与歌曲页顶部的历史栏一致（横向卡片行）。
+ */
+@Composable
+fun HomeTab(vm: MainViewModel) {
+    val go = LocalGo.current
+    LaunchedEffect(vm.nmReady) { vm.loadHome() }
+    val rec = vm.homeRecommend
+    val news = vm.homeNewSongs
+    val hots = vm.homeHotWords
+    val his = vm.historySongs
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        if (!vm.nmReady) {
+            item {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Txt("首页需要接入网易云曲库", 14, weight = FontWeight.SemiBold)
+                    VS(4)
+                    Txt(
+                        "在「设置」里开启「接入网易云曲库」并登录后，这里会显示每日推荐、新歌速递与热搜",
+                        12, color = go.muted,
+                    )
+                    VS(10)
+                    GoButton("去设置", primary = true) { vm.showSettings = true }
+                }
+            }
+        }
+        if (vm.homeLoading) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        color = go.primary, modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载首页", 12, color = go.muted)
+                }
+            }
+        }
+        if (rec.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("每日推荐", "播放全部") { vm.playSongs(rec, 0) }
+                    HomeSongRow(rec.take(20), vm)
+                }
+            }
+        }
+        if (news.isNotEmpty()) {
+            item { NewSongSection(vm, news) }
+        }
+        if (his.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("历史记录", "全部") { vm.showHistory = true }
+                    HomeSongRow(his.take(20), vm)
+                }
+            }
+        }
+        if (hots.isNotEmpty()) {
+            item { HotSection(vm, hots) }
+        }
+    }
+}
+
+/** 首页区块标题：左边标题，右边可选的操作文字 */
+@Composable
+private fun HomeHeader(title: String, action: String? = null, onAction: () -> Unit = {}) {
+    val go = LocalGo.current
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Txt(title, 15, Modifier.weight(1f), FontWeight.SemiBold)
+        if (action != null) {
+            Txt(action, 12, Modifier.clickable(onClick = onAction), color = go.primary)
+            HS(12)
+        }
+    }
+}
+
+/** 横向歌曲卡片行，与历史栏排版一致 */
+@Composable
+private fun HomeSongRow(list: List<Song>, vm: MainViewModel) {
+    val go = LocalGo.current
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(list, key = { it.ssid }) { s ->
+            Column(Modifier.width(84.dp).clickable { vm.playSongs(list, list.indexOf(s)) }) {
+                CoverWithSource(s.coverUrl, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, source = s.source)
+                VS(6)
+                Txt(titleWithSource(s.title, s.source), 12, maxLines = 1)
+                Txt(s.artist, 11, color = go.muted, maxLines = 1)
+            }
+        }
+    }
+    VS(14)
+}
+
+/** 新歌速递：可切换地区（全部 / 华语 / 欧美 / 日本 / 韩国） */
+@Composable
+private fun NewSongSection(vm: MainViewModel, list: List<Song>) {
+    val go = LocalGo.current
+    val types = listOf("全部" to 0, "华语" to 7, "欧美" to 96, "日本" to 8, "韩国" to 16)
+    Column(Modifier.fillMaxWidth()) {
+        HomeHeader("新歌速递")
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            types.forEach { (n, t) ->
+                val sel = vm.newSongType == t
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(if (sel) go.primary else go.surfaceHi)
+                        .clickable { vm.setNewSongType(t) }
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                ) { Txt(n, 12, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
+            }
+        }
+        VS(8)
+        HomeSongRow(list.take(20), vm)
+    }
+}
+
+/** 热搜歌曲：点一下填入搜索框并回到歌曲页 */
+@Composable
+private fun HotSection(vm: MainViewModel, words: List<String>) {
+    val go = LocalGo.current
+    Column(Modifier.fillMaxWidth()) {
+        HomeHeader("热搜歌曲")
+        FlowRow(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            words.take(20).forEach { w ->
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(go.surfaceHi)
+                        .clickable { vm.searchHotWord(w) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                ) { Txt(w, 12, color = go.on) }
+            }
+        }
+        VS(14)
+    }
 }
 
 @Composable
@@ -1104,6 +1265,13 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
         }
     }
 }
+
+/** 底部标签编号：首页放正中间 */
+const val TAB_SONGS = 0
+const val TAB_ALBUMS = 1
+const val TAB_HOME = 2
+const val TAB_ARTISTS = 3
+const val TAB_PLAYLISTS = 4
 
 /** 网易云请求日志的存放路径，设置里显示，方便用户取日志 */
 fun nmLogPath(): String = NmLog.path()

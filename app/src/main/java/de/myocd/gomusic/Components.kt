@@ -77,6 +77,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardActions
+import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -300,6 +303,8 @@ fun SearchField(
     placeholder: String,
     modifier: Modifier = Modifier,
     showIcon: Boolean = true,
+    /** 回车 / 搜索键：立即发起搜索，不用等防抖 */
+    onSearch: (() -> Unit)? = null,
 ) {
     val go = LocalGo.current
     var focused by remember { mutableStateOf(false) }
@@ -310,6 +315,8 @@ fun SearchField(
         singleLine = true,
         textStyle = TextStyle(color = go.on, fontSize = 15.sp),
         cursorBrush = SolidColor(go.primary),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSearch?.invoke() }),
         modifier = modifier.fillMaxWidth().height(44.dp).onFocusChanged { focused = it.isFocused },
         decorationBox = { inner ->
             Row(

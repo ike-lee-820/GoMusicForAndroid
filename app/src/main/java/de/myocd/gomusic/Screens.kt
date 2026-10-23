@@ -210,7 +210,7 @@ fun NavBar(vm: MainViewModel) {
     val tabs = listOf(
         TAB_SONGS to ("歌曲" to Icons.Outlined.MusicNote),
         TAB_ALBUMS to ("专辑" to Icons.Outlined.Album),
-        TAB_HOME to ("首页" to Icons.AutoMirrored.Outlined.LibraryMusic),
+        TAB_HOME to ("首页" to Icons.Outlined.Home),
         TAB_ARTISTS to ("歌手" to Icons.Outlined.Person),
         TAB_PLAYLISTS to ("歌单" to Icons.Outlined.LibraryMusic),
     )

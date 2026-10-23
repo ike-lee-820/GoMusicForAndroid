@@ -12,6 +12,9 @@ const val FOCUS_ALWAYS = 2    // 不被任何应用打断，强行播放
 /** 播放历史上限 */
 const val MAX_HISTORY = 10000
 
+/** 歌曲信息快照上限（历史里要能显示歌名/歌手） */
+const val MAX_SNAPSHOTS = 2000
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -36,6 +39,23 @@ class Prefs(ctx: Context) {
             json.decodeFromString<List<Playlist>>(sp.getString("user_playlists", "[]")!!)
         }.getOrDefault(emptyList())
         set(v) { sp.edit().putString("user_playlists", json.encodeToString(v)).apply() }
+
+    /**
+     * 歌曲信息快照：ssid -> Song。
+     * 历史记录里存的是 ssid，网易云歌曲只在搜索结果里存在，
+     * 换关键词或清空搜索后就查不到了 —— 存快照保证历史随时能显示。
+     */
+    var songSnapshots: Map<String, Song>
+        get() = runCatching {
+            json.decodeFromString<Map<String, Song>>(sp.getString("song_snapshots", "{}")!!)
+        }.getOrDefault(emptyMap())
+        set(v) {
+            // 只保留最近 MAX_SNAPSHOTS 条，避免越积越大
+            val trimmed = if (v.size > MAX_SNAPSHOTS) {
+                v.entries.sortedByDescending { it.value.title }.take(MAX_SNAPSHOTS).associate { it.key to it.value }
+            } else v
+            sp.edit().putString("song_snapshots", json.encodeToString(trimmed)).apply()
+        }
 
     /** [FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
     var playFocus: Int

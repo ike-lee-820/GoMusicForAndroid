@@ -453,6 +453,63 @@ object Netease {
         return enrich(arr.mapNotNull(::toSong))
     }
 
+    // ================= 首页 =================
+
+    /** 每日推荐歌曲（需要登录） */
+    fun recommendSongs(refresh: Boolean = false): List<Song> {
+        val r = get(
+            "/recommend/songs/v1",
+            *buildList {
+                if (refresh) add("ispush" to "true")
+            }.toTypedArray(),
+        )
+        val arr = (r.obj("data")?.get("dailySongs") as? JsonElement)?.jsonArray
+            ?: (r["data"] as? JsonElement)?.jsonArray
+            ?: resultArray(r, "dailySongs")
+        if (arr.isEmpty()) NmLog.note("每日推荐无数据 code=${r.code()}")
+        val list = arr.mapNotNull(::toSong)
+        NmLog.note("每日推荐 ${list.size} 首")
+        return enrich(list)
+    }
+
+    /** 新歌速递：type 0 全部 / 7 华语 / 96 欧美 / 8 日本 / 16 韩国 */
+    fun topSongs(type: Int = 0): List<Song> {
+        val r = get("/top/song", "type" to type.toString())
+        val arr = (r["data"] as? JsonElement)?.jsonArray ?: resultArray(r, "data")
+        if (arr.isEmpty()) NmLog.note("新歌速递无数据 code=${r.code()}")
+        val list = arr.mapNotNull(::toSong)
+        NmLog.note("新歌速递 ${list.size} 首")
+        return enrich(list)
+    }
+
+    /** 热搜列表（简略）：返回搜索词 */
+    fun hotSearch(): List<String> {
+        val r = get("/search/hot")
+        val arr = ((r.obj("result")?.get("hots") as? JsonElement)?.jsonArray)
+            ?: ((r["hots"] as? JsonElement)?.jsonArray)
+            ?: ((r["data"] as? JsonElement)?.jsonArray)
+            ?: emptyList()
+        val out = arr.mapNotNull { o ->
+            (o as? JsonObject)?.str("first", "searchWord", "name")
+        }
+        if (out.isEmpty()) NmLog.note("热搜无数据 code=${r.code()}")
+        return out
+    }
+
+    /** 热搜列表（详细）：带分数与热度的完整结构，取不到时退回简略版 */
+    fun hotSearchDetail(): List<Pair<String, Int>> {
+        val r = get("/search/hot/detail")
+        val arr = ((r["data"] as? JsonElement)?.jsonArray) ?: emptyList()
+        val out = arr.mapNotNull { o ->
+            val j = o as? JsonObject ?: return@mapNotNull null
+            val w = j.str("searchWord", "name") ?: return@mapNotNull null
+            val score = ((j["score"] as? JsonPrimitive)?.content?.toIntOrNull()) ?: 0
+            w to score
+        }
+        if (out.isEmpty()) NmLog.note("热搜详情无数据，退回简略版")
+        return out.ifEmpty { hotSearch().map { it to 0 } }
+    }
+
     // ================= 登录 =================
 
     /** 第一步：取二维码 key */

@@ -44,6 +44,8 @@ sealed interface Screen {
     data class Album(val artist: String, val album: String) : Screen
     data class Artist(val name: String) : Screen
     data class PlaylistPage(val id: String) : Screen
+    /** 网易云专辑 / 歌手里的歌曲列表 */
+    data class NmSongs(val kind: String, val id: Long, val title: String, val cover: String?) : Screen
 }
 
 data class Group(
@@ -53,6 +55,11 @@ data class Group(
     val songs: List<Song>,
     val artist: String = "",
     val album: String = "",
+    /** 曲库来源：[SRC_LOCAL] / [SRC_NETEASE] */
+    val source: String = SRC_LOCAL,
+    val nmId: Long = 0,
+    /** 网易云专辑 / 歌手，用于取歌曲列表 */
+    val nmKind: String = "",
 )
 
 data class PickRequest(val ssids: List<String>, val name: String, val cover: String?)
@@ -127,6 +134,121 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var pickReq by mutableStateOf<PickRequest?>(null)
     var toastMsg by mutableStateOf<String?>(null); private set
 
+    // ---------- 网易云曲库 ----------
+    /** 是否在设置里开启「接入网易云曲库」 */
+    var nmOn by mutableStateOf(prefs.nmEnabled); private set
+    /** 网易云账号昵称，空 = 未登录（未登录时不使用网易云搜索） */
+    var nmUser by mutableStateOf(prefs.nmAccount.ifBlank { null }); private set
+    /** 是否已登录并可用 */
+    val nmReady: Boolean get() = nmOn && !nmUser.isNullOrBlank() && Netease.cookie.isNotBlank()
+    var nmSearching by mutableStateOf(false); private set
+    var nmSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    var nmAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    var nmArtists by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 网易云专辑 / 歌手点进去后的歌曲页 */
+    var nmPage by mutableStateOf<Group?>(null); private set
+    var nmPageSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    var nmPageLoading by mutableStateOf(false); private set
+    /** 网易云登录弹层 */
+    var showNmLogin by mutableStateOf(false); private set
+    /** 播放历史（最近在前） */
+    var history by mutableStateOf(prefs.history); private set
+    val historySongs: List<Song> by derivedStateOf {
+        val m = songMap
+        val nm = nmSongs.associateBy { it.ssid }
+        val dl = downloads.associateBy { it.ssid }
+        history.mapNotNull { id ->
+            m[id] ?: nm[id] ?: dl[id]?.let {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+        }
+    }
+    private var nmJob: Job? = null
+    private var qrJob: Job? = null
+    /** 二维码登录：二维码图片（data: URI）与提示文案 */
+    var nmQr by mutableStateOf<String?>(null); private set
+    var nmQrTip by mutableStateOf("正在获取二维码"); private set
+    var nmBusy by mutableStateOf(false); private set
+
+    fun startQrLogin() {
+        qrJob?.cancel()
+        nmQr = null
+        nmQrTip = "正在获取二维码"
+        qrJob = viewModelScope.launch(Dispatchers.IO) {
+            val key = runCatching { Netease.qrKey() }.getOrNull()
+            if (key.isNullOrBlank()) {
+                withContext(Dispatchers.Main) { nmQrTip = "获取二维码失败，请检查网络" }
+                return@launch
+            }
+            val img = runCatching { Netease.qrImage(key) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                nmQr = img
+                nmQrTip = if (img == null) "获取二维码失败" else "用网易云音乐 App 扫码"
+            }
+            if (img == null) return@launch
+            while (true) {
+                delay(1500)
+                val st = runCatching { Netease.qrCheck(key) }.getOrNull() ?: continue
+                when (st.code) {
+                    803 -> {
+                        withContext(Dispatchers.Main) {
+                            nmLogin(st.cookie ?: "", null)
+                            nmQr = null
+                        }
+                        return@launch
+                    }
+                    800 -> {
+                        withContext(Dispatchers.Main) { nmQrTip = "二维码已过期，点此重新获取" }
+                        return@launch
+                    }
+                    802 -> withContext(Dispatchers.Main) { nmQrTip = "已扫码，请在手机上确认" }
+                    801 -> withContext(Dispatchers.Main) { nmQrTip = "用网易云音乐 App 扫码" }
+                }
+            }
+        }
+    }
+
+    fun stopQrLogin() {
+        qrJob?.cancel()
+        nmQr = null
+    }
+
+    /** 发送短信验证码 */
+    fun nmSendCode(phone: String) {
+        if (phone.isBlank()) { toast("请填写手机号"); return }
+        nmBusy = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.sendCaptcha(phone) }.getOrDefault(false)
+            withContext(Dispatchers.Main) {
+                nmBusy = false
+                toast(if (ok) "验证码已发送" else "发送失败，请稍后再试")
+            }
+        }
+    }
+
+    /** 验证码登录；填了昵称则走注册 */
+    fun nmLoginPhone(phone: String, code: String, password: String, nickname: String) {
+        if (phone.isBlank() || code.isBlank()) { toast("请填写手机号与验证码"); return }
+        nmBusy = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.verifyCaptcha(phone, code) }.getOrDefault(false)
+            if (!ok) {
+                withContext(Dispatchers.Main) { nmBusy = false; toast("验证码校验失败") }
+                return@launch
+            }
+            val cookie = if (nickname.isBlank()) {
+                runCatching { Netease.loginByCaptcha(phone, code) }.getOrNull()
+            } else {
+                runCatching { Netease.register(phone, password, code, nickname) }.getOrNull()
+            }
+            withContext(Dispatchers.Main) {
+                nmBusy = false
+                if (cookie.isNullOrBlank()) toast("登录失败，请检查验证码")
+                else nmLogin(cookie, null)
+            }
+        }
+    }
+
     // ---------- 播放状态 ----------
     var controller: MediaController? = null
         private set
@@ -139,7 +261,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var lyric by mutableStateOf<List<LrcLine>>(emptyList()); private set
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
 
-    val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] } }
+    /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
+    private val nmKnown = java.util.concurrent.ConcurrentHashMap<String, Song>()
+    private fun keepNetease(l: List<Song>) {
+        l.forEach { if (it.source == SRC_NETEASE) nmKnown[it.ssid] = it }
+    }
+    val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] ?: nmKnown[it] } }
     val lyricIndex: Int by derivedStateOf {
         if (lyric.isEmpty() || lyric[0].timeMs < 0) -1
         else lyric.indexOfLast { it.timeMs <= positionMs }
@@ -203,6 +330,157 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 设置里手动重连 */
     fun reconnect() = load()
+
+    // ================= 网易云曲库 =================
+    init { Netease.cookie = prefs.nmCookie }
+
+    fun setNmEnabled(on: Boolean) {
+        nmOn = on
+        prefs.nmEnabled = on
+        Netease.cookie = prefs.nmCookie
+        if (!on) {
+            nmSongs = emptyList()
+            nmAlbums = emptyList()
+            nmArtists = emptyList()
+        } else if (nmUser.isNullOrBlank()) {
+            showNmLogin = true
+        } else {
+            refreshNmAccount()
+        }
+    }
+
+    /** 打开/关闭登录弹层 */
+    fun setNmLogin(v: Boolean) { showNmLogin = v }
+
+    /** 登录成功：保存 cookie 与昵称 */
+    fun nmLogin(cookie: String, name: String?) {
+        prefs.nmCookie = cookie
+        Netease.cookie = cookie
+        showNmLogin = false
+        viewModelScope.launch(Dispatchers.IO) {
+            val n = name?.takeIf { it.isNotBlank() }
+                ?: runCatching { Netease.accountName() }.getOrNull()
+                ?: "网易云用户"
+            prefs.nmAccount = n
+            withContext(Dispatchers.Main) {
+                nmUser = n
+                toast("已登录网易云：$n")
+            }
+        }
+    }
+
+    fun nmLogout() {
+        prefs.nmCookie = ""
+        prefs.nmAccount = ""
+        Netease.cookie = ""
+        nmUser = null
+        nmSongs = emptyList()
+        nmAlbums = emptyList()
+        nmArtists = emptyList()
+        toast("已退出网易云")
+    }
+
+    /** 校验登录态，失效则清空 */
+    fun refreshNmAccount() {
+        if (!nmOn) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.loggedIn() }.getOrDefault(false)
+            val name = if (ok) prefs.nmAccount.takeIf { it.isNotBlank() }
+                ?: runCatching { Netease.accountName() }.getOrNull() else null
+            withContext(Dispatchers.Main) {
+                if (!ok || name.isNullOrBlank()) {
+                    prefs.nmCookie = ""
+                    prefs.nmAccount = ""
+                    Netease.cookie = ""
+                    nmUser = null
+                } else {
+                    prefs.nmAccount = name
+                    nmUser = name
+                }
+            }
+        }
+    }
+
+    /** 搜索网易云（防抖）。未开启或未登录时直接清空，不发请求 */
+    fun searchNetease(q: String) {
+        nmJob?.cancel()
+        val kw = q.trim()
+        if (!nmReady || kw.isEmpty()) {
+            nmSearching = false
+            nmSongs = emptyList()
+            nmAlbums = emptyList()
+            nmArtists = emptyList()
+            return
+        }
+        nmJob = viewModelScope.launch {
+            delay(400)
+            nmSearching = true
+            val s = withContext(Dispatchers.IO) { runCatching { Netease.searchSongs(kw) }.getOrDefault(emptyList()) }
+            val a = withContext(Dispatchers.IO) { runCatching { Netease.searchAlbums(kw) }.getOrDefault(emptyList()) }
+            val ar = withContext(Dispatchers.IO) { runCatching { Netease.searchArtists(kw) }.getOrDefault(emptyList()) }
+            if (!nmReady) return@launch
+            keepNetease(s)
+            // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
+            val c = counts
+            nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
+            nmAlbums = a
+            nmArtists = ar
+            nmSearching = false
+        }
+    }
+
+    /**
+     * 两套曲库不合并（不做去重/混排成一套）：
+     * - 原站结果少于 8 条：先全部原站，再全部网易云
+     * - 否则每 2 条原站后面插入 1 条网易云
+     */
+    fun <T> mix(local: List<T>, nm: List<T>): List<T> {
+        if (nm.isEmpty()) return local
+        if (local.isEmpty()) return nm
+        if (local.size < 8) return local + nm
+        val out = ArrayList<T>(local.size + nm.size)
+        var i = 0
+        var j = 0
+        while (i < local.size || j < nm.size) {
+            repeat(2) { if (i < local.size) out.add(local[i++]) }
+            if (j < nm.size) out.add(nm[j++])
+        }
+        return out
+    }
+
+    /** 打开网易云专辑 / 歌手的歌曲列表 */
+    fun openNmGroup(g: Group) {
+        stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover))
+        nmPage = g
+        nmPageSongs = emptyList()
+        nmPageLoading = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val l = runCatching { Netease.songsOf(g.nmKind, g.nmId) }.getOrDefault(emptyList())
+            keepNetease(l)
+            withContext(Dispatchers.Main) {
+                nmPageSongs = l
+                nmPageLoading = false
+            }
+        }
+    }
+
+    /** 离开网易云歌曲页时清理状态（返回由 TopBar 统一出栈） */
+    fun clearNmPage() {
+        nmPage = null
+        nmPageSongs = emptyList()
+        nmPageLoading = false
+    }
+
+    fun pushHistory(ssid: String) {
+        val l = (listOf(ssid) + history.filter { it != ssid }).take(40)
+        history = l
+        prefs.history = l
+    }
+
+    fun clearHistory() {
+        history = emptyList()
+        prefs.history = emptyList()
+    }
 
     // ================= 列表派生 =================
     // 排行结果缓存：只在歌曲列表本身变化时重算，
@@ -303,6 +581,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun playSongs(list: List<Song>, index: Int) {
         if (list.isEmpty()) return
+        keepNetease(list)
         val c = controller
         if (c == null) {
             afterConnect = { playSongs(list, index) }
@@ -444,8 +723,25 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             m[id] = (m[id] ?: 0) + 1
             counts = m
             prefs.playCounts = m
+            pushHistory(id) // 本站与网易云统一记录
         }
-        updateCover(songMap[id]?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        // 网易云歌曲：歌词走网易云接口，优先级高于本站
+        if (isNetease(id)) {
+            if (count) pushHistory(id)
+            val nid = neteaseIdOf(id)
+            viewModelScope.launch {
+                var t = ""
+                if (nid != null) {
+                    t = withContext(Dispatchers.IO) {
+                        runCatching { Netease.lyric(nid) }.getOrDefault("")
+                    }
+                }
+                if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
+                if (curSsid == id) lyric = lyricLines(t)
+            }
+            return
+        }
         // 离线模式：直接读本地歌词，绝不发网络请求
         // （否则会走 3 次重试 + 退避等待，歌词要十几秒才出来，还会拖住其他请求）
         if (offline) {

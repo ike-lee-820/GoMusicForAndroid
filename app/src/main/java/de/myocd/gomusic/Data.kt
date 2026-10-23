@@ -32,6 +32,10 @@ data class Song(
     val repoName: String? = null,
     val owner: String? = null,
     val locked: Boolean? = null,
+    /** 曲库来源：[SRC_LOCAL] 本站 / [SRC_NETEASE] 网易云 */
+    val source: String = SRC_LOCAL,
+    /** 网易云歌曲 id（source = [SRC_NETEASE] 时有效） */
+    val nmId: Long = 0,
 )
 
 @Serializable

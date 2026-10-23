@@ -57,6 +57,28 @@ class Prefs(ctx: Context) {
             e.apply()
         }
 
+    /** 是否接入网易云曲库，默认关闭 */
+    var nmEnabled: Boolean
+        get() = sp.getBoolean("nm_enabled", false)
+        set(v) { sp.edit().putBoolean("nm_enabled", v).apply() }
+
+    /** 网易云登录 cookie */
+    var nmCookie: String
+        get() = sp.getString("nm_cookie", "") ?: ""
+        set(v) { sp.edit().putString("nm_cookie", v).apply() }
+
+    /** 网易云账号昵称，空表示未登录 */
+    var nmAccount: String
+        get() = sp.getString("nm_account", "") ?: ""
+        set(v) { sp.edit().putString("nm_account", v).apply() }
+
+    /** 播放历史（最近在前），同时记录本站与网易云 */
+    var history: List<String>
+        get() = runCatching {
+            json.decodeFromString<List<String>>(sp.getString("history", "[]")!!)
+        }.getOrDefault(emptyList())
+        set(v) { sp.edit().putString("history", json.encodeToString(v.take(40))).apply() }
+
     /** 已下载歌曲索引（离线模式的数据来源） */
     var downloads: List<DownloadRecord>
         get() = runCatching {

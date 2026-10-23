@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -84,6 +85,8 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -157,6 +160,7 @@ fun MainScreen(vm: MainViewModel) {
                                     is Screen.Album -> AlbumPage(vm, s)
                                     is Screen.Artist -> ArtistPage(vm, s)
                                     is Screen.PlaylistPage -> PlaylistPage(vm, s)
+                                    is Screen.NmSongs -> NmSongsPage(vm, s)
                                 }
                             }
                         } else {
@@ -188,6 +192,7 @@ fun MainScreen(vm: MainViewModel) {
 
         if (vm.showQueue) QueueSheet(vm)
         if (vm.showSettings) SettingsSheet(vm)
+        if (vm.showNmLogin) NmLoginSheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
     }
@@ -362,11 +367,34 @@ fun OfflineBar(vm: MainViewModel) {
 fun SongsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
     val ranked = vm.rankedSongs
-    val list = remember(ranked, q) {
+    val local = remember(ranked, q) {
         if (q.isEmpty()) ranked
         else ranked.filter { it.title.contains(q, true) || it.artist.contains(q, true) }
     }
+    // 两套曲库不合并（不去重），按规则交错展示
+    val list = remember(local, vm.nmSongs) { vm.mix(local, vm.nmSongs) }
+    LaunchedEffect(q, vm.nmReady) { vm.searchNetease(q) }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
+        // 顶部：播放历史（本站 + 网易云）
+        if (q.isEmpty() && vm.historySongs.isNotEmpty()) {
+            item { HistoryRow(vm) }
+        }
+        if (vm.nmSearching) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        color = LocalGo.current.primary,
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在搜索网易云曲库", 12, color = LocalGo.current.muted)
+                }
+            }
+        }
         itemsIndexed(list, key = { _, s -> s.ssid }, contentType = { _, _ -> "song" }) { i, s ->
             SongRow(
                 s, s.ssid == vm.curSsid, vm.isPlaying,
@@ -380,18 +408,60 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
     }
 }
 
+/** 歌曲栏顶部：最近播放（本站与网易云都记录） */
+@Composable
+fun HistoryRow(vm: MainViewModel) {
+    val go = LocalGo.current
+    val list = vm.historySongs
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Txt("历史", 15, Modifier.weight(1f), FontWeight.SemiBold)
+            Txt("清空", 12, Modifier.clickable { vm.clearHistory() }, color = go.primary)
+            HS(12)
+        }
+        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(list.take(20), key = { it.ssid }) { s ->
+                Column(
+                    Modifier.width(84.dp).clickable { vm.playSongs(list, list.indexOf(s)) },
+                ) {
+                    CoverWithSource(s.coverUrl, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, source = s.source)
+                    VS(6)
+                    Txt(s.title, 12, maxLines = 1)
+                    Txt(s.artist, 11, color = go.muted, maxLines = 1)
+                }
+            }
+        }
+        VS(10)
+    }
+}
+
 @Composable
 fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
-    val groups = remember(vm.albumGroupList, q) {
+    val local = remember(vm.albumGroupList, q) {
         vm.albumGroupList.filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
     }
+    val groups = remember(local, vm.nmAlbums) { vm.mix(local, vm.nmAlbums) }
+    LaunchedEffect(q, vm.nmReady) { vm.searchNetease(q) }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
-        itemsIndexed(groups, key = { _, g -> g.artist to g.album }, contentType = { _, _ -> "album" }) { _, g ->
+        itemsIndexed(
+            groups,
+            key = { _, g -> if (g.source == SRC_NETEASE) "nm${'$'}{g.nmId}" else g.artist to g.album },
+            contentType = { _, _ -> "album" },
+        ) { _, g ->
             GroupRow(
                 g.title, g.subtitle, g.cover,
-                onClick = { vm.stack.add(Screen.Album(g.artist, g.album)) },
-                onAdd = { vm.pick(g.songs.map { it.ssid }, g.title, g.cover) },
+                source = g.source,
+                onClick = {
+                    if (g.source == SRC_NETEASE) vm.openNmGroup(g)
+                    else vm.stack.add(Screen.Album(g.artist, g.album))
+                },
+                onAdd = if (g.songs.isEmpty()) null else {
+                    { vm.pick(g.songs.map { it.ssid }, g.title, g.cover) }
+                },
             )
         }
     }
@@ -400,9 +470,11 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
 @Composable
 fun ArtistsTab(vm: MainViewModel) {
     val q = vm.query.trim()
-    val groups = remember(vm.artistGroupList, q) {
+    val local = remember(vm.artistGroupList, q) {
         vm.artistGroupList.filter { q.isEmpty() || it.title.contains(q, true) }
     }
+    val groups = remember(local, vm.nmArtists) { vm.mix(local, vm.nmArtists) }
+    LaunchedEffect(q, vm.nmReady) { vm.searchNetease(q) }
     val cols = if (LocalConfiguration.current.screenWidthDp >= 768) 4 else 2
     LazyVerticalGrid(
         GridCells.Fixed(cols),
@@ -411,10 +483,18 @@ fun ArtistsTab(vm: MainViewModel) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(groups, key = { it.title }, contentType = { "artist" }) { g ->
+        items(
+            groups,
+            key = { if (it.source == SRC_NETEASE) "nm${'$'}{it.nmId}" else it.title },
+            contentType = { "artist" },
+        ) { g ->
             GroupCard(
                 g.title, g.subtitle, g.cover,
-                onClick = { vm.stack.add(Screen.Artist(g.artist)) },
+                source = g.source,
+                onClick = {
+                    if (g.source == SRC_NETEASE) vm.openNmGroup(g)
+                    else vm.stack.add(Screen.Artist(g.artist))
+                },
                 onAdd = { vm.pick(g.songs.map { it.ssid }, g.title, g.cover) },
             )
         }
@@ -1025,6 +1105,52 @@ fun SettingsSheet(vm: MainViewModel) {
                     13, Modifier.weight(1f), color = go.muted,
                 )
                 GoButton("重试", primary = vm.offline) { vm.reconnect() }
+            }
+            VS(16)
+
+            // ---------- 网易云曲库 ----------
+            Txt("网易云曲库", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
+                    .clickable { vm.setNmEnabled(!vm.nmOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("接入网易云曲库", 14, weight = FontWeight.Medium)
+                    Txt(
+                        if (!vm.nmOn) "关闭：仅使用本站曲库"
+                        else if (vm.nmUser.isNullOrBlank()) "已开启：需登录网易云账号后才会搜索网易云"
+                        else "已开启：${vm.nmUser}",
+                        12, color = go.muted,
+                    )
+                }
+                Switch(
+                    checked = vm.nmOn,
+                    onCheckedChange = { vm.setNmEnabled(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = go.onPrimary,
+                        checkedTrackColor = go.primary,
+                        uncheckedThumbColor = go.muted,
+                        uncheckedTrackColor = go.surfaceHi,
+                    ),
+                )
+            }
+            if (vm.nmOn) {
+                VS(8)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Txt(
+                        if (vm.nmUser.isNullOrBlank()) "未登录，网易云搜索不会启用" else "已登录：${vm.nmUser}",
+                        12, Modifier.weight(1f), color = go.muted,
+                    )
+                    if (vm.nmUser.isNullOrBlank()) {
+                        GoButton("登录 / 注册", primary = true) { vm.setNmLogin(true) }
+                    } else {
+                        GoButton("退出") { vm.nmLogout() }
+                    }
+                }
+                VS(6)
+                Txt("开启并登录后，搜索会同时展示两套曲库的结果（不合并），网易云结果带角标", 12, color = go.muted)
             }
             VS(16)
 

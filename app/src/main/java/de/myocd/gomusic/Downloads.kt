@@ -89,13 +89,20 @@ object LocalLib {
         quality: String,
         onProgress: ((readBytes: Long, totalBytes: Long) -> Unit)? = null,
     ): DownloadRecord {
-        val d = try {
+        // 网易云歌曲：地址与歌词都走网易云接口，其余（封面、信息文件）流程与本站一致
+        val nmId = neteaseIdOf(song.ssid)
+        val isNm = nmId != null
+        val d = if (isNm) {
+            SongDetail(song.ssid, runCatching { Netease.lyric(nmId!!) }.getOrDefault(""), song.coverUrl, emptyMap())
+        } else try {
             Api.detail(song.ssid)
         } catch (e: Exception) {
             // 离线也能补信息：用列表里已有的封面
             SongDetail(song.ssid, "", Api.abs(song.coverUrl), emptyMap())
         }
-        val url = if (d.audio.isEmpty()) {
+        val url = if (isNm) {
+            Netease.audioUrl(nmId!!, quality) ?: throw java.io.IOException("网易云没有可用音源")
+        } else if (d.audio.isEmpty()) {
             throw java.io.IOException("没有可用音频")
         } else {
             val key = d.audio.keys.minByOrNull { kotlin.math.abs(Api.rank(it) - Api.rank(quality)) }!!
@@ -123,7 +130,7 @@ object LocalLib {
 
         // 3. 歌词
         var lrc = d.lyrics
-        if (lrc.isBlank()) lrc = runCatching { Api.lyrics(song.ssid) }.getOrDefault("")
+        if (lrc.isBlank() && !isNm) lrc = runCatching { Api.lyrics(song.ssid) }.getOrDefault("")
         var lyricRef = ""
         if (lrc.isNotBlank()) {
             lyricRef = write(ctx, LYRIC_DIR, "$base.lrc", "application/octet-stream", lrc.toByteArray())

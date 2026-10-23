@@ -182,6 +182,35 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 // ---------- 图片 ----------
 
 @Composable
+/**
+ * 带来源角标的封面：网易云曲库的结果在封面右下角加一个「网易云」小标，
+ * 用来和本站曲库区分。角标是纯文字，不用图标。
+ */
+@Composable
+fun CoverWithSource(
+    cover: String?,
+    modifier: Modifier = Modifier,
+    radius: Dp = 8.dp,
+    circle: Boolean = false,
+    source: String = SRC_LOCAL,
+) {
+    val netease = source == SRC_NETEASE
+    Box(modifier) {
+        Cover(cover, Modifier.fillMaxSize(), radius, circle)
+        if (netease) {
+            val go = LocalGo.current
+            Box(
+                Modifier.align(Alignment.BottomEnd).padding(2.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(go.surfaceHi.copy(alpha = 0.92f))
+                    .padding(horizontal = 3.dp, vertical = 1.dp),
+            ) {
+                Txt("网易云", 8, color = go.on, maxLines = 1)
+            }
+        }
+    }
+}
+
 fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
     val go = LocalGo.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)
@@ -349,7 +378,7 @@ fun SongRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-            Cover(song.coverUrl, Modifier.fillMaxSize(), 8.dp)
+            CoverWithSource(song.coverUrl, Modifier.fillMaxSize(), 8.dp, source = song.source)
             if (current) {
                 Box(
                     Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp)),
@@ -380,12 +409,20 @@ fun SongRow(
 
 /** 专辑 / 歌单等「封面 + 标题 + 副标题 + 右侧加入歌单」的通用行 */
 @Composable
-fun GroupRow(title: String, subtitle: String, cover: String?, onClick: () -> Unit, onAdd: (() -> Unit)?, trailing: @Composable (() -> Unit)? = null) {
+fun GroupRow(
+    title: String,
+    subtitle: String,
+    cover: String?,
+    onClick: () -> Unit,
+    onAdd: (() -> Unit)?,
+    trailing: @Composable (() -> Unit)? = null,
+    source: String = SRC_LOCAL,
+) {
     Row(
         Modifier.fillMaxWidth().height(64.dp).clickable(onClick = onClick).padding(start = 16.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(cover, Modifier.size(48.dp), 8.dp)
+        CoverWithSource(cover, Modifier.size(48.dp), 8.dp, source = source)
         HS(12)
         Column(Modifier.weight(1f)) {
             Txt(title, 15, weight = FontWeight.Medium, maxLines = 1)
@@ -397,11 +434,19 @@ fun GroupRow(title: String, subtitle: String, cover: String?, onClick: () -> Uni
 }
 
 @Composable
-fun GroupCard(title: String, subtitle: String, cover: String?, onClick: () -> Unit, onAdd: () -> Unit, modifier: Modifier = Modifier) {
+fun GroupCard(
+    title: String,
+    subtitle: String,
+    cover: String?,
+    onClick: () -> Unit,
+    onAdd: () -> Unit,
+    modifier: Modifier = Modifier,
+    source: String = SRC_LOCAL,
+) {
     val go = LocalGo.current
     Column(modifier.clickable(onClick = onClick)) {
         Box(Modifier.fillMaxWidth()) {
-            Cover(cover, Modifier.fillMaxWidth().aspectRatio(1f), 16.dp)
+            CoverWithSource(cover, Modifier.fillMaxWidth().aspectRatio(1f), 16.dp, source = source)
             IconBtn(
                 Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
                 modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp),

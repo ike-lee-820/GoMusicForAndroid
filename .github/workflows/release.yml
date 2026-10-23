@@ -81,7 +81,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="v1.1.0"
+          # 版本号跟随 app/build.gradle.kts 里的 versionName
+          V=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          TAG="v${V:-1.2.0}"
+          echo "release tag = $TAG"
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           cp "$APK" "GoMusic-$TAG.apk"
           APK="GoMusic-$TAG.apk"

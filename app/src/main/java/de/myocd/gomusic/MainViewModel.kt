@@ -462,7 +462,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun pushHistory(ssid: String) {
-        val l = (listOf(ssid) + history.filter { it != ssid }).take(40)
+        val l = (listOf(ssid) + history.filter { it != ssid }).take(MAX_HISTORY)
         history = l
         prefs.history = l
     }

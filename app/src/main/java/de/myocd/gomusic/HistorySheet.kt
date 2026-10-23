@@ -2,7 +2,6 @@ package de.myocd.gomusic
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,16 +15,25 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+
+/** 每次多渲染多少条 */
+private const val HISTORY_PAGE = 200
+/** 首屏渲染条数 */
+private const val HISTORY_FIRST = 200
 
 /** 历史页：展示全部播放记录（本站 + 网易云），可单条删除或清空 */
 @Composable
@@ -51,11 +59,24 @@ fun HistorySheet(vm: MainViewModel) {
                     contentAlignment = Alignment.Center,
                 ) { Txt("还没有播放记录", 14, color = go.muted) }
             } else {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 8.dp),
-                ) {
-                    itemsIndexed(list, key = { _, s -> s.ssid }) { i, s ->
+                // 最多 10000 条：先渲染前 200 条，滚到底再继续，避免一次性组合卡顿
+                var visible by remember(list) { mutableIntStateOf(HISTORY_FIRST) }
+                val shown = list.take(visible)
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+                    item {
+                        Txt(
+                            "共 ${list.size} 条",
+                            12,
+                            Modifier.padding(start = 16.dp, bottom = 4.dp),
+                            color = go.muted,
+                        )
+                    }
+                    itemsIndexed(shown, key = { _, s -> s.ssid }) { i, s ->
+                        if (i >= shown.lastIndex && visible < list.size) {
+                            LaunchedEffect(visible) {
+                                visible = (visible + HISTORY_PAGE).coerceAtMost(list.size)
+                            }
+                        }
                         HistoryItem(
                             song = s,
                             index = i,

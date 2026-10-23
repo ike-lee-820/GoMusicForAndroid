@@ -9,6 +9,9 @@ const val FOCUS_NORMAL = 0   // 默认：可被任何应用打断（系统标准
 const val FOCUS_CALL_ONLY = 1 // 除电话外不会被打断
 const val FOCUS_ALWAYS = 2    // 不被任何应用打断，强行播放
 
+/** 播放历史上限 */
+const val MAX_HISTORY = 10000
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -72,12 +75,12 @@ class Prefs(ctx: Context) {
         get() = sp.getString("nm_account", "") ?: ""
         set(v) { sp.edit().putString("nm_account", v).apply() }
 
-    /** 播放历史（最近在前），同时记录本站与网易云 */
+    /** 播放历史（最近在前），同时记录本站与网易云，最多 [MAX_HISTORY] 条 */
     var history: List<String>
         get() = runCatching {
             json.decodeFromString<List<String>>(sp.getString("history", "[]")!!)
         }.getOrDefault(emptyList())
-        set(v) { sp.edit().putString("history", json.encodeToString(v.take(40))).apply() }
+        set(v) { sp.edit().putString("history", json.encodeToString(v.take(MAX_HISTORY))).apply() }
 
     /** 已下载歌曲索引（离线模式的数据来源） */
     var downloads: List<DownloadRecord>

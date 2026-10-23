@@ -496,7 +496,7 @@ private fun NewSongSection(vm: MainViewModel, list: List<Song>) {
                 val sel = vm.newSongType == t
                 Box(
                     Modifier.clip(RoundedCornerShape(50)).background(if (sel) go.primary else go.surfaceHi)
-                        .clickable { vm.setNewSongType(t) }
+                        .clickable { vm.chooseNewSongType(t) }
                         .padding(horizontal = 12.dp, vertical = 5.dp),
                 ) { Txt(n, 12, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
             }

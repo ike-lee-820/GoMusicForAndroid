@@ -729,7 +729,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 切换新歌速递地区 */
-    fun setNewSongType(t: Int) {
+    fun chooseNewSongType(t: Int) {
         if (newSongType == t) return
         newSongType = t
         loadHome()

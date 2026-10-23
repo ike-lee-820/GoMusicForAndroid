@@ -31,6 +31,15 @@ import java.io.IOException
  * 后台播放策略见 [applyFocus]：可被打断 / 仅通话暂停 / 始终播放。
  */
 @OptIn(UnstableApi::class)
+/** 网易云 CDN 校验来源，缺 Referer 会返回 403 */
+private val NM_HEADERS = mapOf(
+    "Referer" to "https://music.163.com/",
+    "User-Agent" to NM_UA,
+)
+
+private const val NM_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+
 class PlaybackService : MediaSessionService() {
     companion object {
         /** 设置里改了后台播放策略后，用它通知服务重新应用（服务读 Prefs） */
@@ -55,8 +64,8 @@ class PlaybackService : MediaSessionService() {
                     spec.withUri(local)
                 } else {
                     val p = Prefs(applicationContext)
+                    val nid = neteaseIdOf(ssid)
                     val url = try {
-                        val nid = neteaseIdOf(ssid)
                         if (nid != null && p.nmCookie.isNotBlank()) {
                             Netease.cookie = p.nmCookie
                             Netease.audioUrl(nid, p.quality)
@@ -67,11 +76,20 @@ class PlaybackService : MediaSessionService() {
                     } catch (e: Exception) {
                         throw IOException(e)
                     }
-                    spec.withUri(Uri.parse(url))
+                    val u = Uri.parse(url)
+                    // 网易云 CDN 校验 Referer / UA，缺了会返回 403
+                    // —— 这就是「拿到正确 url 却播不了」的常见原因
+                    val isNm = nid != null && p.nmCookie.isNotBlank()
+                    NmLog.note("解析到播放地址：$url（${if (isNm) "网易云" else "本站"}）")
+                    val base = spec.withUri(u)
+                    if (isNm) base.withRequestHeaders(NM_HEADERS) else base
                 }
             } else spec
         }
-        val http = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+        // 默认带上浏览器 UA：部分 CDN 会拒绝 ExoPlayer 默认的 UA
+        val http = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(mapOf("User-Agent" to NM_UA))
         // 用 DefaultDataSource 包一层，才能播放本地 content:// / file:// 的音频
         val dsFactory = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, http), resolver)
 

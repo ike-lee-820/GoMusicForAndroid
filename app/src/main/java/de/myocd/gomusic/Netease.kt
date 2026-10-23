@@ -78,6 +78,26 @@ object Netease {
     }
 
     private fun JsonObject.obj(k: String): JsonObject? = this[k] as? JsonObject
+
+    /**
+     * 递归找 cookie：不同接口返回的位置不一样（顶层 cookie / data.cookie / cookies），
+     * 找不到就返回空，避免漏掉登录态。
+     */
+    private fun findCookie(o: JsonObject): String? {
+        val direct = listOf("cookie", "cookies").firstNotNullOfOrNull { k ->
+            (o[k] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() && it.contains("=") }
+        }
+        if (direct != null) return direct
+        for ((_, v) in o) {
+            val r = when (v) {
+                is JsonObject -> findCookie(v)
+                is JsonElement -> (v as? JsonObject)?.let { findCookie(it) }
+                else -> null
+            }
+            if (r != null) return r
+        }
+        return null
+    }
     private fun JsonObject.code(): Int =
         (this["code"] as? JsonPrimitive)?.content?.toIntOrNull() ?: -1
 
@@ -227,7 +247,9 @@ object Netease {
     fun qrCheck(key: String): QrStatus {
         val r = runCatching { get("/login/qr/check", "key" to key) }.getOrNull()
             ?: return QrStatus(-1, null, "网络异常")
-        return QrStatus(r.code(), r.str("cookie"), r.str("message"))
+        val cookie = r.str("cookie")?.takeIf { it.contains("=") }
+            ?: findCookie(r)
+        return QrStatus(r.code(), cookie, r.str("message"))
     }
 
     /** 发送短信验证码 */
@@ -271,15 +293,17 @@ object Netease {
         val r = runCatching { get("/user/account") }.getOrNull() ?: return null
         if (r.code() != 200) return null
         val p = r.obj("profile")
-        return p?.str("nickname") ?: r.obj("account")?.str("userName")
+        return p?.str("nickname")
+            ?: r.obj("account")?.str("userName")
+            ?: p?.str("userId")
     }
 
-    /** 登录态是否有效 */
+    /** 登录态是否有效：只看账号信息是否存在，不强制要求 profile */
     fun loggedIn(): Boolean {
         if (cookie.isBlank()) return false
         val r = runCatching { get("/login/status") }.getOrNull() ?: return false
         val d = r.obj("data")
-        val code = d?.obj("account")?.let { 200 } ?: r.code()
-        return code == 200 && d?.obj("profile") != null
+        val account = d?.obj("account") ?: r.obj("account") ?: r.obj("profile")
+        return account != null
     }
 }

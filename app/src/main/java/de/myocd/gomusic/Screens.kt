@@ -136,9 +136,6 @@ fun MainScreen(vm: MainViewModel) {
     )
     val top = vm.stack.lastOrNull()
 
-    // 歌词或当前行变化时，把内容推给悬浮窗
-    LaunchedEffect(vm.lyric, vm.lyricIndex, vm.floatOn) { vm.pushFloatLyric() }
-
     BackHandler(enabled = vm.showLyrics) { vm.showLyrics = false }
     BackHandler(enabled = vm.showPlayer && !vm.showLyrics) { vm.showPlayer = false }
     BackHandler(enabled = !vm.showPlayer && vm.stack.isNotEmpty()) { vm.stack.removeAt(vm.stack.lastIndex) }
@@ -1086,32 +1083,6 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
     }
 }
 
-/** 悬浮歌词用的取色行 */
-@Composable
-fun FloatColorRow(current: Color, onPick: (Color) -> Unit) {
-    val presets = listOf(
-        0xFFFFFFFF, 0xFF000000, 0xFFD0BCFF, 0xFF64B5F6,
-        0xFF81C784, 0xFFFFF176, 0xFFFF8A80, 0xFFF48FB1,
-    ).map { Color(it) } + listOf(LocalGo.current.primary)
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        presets.forEach { c ->
-            val on = c == current
-            Box(
-                Modifier.size(30.dp).clip(CircleShape).background(c)
-                    .clickable { onPick(c) },
-                contentAlignment = Alignment.Center,
-            ) {
-                if (on) {
-                    Box(
-                        Modifier.size(12.dp).clip(CircleShape)
-                            .background(if (c.luminance() > 0.5f) Color.Black else Color.White),
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
 fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
@@ -1238,68 +1209,6 @@ fun SettingsSheet(vm: MainViewModel) {
                     runCatching { Color(android.graphics.Color.parseColor(t)) }
                         .onSuccess { vm.setTheme(it) }
                         .onFailure { vm.toast("颜色格式不正确") }
-                }
-            }
-            VS(16)
-
-            // ---------- 悬浮歌词 ----------
-            Txt("悬浮歌词", 15, weight = FontWeight.SemiBold)
-            VS(8)
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
-                    .clickable { vm.chooseFloatOn(!vm.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Txt("显示悬浮歌词", 14, weight = FontWeight.Medium)
-                    Txt(
-                        if (vm.floatOn) "已开启，可拖动调整位置" else "关闭",
-                        12, color = go.muted,
-                    )
-                }
-                Switch(
-                    checked = vm.floatOn,
-                    onCheckedChange = { vm.chooseFloatOn(it) },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = OnPrimary,
-                        checkedTrackColor = go.primary,
-                        uncheckedThumbColor = go.muted,
-                        uncheckedTrackColor = go.surfaceHi,
-                    ),
-                )
-            }
-            if (vm.floatOn) {
-                VS(12)
-                Txt("文字颜色", 13, color = go.muted)
-                VS(6)
-                FloatColorRow(vm.floatColor) { vm.updateFloat(color = it) }
-                VS(10)
-                Txt("描边颜色", 13, color = go.muted)
-                VS(6)
-                FloatColorRow(vm.floatStrokeColor) { vm.updateFloat(strokeColor = it) }
-                VS(10)
-                Txt("字号 ${vm.floatSize.toInt()} sp", 13, color = go.muted)
-                Slider(
-                    value = vm.floatSize,
-                    onValueChange = { vm.updateFloat(size = it) },
-                    valueRange = 12f..32f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                VS(6)
-                Txt("描边 ${vm.floatStroke.toInt()} dp", 13, color = go.muted)
-                Slider(
-                    value = vm.floatStroke,
-                    onValueChange = { vm.updateFloat(stroke = it) },
-                    valueRange = 0f..8f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                VS(6)
-                Txt("字体", 13, color = go.muted)
-                VS(6)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FONT_NAMES.forEachIndexed { i, n ->
-                        GoButton(n, primary = vm.floatFont == i) { vm.updateFloat(font = i) }
-                    }
                 }
             }
             VS(16)

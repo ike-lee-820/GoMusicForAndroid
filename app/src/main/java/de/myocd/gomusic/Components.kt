@@ -61,6 +61,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -214,7 +216,18 @@ fun CoverWithSource(
 fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
     val go = LocalGo.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)
-    val model = remember(url) { imageModel(url) }
+    // 缓存命中就直接用本地文件，避免重复走网络
+    val hit = remember(url) { ImageCache.cached(url) }
+    val model = remember(url, hit) { imageModel(hit ?: url) }
+    // 没缓存的网络图片后台落盘，下次直接读本地
+    LaunchedEffect(url, hit) {
+        if (url != null && hit == null) {
+            withContext(Dispatchers.IO) {
+                ImageCache.store(url)
+                ImageCache.trim()
+            }
+        }
+    }
     Box(modifier.clip(shape).background(go.surfaceHi), contentAlignment = Alignment.Center) {
         Icon(Icons.Outlined.MusicNote, null, tint = go.muted.copy(alpha = 0.5f), modifier = Modifier.size(24.dp))
         if (model != null) {

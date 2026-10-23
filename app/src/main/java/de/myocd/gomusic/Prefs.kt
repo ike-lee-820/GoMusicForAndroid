@@ -57,45 +57,6 @@ class Prefs(ctx: Context) {
             e.apply()
         }
 
-    // ---------- 悬浮歌词 ----------
-    var floatOn: Boolean
-        get() = sp.getBoolean("float_on", false)
-        set(v) { sp.edit().putBoolean("float_on", v).apply() }
-
-    /** 文字颜色（ARGB） */
-    var floatColor: Int
-        get() = sp.getInt("float_color", 0xFFFFFFFF.toInt())
-        set(v) { sp.edit().putInt("float_color", v).apply() }
-
-    /** 描边宽度（dp） */
-    var floatStroke: Float
-        get() = sp.getFloat("float_stroke", 3f)
-        set(v) { sp.edit().putFloat("float_stroke", v).apply() }
-
-    /** 描边颜色（ARGB） */
-    var floatStrokeColor: Int
-        get() = sp.getInt("float_stroke_color", 0xCC000000.toInt())
-        set(v) { sp.edit().putInt("float_stroke_color", v).apply() }
-
-    /** 字号（sp） */
-    var floatSize: Float
-        get() = sp.getFloat("float_size", 16f)
-        set(v) { sp.edit().putFloat("float_size", v).apply() }
-
-    /** 字体：0 默认 1 无衬线 2 衬线 3 等宽 4 粗体 */
-    var floatFont: Int
-        get() = sp.getInt("float_font", 0)
-        set(v) { sp.edit().putInt("float_font", v).apply() }
-
-    /** 位置：屏幕比例 0..1 */
-    var floatX: Float
-        get() = sp.getFloat("float_x", 0.5f)
-        set(v) { sp.edit().putFloat("float_x", v).apply() }
-
-    var floatY: Float
-        get() = sp.getFloat("float_y", 0.08f)
-        set(v) { sp.edit().putFloat("float_y", v).apply() }
-
     /** 是否接入网易云曲库，默认关闭 */
     var nmEnabled: Boolean
         get() = sp.getBoolean("nm_enabled", false)

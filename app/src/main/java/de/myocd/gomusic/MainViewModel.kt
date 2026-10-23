@@ -110,61 +110,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 「仅通话暂停」需要电话权限，由 Activity 监听并发起授权 */
     var needPhonePerm by mutableStateOf(false); private set
 
-    // ---------- 悬浮歌词 ----------
-    var floatOn by mutableStateOf(prefs.floatOn); private set
-    var floatColor by mutableStateOf(Color(prefs.floatColor)); private set
-    var floatStroke by mutableFloatStateOf(prefs.floatStroke); private set
-    var floatStrokeColor by mutableStateOf(Color(prefs.floatStrokeColor)); private set
-    var floatSize by mutableFloatStateOf(prefs.floatSize); private set
-    var floatFont by mutableIntStateOf(prefs.floatFont); private set
-    /** 需要悬浮窗权限，由 Activity 跳转系统设置页 */
-    var needOverlayPerm by mutableStateOf(false); private set
-
-    fun consumeOverlayPerm(): Boolean {
-        if (!needOverlayPerm) return false
-        needOverlayPerm = false
-        return true
-    }
-
-    /** 由界面调用：取出一次待处理的权限请求 */
-    fun consumePhonePerm(): Boolean {
-        if (!needPhonePerm) return false
-        needPhonePerm = false
-        return true
-    }
-    var speed by mutableFloatStateOf(1f); private set
-    var fixedTheme by mutableStateOf(prefs.themeColor?.let { Color(it) }); private set
-    var coverColor by mutableStateOf<Color?>(null); private set
-    val primary: Color get() = fixedTheme ?: coverColor ?: DefaultPrimary
-
-    // ---------- 导航与弹层 ----------
-    var tab by mutableIntStateOf(0)
-    var query by mutableStateOf("")
-    val stack = mutableStateListOf<Screen>()
-    var showPlayer by mutableStateOf(false)
-    var showLyrics by mutableStateOf(false)
-    var showQueue by mutableStateOf(false)
-    var showTheme by mutableStateOf(false)
-    var showSettings by mutableStateOf(false)
-    var showDownloads by mutableStateOf(false)
-    var pickReq by mutableStateOf<PickRequest?>(null)
-    var toastMsg by mutableStateOf<String?>(null); private set
-
-    // ---------- 网易云曲库 ----------
-    /** 是否在设置里开启「接入网易云曲库」 */
-    var nmOn by mutableStateOf(prefs.nmEnabled); private set
-    /** 网易云账号昵称，空 = 未登录（未登录时不使用网易云搜索） */
-    var nmUser by mutableStateOf(prefs.nmAccount.ifBlank { null }); private set
-    /** 是否已登录并可用 */
-    val nmReady: Boolean get() = nmOn && !nmUser.isNullOrBlank() && Netease.cookie.isNotBlank()
-    var nmSearching by mutableStateOf(false); private set
-    var nmSongs by mutableStateOf<List<Song>>(emptyList()); private set
-    var nmAlbums by mutableStateOf<List<Group>>(emptyList()); private set
-    var nmArtists by mutableStateOf<List<Group>>(emptyList()); private set
-    /** 网易云专辑 / 歌手点进去后的歌曲页 */
-    var nmPage by mutableStateOf<Group?>(null); private set
-    var nmPageSongs by mutableStateOf<List<Song>>(emptyList()); private set
-    var nmPageLoading by mutableStateOf(false); private set
     /** 网易云登录弹层 */
     var showNmLogin by mutableStateOf(false); private set
     /** 播放历史（最近在前） */
@@ -207,9 +152,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val st = runCatching { Netease.qrCheck(key) }.getOrNull() ?: continue
                 when (st.code) {
                     803 -> {
+                        // 授权成功：拿到凭证就立刻写入，不再依赖后续刷新
+                        val ck = st.cookie
                         withContext(Dispatchers.Main) {
-                            nmLogin(st.cookie ?: "", null)
-                            nmQr = null
+                            if (ck.isNullOrBlank()) {
+                                nmQrTip = "授权完成但未拿到登录凭证，请重新扫码"
+                                toast("登录未完成，请重新扫码")
+                            } else {
+                                nmQr = null
+                                nmLogin(ck, null)
+                            }
                         }
                         return@launch
                     }
@@ -347,68 +299,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 设置里手动重连 */
     fun reconnect() = load()
 
-    // ================= 悬浮歌词 =================
-    /** 启动时按保存的设置恢复悬浮窗 */
-    fun restoreFloat() {
-        if (floatOn && canOverlay(app)) {
-            FloatingLyric.show(app)
-            pushFloatLyric()
-        }
-    }
 
-    fun chooseFloatOn(on: Boolean) {
-        if (on && !canOverlay(app)) {
-            needOverlayPerm = true
-            return
-        }
-        floatOn = on
-        prefs.floatOn = on
-        if (on) {
-            FloatingLyric.show(app)
-            pushFloatLyric()
-        } else {
-            FloatingLyric.hide()
-        }
-    }
 
-    /** 从系统设置页返回后调用 */
-    fun onOverlayResult(granted: Boolean) {
-        if (!granted) {
-            floatOn = false
-            prefs.floatOn = false
-            toast("没有悬浮窗权限，无法显示悬浮歌词")
-            return
-        }
-        floatOn = true
-        prefs.floatOn = true
-        FloatingLyric.show(app)
-        pushFloatLyric()
-    }
 
-    fun updateFloat(
-        color: Color? = null,
-        strokeColor: Color? = null,
-        stroke: Float? = null,
-        size: Float? = null,
-        font: Int? = null,
-    ) {
-        color?.let { floatColor = it; prefs.floatColor = it.toArgb() }
-        strokeColor?.let { floatStrokeColor = it; prefs.floatStrokeColor = it.toArgb() }
-        stroke?.let { floatStroke = it; prefs.floatStroke = it }
-        size?.let { floatSize = it; prefs.floatSize = it }
-        font?.let { floatFont = it; prefs.floatFont = it }
-        FloatingLyric.restyle(app)
-    }
 
-    /** 把当前歌词行推到悬浮窗 */
-    fun pushFloatLyric() {
-        if (!floatOn) return
-        val i = lyricIndex
-        val l = lyric
-        val cur = l.getOrNull(i)?.text ?: ""
-        val next = l.getOrNull(i + 1)?.text ?: ""
-        FloatingLyric.update(cur, next)
-    }
 
     // ================= 网易云曲库 =================
     init { Netease.cookie = prefs.nmCookie }
@@ -433,6 +327,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 登录成功：保存 cookie 与昵称 */
     fun nmLogin(cookie: String, name: String?) {
+        if (cookie.isBlank()) {
+            toast("登录失败：没有拿到登录凭证，请重新扫码")
+            return
+        }
         prefs.nmCookie = cookie
         Netease.cookie = cookie
         showNmLogin = false
@@ -468,10 +366,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 ?: runCatching { Netease.accountName() }.getOrNull() else null
             withContext(Dispatchers.Main) {
                 if (!ok || name.isNullOrBlank()) {
-                    prefs.nmCookie = ""
+                    // 登录态失效：保留 cookie，只标记为未登录，用户重新登录后沿用
                     prefs.nmAccount = ""
-                    Netease.cookie = ""
                     nmUser = null
+                    if (!ok && prefs.nmCookie.isNotBlank()) {
+                        toast("网易云登录已失效，请重新登录")
+                    }
                 } else {
                     prefs.nmAccount = name
                     nmUser = name

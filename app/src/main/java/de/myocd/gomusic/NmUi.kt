@@ -204,7 +204,7 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
         } else {
             val list = vm.nmPageSongs
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
-                itemsIndexed(list, key = { _, it -> it.ssid }) { i, song ->
+                itemsIndexed(list, key = { i, it -> "${it.ssid}#$i" }) { i, song ->
                     SongRow(
                         song, song.ssid == vm.curSsid, vm.isPlaying,
                         downloaded = vm.isDownloaded(song.ssid),

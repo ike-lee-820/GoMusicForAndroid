@@ -171,10 +171,17 @@ object Netease {
             ?: pic(o.obj("album")?.str("picUrl", "blurPicUrl", "pic"))
             ?: pic(o.str("picUrl", "img1v1Url", "cover"))
 
+    private fun idOf(o: JsonObject?, key: String = "id"): Long =
+        ((o?.get(key) as? JsonPrimitive)?.content?.toLongOrNull())
+            ?: ((o?.get(key) as? JsonPrimitive)?.content?.toDoubleOrNull()?.toLong())
+            ?: 0L
+
     private fun toSong(o: JsonObject): Song? {
-        val id = (o["id"] as? JsonPrimitive)?.content?.toLongOrNull()
-            ?: (o["id"] as? JsonPrimitive)?.content?.toLongOrNull()
-            ?: return null
+        val id = idOf(o)
+        if (id <= 0L) return null
+        val al = o.obj("al") ?: o.obj("album")
+        val ar = (o["ar"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+            ?: (o["artists"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
         return Song(
             ssid = "$NM_PREFIX$id",
             title = o.str("name") ?: "",
@@ -183,19 +190,21 @@ object Netease {
             coverUrl = coverOf(o),
             source = SRC_NETEASE,
             nmId = id,
+            nmAlbumId = idOf(al),
+            nmArtistId = idOf(ar),
         )
     }
 
     // ================= 搜索 =================
 
-    /** type: 1 单曲 10 专辑 100 歌手 */
-    private fun rawSearch(keywords: String, type: Int, limit: Int): JsonObject =
+    /** type: 1 单曲 10 专辑 100 歌手；offset 用于翻页 */
+    private fun rawSearch(keywords: String, type: Int, limit: Int, offset: Int = 0): JsonObject =
         get(
             "/search",
             "keywords" to keywords,
             "type" to type.toString(),
             "limit" to limit.toString(),
-            "offset" to "0",
+            "offset" to offset.toString(),
         )
 
     /** 搜索结果的数组：兼容 result.xxx 与顶层 xxx 两种结构 */
@@ -251,15 +260,15 @@ object Netease {
         return m[id]
     }
 
-    fun searchSongs(keywords: String, limit: Int = 20): List<Song> {
-        val root = rawSearch(keywords, 1, limit)
+    fun searchSongs(keywords: String, limit: Int = 20, offset: Int = 0): List<Song> {
+        val root = rawSearch(keywords, 1, limit, offset)
         val arr = resultArray(root, "songs")
         if (arr.isEmpty()) {
-            NmLog.note("搜索单曲无结果：keywords=$keywords")
+            NmLog.note("搜索单曲无结果：keywords=$keywords offset=$offset")
             return emptyList()
         }
         val list = arr.mapNotNull(::toSong)
-        NmLog.note("搜索单曲 ${list.size} 首，开始用 song/detail 补全信息")
+        NmLog.note("搜索单曲 offset=$offset 得到 ${list.size} 首，开始用 song/detail 补全信息")
         return enrich(list)
     }
 
@@ -268,9 +277,9 @@ object Netease {
      * type=10 经常返回空（或需要登录），这时用单曲结果里的专辑兜底，
      * 保证「专辑」标签在网易云曲库下也能出内容。
      */
-    fun searchAlbums(keywords: String, limit: Int = 10): List<Group> {
+    fun searchAlbums(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
         val out = LinkedHashMap<String, Group>()
-        val arr = resultArray(rawSearch(keywords, 10, limit), "albums")
+        val arr = resultArray(rawSearch(keywords, 10, limit, offset), "albums")
         NmLog.note("搜索专辑 type=10 返回 ${arr.size} 条")
         arr.forEach { o ->
             val id = (o["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return@forEach
@@ -312,8 +321,8 @@ object Netease {
         return out.values.toList()
     }
 
-    fun searchArtists(keywords: String, limit: Int = 10): List<Group> {
-        val arr = resultArray(rawSearch(keywords, 100, limit), "artists")
+    fun searchArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
+        val arr = resultArray(rawSearch(keywords, 100, limit, offset), "artists")
         NmLog.note("搜索歌手返回 ${arr.size} 条")
         return arr.mapNotNull { o ->
             val id = (o["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return@mapNotNull null
@@ -371,8 +380,35 @@ object Netease {
             }
             NmLog.note("level=$lv 三种方式都没有返回地址，继续降音质")
         }
-        NmLog.note("所有音质都没有拿到播放地址 id=$id")
+        // 兜底：拿游客 cookie 再试一次（未登录/登录态失效时网易会返回 301 / 400 需验证）
+        NmLog.note("登录态下取不到地址，尝试游客 cookie 再试一次")
+        val anon = runCatching { anonCookie() }.getOrNull()
+        if (!anon.isNullOrBlank()) {
+            val saved = cookie
+            cookie = anon
+            try {
+                for (lv in levels(quality)) {
+                    val r = get("/song/url/v1", "id" to id.toString(), "level" to lv, "randomCNIP" to "true")
+                    val u = ((r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
+                    if (!u.isNullOrBlank()) {
+                        NmLog.note("游客 cookie 拿到地址（$lv）：$u")
+                        return u
+                    }
+                }
+            } finally {
+                cookie = saved
+            }
+        }
+        NmLog.note("所有方式都没有拿到播放地址 id=$id")
         return null
+    }
+
+    /** 游客 cookie：未登录状态下部分接口会报「需要验证」，用它规避 */
+    fun anonCookie(): String? {
+        val r = get("/register/anonimous")
+        val ck = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+        NmLog.note("游客 cookie：${if (ck.isNullOrBlank()) "未拿到" else "已拿到"}")
+        return ck
     }
 
     /** realIP 兜底用的国内 IP（网易对境外 IP 会返回 460 cheating） */
@@ -424,6 +460,13 @@ object Netease {
     /** 第三步：轮询。800 过期 801 等待扫码 802 待确认 803 成功 */
     fun qrCheck(key: String): QrStatus {
         val r = get("/login/qr/check", "key" to key)
+        // 文档：扫码后返回 502 需加 noCookie=true
+        if (r.code() == 502) {
+            NmLog.note("qr/check 返回 502，改用 noCookie 重试")
+            val r2 = get("/login/qr/check", "key" to key, "noCookie" to "true")
+            val ck2 = r2.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r2)
+            return QrStatus(r2.code(), ck2, r2.str("message"))
+        }
         val ck = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
         return QrStatus(r.code(), ck, r.str("message"))
     }

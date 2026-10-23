@@ -36,6 +36,10 @@ data class Song(
     val source: String = SRC_LOCAL,
     /** 网易云歌曲 id（source = [SRC_NETEASE] 时有效） */
     val nmId: Long = 0,
+    /** 网易云专辑 id（点封面时直接开网易云专辑页，不再到本地库查） */
+    val nmAlbumId: Long = 0,
+    /** 网易云歌手 id（点歌手时直接开网易云歌手页） */
+    val nmArtistId: Long = 0,
 )
 
 @Serializable

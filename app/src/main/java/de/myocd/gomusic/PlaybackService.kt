@@ -57,7 +57,7 @@ class PlaybackService : MediaSessionService() {
                     val p = Prefs(applicationContext)
                     val url = try {
                         val nid = neteaseIdOf(ssid)
-                        if (nid != null && p.nmEnabled) {
+                        if (nid != null && p.nmCookie.isNotBlank()) {
                             Netease.cookie = p.nmCookie
                             Netease.audioUrl(nid, p.quality)
                                 ?: throw IOException("网易云没有可用音源")

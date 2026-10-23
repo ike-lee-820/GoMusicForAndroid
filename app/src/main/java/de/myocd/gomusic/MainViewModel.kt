@@ -79,6 +79,9 @@ data class DlStatus(
     val percent: Int get() = if (size > 0) (done * 100 / size).toInt().coerceIn(0, 100) else -1
 }
 
+/** 网易云搜索每次请求的条数（翻页步长） */
+const val NM_PAGE_SIZE = 20
+
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
 
@@ -151,6 +154,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 是否已登录并可用 */
     val nmReady: Boolean get() = nmOn && !nmUser.isNullOrBlank() && Netease.cookie.isNotBlank()
     var nmSearching by mutableStateOf(false); private set
+    var nmLoadingMore by mutableStateOf(false); private set
+    /** 是否还有下一页（滑到底继续加载） */
+    var nmHasMore by mutableStateOf(false); private set
+    /** 当前搜索关键词与翻页偏移（界面用它判断何时触发加载更多） */
+    private var nmKeyword = ""
+    private var nmOffset = 0
+    val nmKeywordForUi: String get() = nmKeyword
+    val nmOffsetForUi: Int get() = nmOffset
     var nmSongs by mutableStateOf<List<Song>>(emptyList()); private set
     var nmAlbums by mutableStateOf<List<Group>>(emptyList()); private set
     var nmArtists by mutableStateOf<List<Group>>(emptyList()); private set
@@ -449,35 +460,120 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun searchNetease(q: String) {
         nmJob?.cancel()
         val kw = q.trim()
+        nmKeyword = kw
+        nmOffset = 0
+        nmHasMore = false
         if (!nmReady || kw.isEmpty()) {
             nmSearching = false
+            nmLoadingMore = false
             nmSongs = emptyList()
             nmAlbums = emptyList()
             nmArtists = emptyList()
             return
         }
         nmJob = viewModelScope.launch {
-            runCatching {
+            try {
                 delay(400)
                 nmSearching = true
-                val s = withContext(Dispatchers.IO) { runCatching { Netease.searchSongs(kw) }.getOrDefault(emptyList()) }
-                val a = withContext(Dispatchers.IO) { runCatching { Netease.searchAlbums(kw) }.getOrDefault(emptyList()) }
-                val ar = withContext(Dispatchers.IO) { runCatching { Netease.searchArtists(kw) }.getOrDefault(emptyList()) }
-                if (!nmReady) return@runCatching
+                val s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
+                val a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
+                val ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
+                if (!nmReady) return@launch
                 keepNetease(s)
                 // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
                 val c = counts
                 nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
                 nmAlbums = a
                 nmArtists = ar
-            }.onFailure { e ->
+                nmOffset = NM_PAGE_SIZE
+                nmHasMore = s.size >= NM_PAGE_SIZE
+            } catch (e: Throwable) {
+                // 切界面导致的取消属于正常行为，不提示、不报错
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("searchNetease($kw)", e)
                 nmSongs = emptyList()
                 nmAlbums = emptyList()
                 nmArtists = emptyList()
                 toast("网易云搜索失败：${e.message?.take(40) ?: ""}")
+            } finally {
+                nmSearching = false
             }
-            nmSearching = false
+        }
+    }
+
+    /** 列表滑到底时向网易云请求下一页 */
+    fun loadMoreNetease() {
+        val kw = nmKeyword
+        if (kw.isBlank() || !nmReady || nmLoadingMore || !nmHasMore) return
+        val off = nmOffset
+        val job = nmJob
+        if (job != null && job.isActive) return
+        nmLoadingMore = true
+        // 用独立 job：不占用搜索的 nmJob，避免加载更多被搜索取消
+        viewModelScope.launch {
+            try {
+                val s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
+                val a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
+                val ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
+                if (kw != nmKeyword || !nmReady) return@launch
+                keepNetease(s)
+                // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突
+                val seen = nmSongs.map { it.ssid }.toHashSet()
+                nmSongs = nmSongs + s.filter { it.ssid !in seen }
+                nmAlbums = nmAlbums + a.filter { g -> nmAlbums.none { it.nmId == g.nmId } }
+                nmArtists = nmArtists + ar.filter { g -> nmArtists.none { it.nmId == g.nmId } }
+                nmOffset = off + NM_PAGE_SIZE
+                nmHasMore = s.size >= NM_PAGE_SIZE
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadMoreNetease($kw,$off)", e)
+                nmHasMore = false
+            } finally {
+                nmLoadingMore = false
+            }
+        }
+    }
+
+    /** 网易云歌曲：点封面进专辑页（走网易云，不查本地库） */
+    fun openNmSongAlbum(s: Song) {
+        if (s.source != SRC_NETEASE) {
+            stack.add(Screen.Album(s.artist, s.album))
+            return
+        }
+        if (s.nmAlbumId > 0) {
+            openNmGroup(
+                Group(s.album, s.artist, s.coverUrl, emptyList(),
+                    artist = s.artist, album = s.album,
+                    source = SRC_NETEASE, nmId = s.nmAlbumId, nmKind = "album")
+            )
+            return
+        }
+        // 详情没给专辑 id 时，用专辑名搜一次
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) {
+                Netease.searchAlbums("$s.artist ${s.album}", 5).firstOrNull()
+            }
+            if (g != null) openNmGroup(g) else toast("没有找到这张专辑")
+        }
+    }
+
+    /** 网易云歌曲：点歌手进歌手页（走网易云，不查本地库） */
+    fun openNmSongArtist(s: Song) {
+        if (s.source != SRC_NETEASE) {
+            stack.add(Screen.Artist(s.artist))
+            return
+        }
+        if (s.nmArtistId > 0) {
+            openNmGroup(
+                Group(s.artist, "网易云歌手", s.coverUrl, emptyList(),
+                    artist = s.artist, source = SRC_NETEASE,
+                    nmId = s.nmArtistId, nmKind = "artist")
+            )
+            return
+        }
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) { Netease.searchArtists(s.artist, 5).firstOrNull() }
+            if (g != null) openNmGroup(g) else toast("没有找到这个歌手")
         }
     }
 

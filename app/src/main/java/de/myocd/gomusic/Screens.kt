@@ -399,7 +399,26 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
                 }
             }
         }
-        itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }, contentType = { _, _ -> "song" }) { i, s ->
+                // 滑到底部且还有下一页时，继续向网易云请求下一页
+        if (vm.nmHasMore) {
+            item {
+                LaunchedEffect(vm.nmOffsetForUi, vm.nmKeywordForUi) { vm.loadMoreNetease() }
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        color = LocalGo.current.primary,
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载更多", 12, color = LocalGo.current.muted)
+                }
+            }
+        }
+itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }, contentType = { _, _ -> "song" }) { i, s ->
             SongRow(
                 s, s.ssid == vm.curSsid, vm.isPlaying,
                 downloaded = vm.isDownloaded(s.ssid),
@@ -821,7 +840,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 s.coverUrl,
                 Modifier.size(coverSize).clickable {
                     vm.showPlayer = false
-                    vm.stack.add(Screen.Album(s.artist, s.album))
+                    vm.openNmSongAlbum(s)
                 },
                 20.dp,
             )
@@ -832,7 +851,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 s.artist, 14, color = go.muted, maxLines = 1,
                 modifier = Modifier.clickable {
                     vm.showPlayer = false
-                    vm.stack.add(Screen.Artist(s.artist))
+                    vm.openNmSongArtist(s)
                 }.padding(horizontal = 12.dp, vertical = 6.dp),
             )
 

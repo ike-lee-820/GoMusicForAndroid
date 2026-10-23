@@ -18,7 +18,19 @@ jobs:
         with:
           gradle-version: 8.10.2
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        id: b
+        run: gradle assembleDebug --no-daemon 2>&1 | tee build.log; exit ${PIPESTATUS[0]}
+      - name: Publish log
+        if: always()
+        run: |
+          git config user.name ci-bot
+          git config user.email ci-bot@example.com
+          git checkout -B ci-logs-android
+          mkdir -p ci
+          cp build.log ci/build.log || true
+          git add -f ci/build.log
+          git commit -m "ci log android $(date -u +%FT%TZ)" || echo none
+          git push -f origin ci-logs-android
       - uses: actions/upload-artifact@v4
         with:
           name: GoMusic-debug-apk

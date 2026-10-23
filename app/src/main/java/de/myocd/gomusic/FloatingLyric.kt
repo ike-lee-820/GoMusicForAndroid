@@ -76,7 +76,7 @@ private class LyricView(ctx: Context, private val onMove: (Float, Float) -> Unit
             l.draw(c)
             c.restore()
             if (strokeW > 0) {
-                val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                val sp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = strokeColor
                     style = Paint.Style.STROKE
                     strokeWidth = strokeW * resources.displayMetrics.density

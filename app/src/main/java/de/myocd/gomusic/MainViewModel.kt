@@ -82,6 +82,22 @@ data class DlStatus(
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
 
+    // ---------- 界面状态 ----------
+    /** 当前标签：0 歌曲 1 专辑 2 歌手 3 歌单 */
+    var tab by mutableIntStateOf(0)
+    /** 二级页面栈 */
+    val stack = mutableStateListOf<Screen>()
+    var query by mutableStateOf("")
+    var showPlayer by mutableStateOf(false)
+    var showLyrics by mutableStateOf(false)
+    var showQueue by mutableStateOf(false)
+    var showSettings by mutableStateOf(false)
+    var showDownloads by mutableStateOf(false)
+    var pickReq by mutableStateOf<PickRequest?>(null)
+    var toastMsg by mutableStateOf<String?>(null); private set
+    /** 播放倍速 */
+    var speed by mutableFloatStateOf(1f); private set
+
     // ---------- 数据 ----------
     var songs by mutableStateOf<List<Song>>(emptyList()); private set
     var artistInfo by mutableStateOf<Map<String, ArtistInfo>>(emptyMap()); private set

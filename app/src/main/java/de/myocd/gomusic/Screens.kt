@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -1129,7 +1130,7 @@ fun SettingsSheet(vm: MainViewModel) {
                     checked = vm.nmOn,
                     onCheckedChange = { vm.setNmEnabled(it) },
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = go.onPrimary,
+                        checkedThumbColor = OnPrimary,
                         checkedTrackColor = go.primary,
                         uncheckedThumbColor = go.muted,
                         uncheckedTrackColor = go.surfaceHi,

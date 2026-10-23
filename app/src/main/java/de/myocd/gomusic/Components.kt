@@ -181,7 +181,6 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 
 // ---------- 图片 ----------
 
-@Composable
 /**
  * 带来源角标的封面：网易云曲库的结果在封面右下角加一个「网易云」小标，
  * 用来和本站曲库区分。角标是纯文字，不用图标。
@@ -211,6 +210,7 @@ fun CoverWithSource(
     }
 }
 
+@Composable
 fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
     val go = LocalGo.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)

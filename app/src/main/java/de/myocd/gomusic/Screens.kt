@@ -560,22 +560,31 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
                 }
             }
         }
-                // 滑到底部且还有下一页时，继续向网易云请求下一页
+                // 滑到底部（最后一项真正露出）且还有下一页时，才请求下一页。
+        // 这里必须在 item 里判断可见性，否则会在列表刚组合时就触发一次请求。
         if (vm.nmHasMore) {
             item {
-                LaunchedEffect(vm.nmOffsetForUi, vm.nmKeywordForUi) { vm.loadMoreNetease() }
+                val go2 = LocalGo.current
+                // 最后一项露出时才触发，避免首屏就多请求一次
+                LaunchedEffect(Unit) {
+                    snapshotFlow { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+                        .collect { last ->
+                            val total = state.layoutInfo.totalItemsCount
+                            if (last != null && last >= total - 2) vm.loadMoreNetease()
+                        }
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 12.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     CircularProgressIndicator(
-                        color = LocalGo.current.primary,
+                        color = go2.primary,
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
                     )
                     HS(8)
-                    Txt("正在加载更多", 12, color = LocalGo.current.muted)
+                    Txt("正在加载更多", 12, color = go2.muted)
                 }
             }
         }

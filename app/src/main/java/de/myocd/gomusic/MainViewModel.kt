@@ -176,7 +176,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 播放历史（最近在前） */
     var history by mutableStateOf(prefs.history); private set
     /** 歌曲信息快照（含网易云），保证历史随时能显示歌名 */
-    var snapshots by mutableStateOf(prefs.songSnapshots); private set
+    var snapshots: Map<String, Song> by mutableStateOf<Map<String, Song>>(prefs.songSnapshots); private set
 
     val historySongs: List<Song> by derivedStateOf {
         val m = songMap
@@ -197,7 +197,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 记录歌曲快照：播放 / 搜索命中时调用，让历史与界面随时能查到 */
     fun rememberSongs(list: List<Song>) {
         if (list.isEmpty()) return
-        val cur = LinkedHashMap(snapshots)
+        val cur = LinkedHashMap<String, Song>(snapshots)
         var changed = false
         for (s in list) {
             if (s.title.isBlank()) continue
@@ -560,22 +560,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 用独立 job：不占用搜索的 nmJob，避免加载更多被搜索取消
         viewModelScope.launch {
             try {
-                val dS = async(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
-                val dA = async(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
-                val dAr = async(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
-                val s = dS.await()
-                val a = dA.await()
-                val ar = dAr.await()
+                // 翻页只请求歌曲：专辑 / 歌手首屏已够，少发两个请求明显更快
+                val s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
                 if (kw != nmKeyword || !nmReady) return@launch
                 keepNetease(s)
-                rememberSongs(s)
                 // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突
                 val seen = nmSongs.map { it.ssid }.toHashSet()
                 nmSongs = nmSongs + s.filter { it.ssid !in seen }
-                nmAlbums = nmAlbums + a.filter { g -> nmAlbums.none { it.nmId == g.nmId } }
-                nmArtists = nmArtists + ar.filter { g -> nmArtists.none { it.nmId == g.nmId } }
                 nmOffset = off + NM_PAGE_SIZE
                 nmHasMore = s.size >= NM_PAGE_SIZE
+                NmLog.note("翻页完成 offset=$off 新增 ${s.size} 首")
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadMoreNetease($kw,$off)", e)

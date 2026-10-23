@@ -184,8 +184,18 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 // ---------- 图片 ----------
 
 /**
- * 带来源角标的封面：网易云曲库的结果在封面右下角加一个「网易云」小标，
- * 用来和本站曲库区分。角标是纯文字，不用图标。
+ * 来源前缀：网易云曲库的结果在歌名 / 专辑名前加一个「(网)」，
+ * 用来和本站曲库区分（不用图标、不用 emoji）。
+ */
+fun srcPrefix(source: String): String = if (source == SRC_NETEASE) "(网)" else ""
+
+/** 歌名 / 专辑名带来源前缀的显示文本 */
+fun titleWithSource(title: String, source: String): String =
+    if (source == SRC_NETEASE) "(网)$title" else title
+
+/**
+ * 封面（来源统一靠名字前缀区分，不再在图上叠角标）。
+ * 保留 source 参数是为了调用点不用改。
  */
 @Composable
 fun CoverWithSource(
@@ -195,21 +205,7 @@ fun CoverWithSource(
     circle: Boolean = false,
     source: String = SRC_LOCAL,
 ) {
-    val netease = source == SRC_NETEASE
-    Box(modifier) {
-        Cover(cover, Modifier.fillMaxSize(), radius, circle)
-        if (netease) {
-            val go = LocalGo.current
-            Box(
-                Modifier.align(Alignment.BottomEnd).padding(2.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(go.surfaceHi.copy(alpha = 0.92f))
-                    .padding(horizontal = 3.dp, vertical = 1.dp),
-            ) {
-                Txt("网易云", 8, color = go.on, maxLines = 1)
-            }
-        }
-    }
+    Cover(cover, modifier, radius, circle)
 }
 
 @Composable
@@ -401,7 +397,7 @@ fun SongRow(
         }
         HS(12)
         Column(Modifier.weight(1f)) {
-            Txt(song.title, 15, weight = FontWeight.Medium, color = if (current) go.primary else go.on, maxLines = 1)
+            Txt(titleWithSource(song.title, song.source), 15, weight = FontWeight.Medium, color = if (current) go.primary else go.on, maxLines = 1)
             Txt("${song.artist} · ${song.album}", 12, color = go.muted, maxLines = 1)
         }
         if (onDownload != null) {
@@ -438,7 +434,7 @@ fun GroupRow(
         CoverWithSource(cover, Modifier.size(48.dp), 8.dp, source = source)
         HS(12)
         Column(Modifier.weight(1f)) {
-            Txt(title, 15, weight = FontWeight.Medium, maxLines = 1)
+            Txt(titleWithSource(title, source), 15, weight = FontWeight.Medium, maxLines = 1)
             Txt(subtitle, 12, color = LocalGo.current.muted, maxLines = 1)
         }
         if (onAdd != null) IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", onClick = onAdd)
@@ -467,7 +463,7 @@ fun GroupCard(
             )
         }
         VS(6)
-        Txt(title, 15, weight = FontWeight.Medium, maxLines = 1)
+        Txt(titleWithSource(title, source), 15, weight = FontWeight.Medium, maxLines = 1)
         Txt(subtitle, 12, color = go.muted, maxLines = 1)
     }
 }

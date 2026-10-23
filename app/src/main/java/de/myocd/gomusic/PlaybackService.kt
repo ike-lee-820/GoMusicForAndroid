@@ -45,6 +45,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        NmLog.init(this)
         val resolver = ResolvingDataSource.Resolver { spec ->
             if (spec.uri.scheme == "gomusic") {
                 val ssid = spec.uri.lastPathSegment ?: throw IOException("bad uri")

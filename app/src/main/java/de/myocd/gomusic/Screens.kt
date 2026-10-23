@@ -218,7 +218,7 @@ fun NavBar(vm: MainViewModel) {
                 Column(
                     Modifier.weight(1f).fillMaxHeight().clickable {
                         vm.stack.clear()
-                        vm.tab = i
+                        vm.chooseTab(i)
                         vm.query = ""
                     },
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -399,7 +399,7 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
                 }
             }
         }
-        itemsIndexed(list, key = { _, s -> s.ssid }, contentType = { _, _ -> "song" }) { i, s ->
+        itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }, contentType = { _, _ -> "song" }) { i, s ->
             SongRow(
                 s, s.ssid == vm.curSsid, vm.isPlaying,
                 downloaded = vm.isDownloaded(s.ssid),
@@ -435,7 +435,7 @@ fun HistoryRow(vm: MainViewModel) {
                 ) {
                     CoverWithSource(s.coverUrl, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, source = s.source)
                     VS(6)
-                    Txt(s.title, 12, maxLines = 1)
+                    Txt(titleWithSource(s.title, s.source), 12, maxLines = 1)
                     Txt(s.artist, 11, color = go.muted, maxLines = 1)
                 }
             }
@@ -455,7 +455,7 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         itemsIndexed(
             groups,
-            key = { _, g -> if (g.source == SRC_NETEASE) "nm${'$'}{g.nmId}" else g.artist to g.album },
+            key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}#$i" },
             contentType = { _, _ -> "album" },
         ) { _, g ->
             GroupRow(
@@ -491,7 +491,7 @@ fun ArtistsTab(vm: MainViewModel) {
     ) {
         items(
             groups,
-            key = { if (it.source == SRC_NETEASE) "nm${'$'}{it.nmId}" else it.title },
+            key = { if (it.nmId > 0) "nm${'$'}{it.nmId}" else "loc${'$'}{it.title}" },
             contentType = { "artist" },
         ) { g ->
             GroupCard(
@@ -1086,6 +1086,9 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
     }
 }
 
+/** 网易云请求日志的存放路径，设置里显示，方便用户取日志 */
+fun nmLogPath(): String = NmLog.path()
+
 @Composable
 fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
@@ -1156,7 +1159,12 @@ fun SettingsSheet(vm: MainViewModel) {
                     }
                 }
                 VS(6)
-                Txt("开启并登录后，搜索会同时展示两套曲库的结果（不合并），网易云结果带角标", 12, color = go.muted)
+                Txt(
+                    "开启并登录后，搜索会同时展示两套曲库的结果（不合并），网易云结果在名字前带「(网)」",
+                    12, color = go.muted,
+                )
+                VS(6)
+                Txt("请求日志：${nmLogPath()}", 11, color = go.muted)
             }
             VS(16)
 

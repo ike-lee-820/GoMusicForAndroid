@@ -84,7 +84,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // ---------- 界面状态 ----------
     /** 当前标签：0 歌曲 1 专辑 2 歌手 3 歌单 */
-    var tab by mutableIntStateOf(0)
+    var tab by mutableIntStateOf(0); private set
     /** 二级页面栈 */
     val stack = mutableStateListOf<Screen>()
     var query by mutableStateOf("")
@@ -427,6 +427,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 切标签 / 进出二级页时调用：取消正在进行的网易云搜索。
+     * 之前在搜索中途切界面会因为结果回来后列表重组而闪退。
+     */
+    fun cancelNeteaseSearch() {
+        nmJob?.cancel()
+        nmJob = null
+        nmSearching = false
+    }
+
+    /** 切换底部标签 */
+    fun chooseTab(t: Int) {
+        cancelNeteaseSearch()
+        nmPage = null
+        nmPageSongs = emptyList()
+        tab = t
+    }
+
     /** 搜索网易云（防抖）。未开启或未登录时直接清空，不发请求 */
     fun searchNetease(q: String) {
         nmJob?.cancel()
@@ -439,18 +457,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             return
         }
         nmJob = viewModelScope.launch {
-            delay(400)
-            nmSearching = true
-            val s = withContext(Dispatchers.IO) { runCatching { Netease.searchSongs(kw) }.getOrDefault(emptyList()) }
-            val a = withContext(Dispatchers.IO) { runCatching { Netease.searchAlbums(kw) }.getOrDefault(emptyList()) }
-            val ar = withContext(Dispatchers.IO) { runCatching { Netease.searchArtists(kw) }.getOrDefault(emptyList()) }
-            if (!nmReady) return@launch
-            keepNetease(s)
-            // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
-            val c = counts
-            nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
-            nmAlbums = a
-            nmArtists = ar
+            runCatching {
+                delay(400)
+                nmSearching = true
+                val s = withContext(Dispatchers.IO) { runCatching { Netease.searchSongs(kw) }.getOrDefault(emptyList()) }
+                val a = withContext(Dispatchers.IO) { runCatching { Netease.searchAlbums(kw) }.getOrDefault(emptyList()) }
+                val ar = withContext(Dispatchers.IO) { runCatching { Netease.searchArtists(kw) }.getOrDefault(emptyList()) }
+                if (!nmReady || !isActive) return@runCatching
+                keepNetease(s)
+                // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
+                val c = counts
+                nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
+                nmAlbums = a
+                nmArtists = ar
+            }.onFailure { e ->
+                NmLog.err("searchNetease($kw)", e)
+                nmSongs = emptyList()
+                nmAlbums = emptyList()
+                nmArtists = emptyList()
+                toast("网易云搜索失败：${e.message?.take(40) ?: ""}")
+            }
             nmSearching = false
         }
     }
@@ -767,6 +793,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             if (count) pushHistory(id)
             val nid = neteaseIdOf(id)
             viewModelScope.launch {
+                // 播放前用 /song/detail 补全封面 / 专辑 / 歌手
+                // （搜索接口给的 al.picUrl 经常是空的）
+                if (nid != null) {
+                    val d = withContext(Dispatchers.IO) {
+                        runCatching { Netease.detailOf(nid) }.getOrNull()
+                    }
+                    if (d != null && curSsid == id) {
+                        nmKnown[id] = d
+                        // 用详情里的完整信息刷新列表里的这一首
+                        nmSongs = nmSongs.map { if (it.ssid == id) d else it }
+                        updateCover(d.coverUrl)
+                    }
+                }
                 var t = ""
                 if (nid != null) {
                     t = withContext(Dispatchers.IO) {

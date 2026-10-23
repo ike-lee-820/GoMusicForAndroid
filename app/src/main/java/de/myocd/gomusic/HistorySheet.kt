@@ -115,7 +115,7 @@ private fun HistoryItem(
         CoverWithSource(song.coverUrl, Modifier.size(44.dp), 8.dp, source = song.source)
         HS(12)
         Column(Modifier.weight(1f)) {
-            Txt(song.title, 15, weight = FontWeight.Medium, maxLines = 1)
+            Txt(titleWithSource(song.title, song.source), 15, weight = FontWeight.Medium, maxLines = 1)
             Txt(song.artist, 12, color = go.muted, maxLines = 1)
         }
         HS(8)

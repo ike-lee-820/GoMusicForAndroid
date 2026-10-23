@@ -103,6 +103,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val downloadedIds: Set<String> by derivedStateOf { downloads.mapTo(HashSet()) { it.ssid } }
 
     // ---------- 设置 ----------
+    /** 设置里指定的主题色，null = 跟随封面 */
+    var fixedTheme by mutableStateOf(prefs.themeColor?.let { Color(it) }); private set
+    /** 跟随封面取到的色 */
+    var coverColor by mutableStateOf<Color?>(null); private set
     var quality by mutableStateOf(prefs.quality); private set
     var playMode by mutableIntStateOf(prefs.playMode); private set
     /** 后台播放被打断的策略：[FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
@@ -122,6 +126,22 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 网易云登录弹层 */
     var showNmLogin by mutableStateOf(false); private set
+
+    // ---------- 网易云曲库 ----------
+    /** 是否在设置里开启「接入网易云曲库」 */
+    var nmOn by mutableStateOf(prefs.nmEnabled); private set
+    /** 网易云账号昵称，空 = 未登录（未登录时不使用网易云搜索） */
+    var nmUser by mutableStateOf(prefs.nmAccount.ifBlank { null }); private set
+    /** 是否已登录并可用 */
+    val nmReady: Boolean get() = nmOn && !nmUser.isNullOrBlank() && Netease.cookie.isNotBlank()
+    var nmSearching by mutableStateOf(false); private set
+    var nmSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    var nmAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    var nmArtists by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 网易云专辑 / 歌手点进去后的歌曲页 */
+    var nmPage by mutableStateOf<Group?>(null); private set
+    var nmPageSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    var nmPageLoading by mutableStateOf(false); private set
     /** 播放历史（最近在前） */
     var history by mutableStateOf(prefs.history); private set
     val historySongs: List<Song> by derivedStateOf {

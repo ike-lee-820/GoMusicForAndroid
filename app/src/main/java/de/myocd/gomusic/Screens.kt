@@ -196,6 +196,7 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.showQueue) QueueSheet(vm)
         if (vm.showSettings) SettingsSheet(vm)
         if (vm.showNmLogin) NmLoginSheet(vm)
+        if (vm.showHistory) HistorySheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
     }
@@ -422,7 +423,9 @@ fun HistoryRow(vm: MainViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Txt("历史", 15, Modifier.weight(1f), FontWeight.SemiBold)
-            Txt("清空", 12, Modifier.clickable { vm.clearHistory() }, color = go.primary)
+            Txt("全部", 12, Modifier.clickable { vm.showHistory = true }, color = go.primary)
+            HS(12)
+            Txt("清空", 12, Modifier.clickable { vm.clearHistory() }, color = go.muted)
             HS(12)
         }
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

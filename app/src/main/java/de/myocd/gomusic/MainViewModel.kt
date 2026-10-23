@@ -472,6 +472,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.history = emptyList()
     }
 
+    /** 单条删除历史 */
+    fun removeHistory(ssid: String) {
+        val l = history.filter { it != ssid }
+        history = l
+        prefs.history = l
+    }
+
+    /** 历史页开关 */
+    var showHistory by mutableStateOf(false)
+
     // ================= 列表派生 =================
     // 排行结果缓存：只在歌曲列表本身变化时重算，
     // 这样退出二级页回到歌曲页不会重新洗牌，顺序保持稳定

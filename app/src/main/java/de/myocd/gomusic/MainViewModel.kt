@@ -110,6 +110,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 「仅通话暂停」需要电话权限，由 Activity 监听并发起授权 */
     var needPhonePerm by mutableStateOf(false); private set
 
+    /** 主题色：设置里指定的优先，否则跟随封面取色 */
+    val primary: Color get() = fixedTheme ?: coverColor ?: DefaultPrimary
+
+    /** Activity 用它判断要不要发起电话权限请求，取一次就清掉 */
+    fun consumePhonePerm(): Boolean {
+        if (!needPhonePerm) return false
+        needPhonePerm = false
+        return true
+    }
+
     /** 网易云登录弹层 */
     var showNmLogin by mutableStateOf(false); private set
     /** 播放历史（最近在前） */
@@ -118,10 +128,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val m = songMap
         val nm = nmSongs.associateBy { it.ssid }
         val dl = downloads.associateBy { it.ssid }
-        history.mapNotNull { id ->
-            m[id] ?: nm[id] ?: dl[id]?.let {
+        history.mapNotNull { id: String ->
+            val s: Song? = m[id] ?: nm[id] ?: dl[id]?.let {
                 Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
             }
+            s
         }
     }
     private var nmJob: Job? = null

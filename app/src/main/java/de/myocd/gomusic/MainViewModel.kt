@@ -83,9 +83,6 @@ data class DlStatus(
 /** 网易云搜索每次请求的条数（翻页步长） */
 const val NM_PAGE_SIZE = 20
 
-/** 歌曲快照上限：历史与界面随时能查到，但不让 Prefs 无限膨胀 */
-const val MAX_SNAPSHOTS = 3000
-
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
 

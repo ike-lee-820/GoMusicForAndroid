@@ -269,7 +269,7 @@ object Netease {
             NmLog.note("搜索单曲无结果：keywords=$keywords offset=$offset")
             return emptyList()
         }
-        val list = arr.mapNotNull(::toSong)
+        val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
         NmLog.note("搜索单曲 offset=$offset 得到 ${list.size} 首，开始用 song/detail 补全信息")
         return enrich(list)
     }
@@ -448,9 +448,9 @@ object Netease {
             // 歌手接口可能返回 hotSongs，专辑也可能换字段
             val alt = resultArray(root, "hotSongs")
             NmLog.note("songs 为空，hotSongs ${alt.size} 条")
-            return enrich(alt.mapNotNull(::toSong))
+            return enrich(alt.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
         }
-        return enrich(arr.mapNotNull(::toSong))
+        return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
     }
 
     // ================= 首页 =================
@@ -467,7 +467,7 @@ object Netease {
             ?: (r["data"] as? JsonElement)?.jsonArray
             ?: resultArray(r, "dailySongs")
         if (arr.isEmpty()) NmLog.note("每日推荐无数据 code=${r.code()}")
-        val list = arr.mapNotNull(::toSong)
+        val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
         NmLog.note("每日推荐 ${list.size} 首")
         return enrich(list)
     }
@@ -477,7 +477,7 @@ object Netease {
         val r = get("/top/song", "type" to type.toString())
         val arr = (r["data"] as? JsonElement)?.jsonArray ?: resultArray(r, "data")
         if (arr.isEmpty()) NmLog.note("新歌速递无数据 code=${r.code()}")
-        val list = arr.mapNotNull(::toSong)
+        val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
         NmLog.note("新歌速递 ${list.size} 首")
         return enrich(list)
     }

@@ -54,6 +54,8 @@ object Netease {
     private fun get(path: String, vararg params: Pair<String, String>): JsonObject {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
+        // unblock=true：启用解灰（变灰歌曲自动匹配第三方音源），提高拿到播放地址的成功率
+        sb.append("unblock=true&")
         if (cookie.isNotBlank()) sb.append("cookie=").append(enc(cookie)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
@@ -196,7 +198,7 @@ object Netease {
                     title = d.title.takeIf { it.isNotBlank() } ?: s.title,
                     artist = d.artist.takeIf { it.isNotBlank() } ?: s.artist,
                     album = d.album.takeIf { it.isNotBlank() } ?: s.album,
-                    coverUrl = d.cover ?: s.coverUrl,
+                    coverUrl = d.coverUrl ?: s.coverUrl,
                 )
             }
         }
@@ -306,44 +308,36 @@ object Netease {
     /**
      * 取播放地址。
      *
-     * 依次尝试 v1 / v1+randomCNIP / 老接口 song/url，
-     * 每层再按音质从高到低试，直到拿到非空 url。
-     * 加 randomCNIP 是为了绕开网易对境外 IP 的 460 cheating 限制。
+     * 只用新版接口 /song/url/v1（level 音质档位），不再走已废弃的 /song/url。
+     * 每个音质档位依次尝试：
+     * 1. v1（已带 unblock=true，解灰匹配第三方音源）
+     * 2. v1 + randomCNIP（随机国内 IP，绕开网易对境外 IP 的 460 cheating）
+     * 3. v1 + realIP（显式指定国内 IP）
+     * 都拿不到就降一档音质继续，直到 standard。
      */
     fun audioUrl(id: Long, quality: String): String? {
-        NmLog.note("开始取播放地址 id=$id quality=$quality")
+        NmLog.note("开始取播放地址 id=$id quality=$quality（新版 v1 + unblock）")
         for (lv in levels(quality)) {
-            // 1) v1 接口
-            val r1 = get("/song/url/v1", "id" to id.toString(), "level" to lv)
-            if (r1.code() == 200) {
-                val arr = (r1["data"] as? JsonElement)?.jsonArray
-                val u = arr?.firstOrNull()?.let { it as? JsonObject }?.str("url")
-                if (!u.isNullOrBlank()) {
-                    NmLog.note("拿到地址（v1/$lv）：$u")
-                    return u
-                }
-            }
-            // 2) v1 + 随机国内 IP
-            val r2 = get(
-                "/song/url/v1", "id" to id.toString(), "level" to lv,
-                "randomCNIP" to "true",
+            val tries = listOf(
+                "v1" to listOf("id" to id.toString(), "level" to lv),
+                "v1+randomCNIP" to listOf("id" to id.toString(), "level" to lv, "randomCNIP" to "true"),
+                "v1+realIP" to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
             )
-            if (r2.code() == 200) {
-                val arr = (r2["data"] as? JsonElement)?.jsonArray
-                val u = arr?.firstOrNull()?.let { it as? JsonObject }?.str("url")
+            for ((name, ps) in tries) {
+                val r = get("/song/url/v1", *ps.toTypedArray())
+                if (r.code() != 200) continue
+                val arr = (r["data"] as? JsonElement)?.jsonArray
+                val first = arr?.firstOrNull()?.let { it as? JsonObject }
+                val u = first?.str("url")
                 if (!u.isNullOrBlank()) {
-                    NmLog.note("拿到地址（v1/$lv/randomCNIP）：$u")
+                    NmLog.note("拿到地址（$name/$lv）：$u")
                     return u
                 }
-            }
-            // 3) 老接口
-            val r3 = get("/song/url", "id" to id.toString(), "br" to brOf(lv))
-            if (r3.code() == 200) {
-                val arr = (r3["data"] as? JsonElement)?.jsonArray
-                val u = arr?.firstOrNull()?.let { it as? JsonObject }?.str("url")
-                if (!u.isNullOrBlank()) {
-                    NmLog.note("拿到地址（song/url/$lv）：$u")
-                    return u
+                // 解灰有时会把地址放在别的字段里
+                val alt = first?.str("freeTrialInfo", "url")
+                if (!alt.isNullOrBlank() && alt.startsWith("http")) {
+                    NmLog.note("拿到地址（$name/$lv/备用字段）：$alt")
+                    return alt
                 }
             }
             NmLog.note("level=$lv 三种方式都没有返回地址，继续降音质")
@@ -352,13 +346,8 @@ object Netease {
         return null
     }
 
-    /** song/url 用 br（码率）而不是 level */
-    private fun brOf(lv: String): String = when (lv) {
-        "lossless" -> "999000"
-        "exhigh" -> "320000"
-        "higher" -> "192000"
-        else -> "128000"
-    }
+    /** realIP 兜底用的国内 IP（网易对境外 IP 会返回 460 cheating） */
+    private const val FALLBACK_CN_IP = "116.25.146.177"
 
     fun lyric(id: Long): String {
         val r = get("/lyric", "id" to id.toString())

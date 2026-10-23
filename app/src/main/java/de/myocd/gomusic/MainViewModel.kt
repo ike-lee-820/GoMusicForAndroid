@@ -463,7 +463,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val s = withContext(Dispatchers.IO) { runCatching { Netease.searchSongs(kw) }.getOrDefault(emptyList()) }
                 val a = withContext(Dispatchers.IO) { runCatching { Netease.searchAlbums(kw) }.getOrDefault(emptyList()) }
                 val ar = withContext(Dispatchers.IO) { runCatching { Netease.searchArtists(kw) }.getOrDefault(emptyList()) }
-                if (!nmReady || !isActive) return@runCatching
+                if (!nmReady) return@runCatching
                 keepNetease(s)
                 // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
                 val c = counts

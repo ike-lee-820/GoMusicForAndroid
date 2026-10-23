@@ -86,6 +86,7 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.DropdownMenu
@@ -107,6 +108,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -133,6 +135,9 @@ fun MainScreen(vm: MainViewModel) {
         rememberLazyListState(), rememberLazyListState(), rememberLazyListState(), rememberLazyListState()
     )
     val top = vm.stack.lastOrNull()
+
+    // 歌词或当前行变化时，把内容推给悬浮窗
+    LaunchedEffect(vm.lyric, vm.lyricIndex, vm.floatOn) { vm.pushFloatLyric() }
 
     BackHandler(enabled = vm.showLyrics) { vm.showLyrics = false }
     BackHandler(enabled = vm.showPlayer && !vm.showLyrics) { vm.showPlayer = false }
@@ -1081,6 +1086,32 @@ fun PickSheet(vm: MainViewModel, req: PickRequest) {
     }
 }
 
+/** 悬浮歌词用的取色行 */
+@Composable
+fun FloatColorRow(current: Color, onPick: (Color) -> Unit) {
+    val presets = listOf(
+        0xFFFFFFFF, 0xFF000000, 0xFFD0BCFF, 0xFF64B5F6,
+        0xFF81C784, 0xFFFFF176, 0xFFFF8A80, 0xFFF48FB1,
+    ).map { Color(it) } + listOf(LocalGo.current.primary)
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        presets.forEach { c ->
+            val on = c == current
+            Box(
+                Modifier.size(30.dp).clip(CircleShape).background(c)
+                    .clickable { onPick(c) },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (on) {
+                    Box(
+                        Modifier.size(12.dp).clip(CircleShape)
+                            .background(if (c.luminance() > 0.5f) Color.Black else Color.White),
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
@@ -1211,6 +1242,68 @@ fun SettingsSheet(vm: MainViewModel) {
             }
             VS(16)
 
+            // ---------- 悬浮歌词 ----------
+            Txt("悬浮歌词", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
+                    .clickable { vm.setFloatOn(!vm.floatOn) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("显示悬浮歌词", 14, weight = FontWeight.Medium)
+                    Txt(
+                        if (vm.floatOn) "已开启，可拖动调整位置" else "关闭",
+                        12, color = go.muted,
+                    )
+                }
+                Switch(
+                    checked = vm.floatOn,
+                    onCheckedChange = { vm.setFloatOn(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = OnPrimary,
+                        checkedTrackColor = go.primary,
+                        uncheckedThumbColor = go.muted,
+                        uncheckedTrackColor = go.surfaceHi,
+                    ),
+                )
+            }
+            if (vm.floatOn) {
+                VS(12)
+                Txt("文字颜色", 13, color = go.muted)
+                VS(6)
+                FloatColorRow(vm.floatColor) { vm.updateFloat(color = it) }
+                VS(10)
+                Txt("描边颜色", 13, color = go.muted)
+                VS(6)
+                FloatColorRow(vm.floatStrokeColor) { vm.updateFloat(strokeColor = it) }
+                VS(10)
+                Txt("字号 ${vm.floatSize.toInt()} sp", 13, color = go.muted)
+                Slider(
+                    value = vm.floatSize,
+                    onValueChange = { vm.updateFloat(size = it) },
+                    valueRange = 12f..32f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                VS(6)
+                Txt("描边 ${vm.floatStroke.toInt()} dp", 13, color = go.muted)
+                Slider(
+                    value = vm.floatStroke,
+                    onValueChange = { vm.updateFloat(stroke = it) },
+                    valueRange = 0f..8f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                VS(6)
+                Txt("字体", 13, color = go.muted)
+                VS(6)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FONT_NAMES.forEachIndexed { i, n ->
+                        GoButton(n, primary = vm.floatFont == i) { vm.updateFloat(font = i) }
+                    }
+                }
+            }
+            VS(16)
+
             // ---------- 下载 ----------
             Txt("下载", 15, weight = FontWeight.SemiBold)
             VS(8)
@@ -1221,7 +1314,7 @@ fun SettingsSheet(vm: MainViewModel) {
                 GoButton("清空下载", icon = Icons.Outlined.Delete) { confirmClear = true }
             }
             VS(8)
-            Txt("GoMusic Android 1.1.0", 12, color = go.muted)
+            Txt("GoMusic Android ${BuildConfig.VERSION_NAME}", 12, color = go.muted)
             VS(8)
         }
     }

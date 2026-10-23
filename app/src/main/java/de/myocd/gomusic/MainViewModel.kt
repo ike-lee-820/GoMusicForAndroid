@@ -110,6 +110,22 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 「仅通话暂停」需要电话权限，由 Activity 监听并发起授权 */
     var needPhonePerm by mutableStateOf(false); private set
 
+    // ---------- 悬浮歌词 ----------
+    var floatOn by mutableStateOf(prefs.floatOn); private set
+    var floatColor by mutableStateOf(Color(prefs.floatColor)); private set
+    var floatStroke by mutableFloatStateOf(prefs.floatStroke); private set
+    var floatStrokeColor by mutableStateOf(Color(prefs.floatStrokeColor)); private set
+    var floatSize by mutableFloatStateOf(prefs.floatSize); private set
+    var floatFont by mutableIntStateOf(prefs.floatFont); private set
+    /** 需要悬浮窗权限，由 Activity 跳转系统设置页 */
+    var needOverlayPerm by mutableStateOf(false); private set
+
+    fun consumeOverlayPerm(): Boolean {
+        if (!needOverlayPerm) return false
+        needOverlayPerm = false
+        return true
+    }
+
     /** 由界面调用：取出一次待处理的权限请求 */
     fun consumePhonePerm(): Boolean {
         if (!needPhonePerm) return false
@@ -330,6 +346,69 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 设置里手动重连 */
     fun reconnect() = load()
+
+    // ================= 悬浮歌词 =================
+    /** 启动时按保存的设置恢复悬浮窗 */
+    fun restoreFloat() {
+        if (floatOn && canOverlay(app)) {
+            FloatingLyric.show(app)
+            pushFloatLyric()
+        }
+    }
+
+    fun setFloatOn(on: Boolean) {
+        if (on && !canOverlay(app)) {
+            needOverlayPerm = true
+            return
+        }
+        floatOn = on
+        prefs.floatOn = on
+        if (on) {
+            FloatingLyric.show(app)
+            pushFloatLyric()
+        } else {
+            FloatingLyric.hide()
+        }
+    }
+
+    /** 从系统设置页返回后调用 */
+    fun onOverlayResult(granted: Boolean) {
+        if (!granted) {
+            floatOn = false
+            prefs.floatOn = false
+            toast("没有悬浮窗权限，无法显示悬浮歌词")
+            return
+        }
+        floatOn = true
+        prefs.floatOn = true
+        FloatingLyric.show(app)
+        pushFloatLyric()
+    }
+
+    fun updateFloat(
+        color: Color? = null,
+        strokeColor: Color? = null,
+        stroke: Float? = null,
+        size: Float? = null,
+        font: Int? = null,
+    ) {
+        color?.let { floatColor = it; prefs.floatColor = it.toArgb() }
+        strokeColor?.let { floatStrokeColor = it; prefs.floatStrokeColor = it.toArgb() }
+        stroke?.let { floatStroke = it; prefs.floatStroke = it }
+        size?.let { floatSize = it; prefs.floatSize = it }
+        font?.let { floatFont = it; prefs.floatFont = it }
+        FloatingLyric.restyle(app)
+    }
+
+    /** 把当前歌词行推到悬浮窗 */
+    fun pushFloatLyric() {
+        if (!floatOn) return
+        val i = lyricIndex
+        val l = lyric
+        val cur = l.getOrNull(i)?.text ?: ""
+        val next = l.getOrNull(i + 1)?.text ?: ""
+        FloatingLyric.update(cur, next)
+    }
 
     // ================= 网易云曲库 =================
     init { Netease.cookie = prefs.nmCookie }

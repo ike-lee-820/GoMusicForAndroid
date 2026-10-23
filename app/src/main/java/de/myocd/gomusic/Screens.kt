@@ -67,6 +67,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DragHandle
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.HighQuality
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.MusicNote

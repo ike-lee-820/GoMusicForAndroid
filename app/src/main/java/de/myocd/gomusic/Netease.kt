@@ -83,7 +83,9 @@ object Netease {
     private fun get(path: String, vararg params: Pair<String, String>): JsonObject {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
-        // unblock=true：启用解灰（变灰歌曲自动匹配第三方音源），提高拿到播放地址的成功率
+        // unblock=true：启用解灰（变灰歌曲匹配第三方音源）。
+        // 注意：/song/url/v1 不支持自定义解灰源（会返回 msg 警告并忽略），
+        // 这种情况要走 /song/url/match，见 audioUrl 的兜底。
         sb.append("unblock=true&")
         if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
@@ -379,6 +381,15 @@ object Netease {
                 }
             }
             NmLog.note("level=$lv 三种方式都没有返回地址，继续降音质")
+        }
+        // v1 拿不到时走 /song/url/match 解灰匹配（歌曲变灰时 v1 的地址会是空）
+        runCatching {
+            val r = get("/song/url/match", "id" to id.toString())
+            val u = ((r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
+            if (!u.isNullOrBlank()) {
+                NmLog.note("match 解灰拿到地址：$u")
+                return u
+            }
         }
         // 兜底：拿游客 cookie 再试一次（未登录/登录态失效时网易会返回 301 / 400 需验证）
         NmLog.note("登录态下取不到地址，尝试游客 cookie 再试一次")

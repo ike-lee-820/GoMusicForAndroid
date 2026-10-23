@@ -76,11 +76,14 @@ class PlaybackService : MediaSessionService() {
                     } catch (e: Exception) {
                         throw IOException(e)
                     }
-                    val u = Uri.parse(url)
+                    // 网易云 CDN 给的是 http://，Android 9+ 默认禁止明文流量（会直接播不了）。
+                    // 先尝试升成 https；万一 https 不通，清单里也已开启 usesCleartextTraffic 兜底。
+                    val safe = if (url.startsWith("http://")) "https://" + url.removePrefix("http://") else url
+                    val u = Uri.parse(safe)
                     // 网易云 CDN 校验 Referer / UA，缺了会返回 403
                     // —— 这就是「拿到正确 url 却播不了」的常见原因
                     val isNm = nid != null && p.nmCookie.isNotBlank()
-                    NmLog.note("解析到播放地址：$url（${if (isNm) "网易云" else "本站"}）")
+                    NmLog.note("解析到播放地址：$url -> $safe（${if (isNm) "网易云" else "本站"}）")
                     val base = spec.withUri(u)
                     if (isNm) base.withRequestHeaders(NM_HEADERS) else base
                 }

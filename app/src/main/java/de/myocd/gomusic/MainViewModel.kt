@@ -34,6 +34,7 @@ import androidx.palette.graphics.Palette
 import coil.imageLoader
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -475,9 +476,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 delay(400)
                 nmSearching = true
-                val s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
-                val a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
-                val ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
+                // 三个搜索并行发，不用串行等三倍时间
+                val songsDeferred = async(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
+                val albumsDeferred = async(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
+                val artistsDeferred = async(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
+                val s = songsDeferred.await()
+                val a = albumsDeferred.await()
+                val ar = artistsDeferred.await()
                 if (!nmReady) return@launch
                 keepNetease(s)
                 // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
@@ -512,9 +517,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 用独立 job：不占用搜索的 nmJob，避免加载更多被搜索取消
         viewModelScope.launch {
             try {
-                val s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
-                val a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
-                val ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
+                val dS = async(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
+                val dA = async(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
+                val dAr = async(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
+                val s = dS.await()
+                val a = dA.await()
+                val ar = dAr.await()
                 if (kw != nmKeyword || !nmReady) return@launch
                 keepNetease(s)
                 // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突

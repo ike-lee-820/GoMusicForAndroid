@@ -35,6 +35,14 @@ object Netease {
     /** 登录后拿到的 cookie，由 Prefs 注入；所有请求自动带上 */
     @Volatile
     var cookie: String = ""
+        set(v) {
+            field = v
+            if (v.isNotBlank()) NmLog.note("已设置 cookie，包含键：${cookieKeys(v)}（长度 ${v.length}）")
+        }
+
+    /** 日志里只记 cookie 的键名，不记值，避免泄露登录凭证 */
+    private fun cookieKeys(c: String): String =
+        c.split(";").map { it.substringBefore("=").trim() }.filter { it.isNotBlank() }.joinToString(",")
 
     /** 音质：本站质量键 -> 网易云 level（从高到低，逐个尝试直到拿到地址） */
     private fun levels(quality: String): List<String> = when (quality) {
@@ -47,6 +55,27 @@ object Netease {
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     /**
+     * cookie 必须用百分号编码（空格 -> %20），不能用 URLEncoder。
+     *
+     * URLEncoder 会把空格编成 "+"，而服务端用 decodeURIComponent 解析时
+     * "+" 不会被还原成空格，cookie 里的 "; " 会变成 ";+"，
+     * 导致整串 cookie 解析失败 —— 表现就是「登录了却取不到播放地址」。
+     */
+    private fun encCookie(s: String): String {
+        val out = StringBuilder(s.length + 32)
+        for (b in s.toByteArray(Charsets.UTF_8)) {
+            val c = b.toInt() and 0xFF
+            val keep = (c in 'A'.code..'Z'.code) || (c in 'a'.code..'z'.code) ||
+                (c in '0'.code..'9'.code) || c == '-'.code || c == '_'.code ||
+                c == '.'.code || c == '!'.code || c == '~'.code || c == '*'.code ||
+                c == '('.code || c == ')'.code
+            if (keep) out.append(c.toChar())
+            else out.append('%').append("%02X".format(c))
+        }
+        return out.toString()
+    }
+
+    /**
      * 发一次 GET。
      * 完整 URL 与完整响应都会写进日志文件（见 [NmLog]）。
      * 失败时记日志并返回空对象，绝不让异常冒到调用方造成闪退。
@@ -56,7 +85,7 @@ object Netease {
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
         // unblock=true：启用解灰（变灰歌曲自动匹配第三方音源），提高拿到播放地址的成功率
         sb.append("unblock=true&")
-        if (cookie.isNotBlank()) sb.append("cookie=").append(enc(cookie)).append('&')
+        if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
         NmLog.req(url)

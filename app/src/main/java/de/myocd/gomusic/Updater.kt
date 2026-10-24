@@ -116,4 +116,55 @@ object Updater {
      */
     fun downloadUrl(info: Info): String =
         if (info.url.isBlank()) info.page else PROXY + info.url
+
+    /**
+     * 下载 APK 到应用私有目录，返回本地文件。
+     *
+     * [onProgress] 回调 已下载字节 / 总字节。失败返回 null。
+     * 先试加速地址，拿不到再回退原始直连。
+     */
+    fun downloadApk(
+        info: Info,
+        dir: java.io.File,
+        onProgress: (Long, Long) -> Unit,
+    ): java.io.File? {
+        val urls = listOf(downloadUrl(info), info.url).filter { it.isNotBlank() }.distinct()
+        for (u in urls) {
+            NmLog.note("开始下载 APK：$u")
+            try {
+                if (!dir.exists()) dir.mkdirs()
+                val out = java.io.File(dir, "GoMusic-${info.latest}.apk")
+                if (out.exists()) out.delete()
+                val req = Request.Builder().url(u).header("Connection", "close").build()
+                Api.client.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) {
+                        NmLog.note("APK 下载失败 HTTP ${r.code}：$u")
+                        return@use
+                    }
+                    val body = r.body ?: return@use
+                    val total = body.contentLength()
+                    body.byteStream().use { input ->
+                        out.outputStream().use { os ->
+                            val buf = ByteArray(64 * 1024)
+                            var done = 0L
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n <= 0) break
+                                os.write(buf, 0, n)
+                                done += n
+                                onProgress(done, total)
+                            }
+                        }
+                    }
+                }
+                if (out.exists() && out.length() > 0) {
+                    NmLog.note("APK 下载完成：${out.absolutePath}（${out.length()} 字节）")
+                    return out
+                }
+            } catch (e: Exception) {
+                NmLog.note("APK 下载异常 ${e.message}：$u")
+            }
+        }
+        return null
+    }
 }

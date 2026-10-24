@@ -956,8 +956,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var updateChecking by mutableStateOf(false); private set
     /** 检查结果；null = 还没查或查询失败 */
     var updateInfo by mutableStateOf<Updater.Info?>(null); private set
-    /** 只在启动时静默查一次，有更新才提示 */
+    /** 只在启动时静默查一次，有更新才弹出 */
     private var autoChecked = false
+    /** 是否显示全屏更新弹窗（启动检测到新版本时自动弹出） */
+    var showUpdate by mutableStateOf(false)
+    /** 应用内下载进度：已下载 / 总字节；null = 没在下载 */
+    var updateProgress by mutableStateOf<Pair<Long, Long>?>(null); private set
+    /** 下载好的 APK，等待安装 */
+    var updateFile by mutableStateOf<java.io.File?>(null); private set
+    /** 需要申请「安装未知应用」权限，由 Activity 处理 */
+    var needInstallPerm by mutableStateOf(false); private set
+    /** 启动检测弹过一次后，本次进程内不再自动弹 */
+    private var autoShown = false
 
     /** 检查更新。[silent] = true 时查不到更新不提示 */
     fun checkUpdate(silent: Boolean = false) {
@@ -969,17 +979,93 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             updateChecking = false
             when {
                 info == null -> if (!silent) toast("检查更新失败，请检查网络")
-                info.hasUpdate -> toast("发现新版本 ${info.latest}")
+                info.hasUpdate -> {
+                    // 发现新版本：全屏弹窗让用户选更新方式
+                    showUpdate = true
+                }
                 !silent -> toast("当前已是最新版本 ${appVersion}")
             }
         }
     }
 
-    /** 启动时静默检查一次 */
+    /** 启动时静默检查一次，有新版就弹全屏弹窗 */
     fun autoCheckUpdate() {
         if (autoChecked) return
         autoChecked = true
         checkUpdate(silent = true)
+    }
+
+    /** 启动检测完成后若发现有新版，自动弹一次（只弹一次） */
+    fun maybeShowUpdateDialog() {
+        if (autoShown) return
+        val info = updateInfo ?: return
+        if (!info.hasUpdate) return
+        autoShown = true
+        showUpdate = true
+    }
+
+    fun closeUpdate() {
+        showUpdate = false
+        updateProgress = null
+    }
+
+    /** 应用内更新：下载 APK 后走系统安装（需要安装权限） */
+    fun updateInApp() {
+        val info = updateInfo ?: return
+        if (updateProgress != null) return
+        val dir = java.io.File(app.getExternalFilesDir(null), "update")
+        updateProgress = 0L to 0L
+        viewModelScope.launch {
+            val f = withContext(Dispatchers.IO) {
+                Updater.downloadApk(info, dir) { done, total ->
+                    viewModelScope.launch { updateProgress = done to total }
+                }
+            }
+            if (f == null) {
+                updateProgress = null
+                toast("下载失败，可改用应用外更新")
+                return@launch
+            }
+            updateProgress = null
+            updateFile = f
+            // 没授予「安装未知应用」权限时，先让 Activity 去申请
+            val canInstall = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                app.packageManager.canRequestPackageInstalls()
+            } else true
+            if (canInstall) installApk(f) else needInstallPerm = true
+        }
+    }
+
+    /** 安装 APK（权限已授予） */
+    fun installApk(f: java.io.File) {
+        needInstallPerm = false
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            app, "${app.packageName}.fileprovider", f,
+        )
+        val i = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching {
+            app.startActivity(i)
+        }.onFailure {
+            toast("无法打开安装界面：${it.message}")
+        }
+    }
+
+    /** 安装权限结果回来后，继续安装已下载的 APK */
+    fun onInstallPermResult(granted: Boolean) {
+        needInstallPerm = false
+        val f = updateFile
+        if (granted && f != null) installApk(f)
+        else if (!granted) toast("需要允许安装未知应用才能更新")
+    }
+
+    /** 应用外更新：交给浏览器 / 系统下载器 */
+    fun updateByBrowser(): String? {
+        val info = updateInfo ?: return null
+        return Updater.downloadUrl(info)
     }
 
     // ================= 首页 =================

@@ -23,6 +23,14 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             vm.onPhonePermissionResult(granted)
         }
+    // 应用内更新：Android 8+ 需要「允许安装未知应用」权限
+    private val installPermission =
+        registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { vm.onInstallPermResult(canInstallPackages()) }
+
+    private fun canInstallPackages(): Boolean =
+        if (Build.VERSION.SDK_INT >= 26) packageManager.canRequestPackageInstalls() else true
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ImageCache.init(this)
@@ -41,9 +49,28 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(vm.needPhonePerm) {
                 if (vm.consumePhonePerm()) phonePermission.launch(Manifest.permission.READ_PHONE_STATE)
             }
-            // 启动时静默检查一次更新，有新版才提示
+            // 启动时静默检查一次更新，有新版就弹全屏弹窗
             LaunchedEffect(Unit) { vm.autoCheckUpdate() }
-            GoTheme(vm.primary) { MainScreen(vm) }
+            // 检查完成后若发现新版本，自动弹一次
+            LaunchedEffect(vm.updateInfo, vm.updateChecking) {
+                if (!vm.updateChecking) vm.maybeShowUpdateDialog()
+            }
+            // 申请「安装未知应用」权限
+            LaunchedEffect(vm.needInstallPerm) {
+                if (vm.needInstallPerm && Build.VERSION.SDK_INT >= 26) {
+                    installPermission.launch(
+                        android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            android.net.Uri.parse("package:$packageName"),
+                        ),
+                    )
+                }
+            }
+            GoTheme(vm.primary) {
+                MainScreen(vm)
+                // 全屏更新弹窗：启动检测到新版本 / 设置里点更新都会弹
+                if (vm.showUpdate) UpdateScreen(vm)
+            }
         }
     }
 

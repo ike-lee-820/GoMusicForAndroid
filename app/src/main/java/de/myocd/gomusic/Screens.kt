@@ -1630,7 +1630,6 @@ fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
     var hex by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
-    var openUpdate by remember { mutableStateOf(false) }
     val presets = listOf(
         0xFFD0BCFF, 0xFFFF8A80, 0xFFFFB74D, 0xFFFFF176,
         0xFF81C784, 0xFF4DD0E1, 0xFF64B5F6, 0xFFF48FB1,
@@ -1792,7 +1791,8 @@ fun SettingsSheet(vm: MainViewModel) {
                     enabled = !vm.updateChecking,
                 ) { vm.checkUpdate() }
                 if (up?.hasUpdate == true) {
-                    GoButton("下载更新", primary = true, icon = Icons.Outlined.Download) { openUpdate = true }
+                    // 与启动时一致：打开同一个全屏更新弹窗
+                    GoButton("更新", primary = true, icon = Icons.Outlined.Download) { vm.showUpdate = true }
                 }
             }
             VS(8)
@@ -1806,51 +1806,7 @@ fun SettingsSheet(vm: MainViewModel) {
             vm.clearDownloads()
         }
     }
-    if (openUpdate) {
-        val up = vm.updateInfo
-        if (up != null) UpdateDialog(up) { openUpdate = false }
-        else openUpdate = false
-    }
-}
 
-/** 发现新版本时的更新弹层：显示版本号、大小、说明，并提供加速下载 */
-@Composable
-fun UpdateDialog(info: Updater.Info, onDismiss: () -> Unit) {
-    val go = LocalGo.current
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = go.surface,
-        title = { Txt("发现新版本 ${info.latest}", 16, weight = FontWeight.SemiBold) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Txt("当前版本 ${Updater.current()}", 12, color = go.muted)
-                if (info.size > 0) {
-                    VS(4)
-                    Txt("大小 ${"%.1f".format(info.size / 1024f / 1024f)} MB", 12, color = go.muted)
-                }
-                if (info.notes.isNotBlank()) {
-                    VS(8)
-                    Txt(info.notes, 12, color = go.on)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                // 用浏览器打开加速后的下载地址，交给系统下载
-                runCatching {
-                    val i = android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse(Updater.downloadUrl(info)),
-                    )
-                    ctx.startActivity(i)
-                }.onFailure { }
-                onDismiss()
-            }) { Text("下载更新", color = go.primary) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("稍后", color = go.muted) } },
-    )
-}
 
 @Composable
 fun DownloadsSheet(vm: MainViewModel) {

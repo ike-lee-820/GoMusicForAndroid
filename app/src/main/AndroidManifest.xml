@@ -11,6 +11,8 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- 应用内更新：安装 APK 需要 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- 网易云 CDN 返回的是 http 地址，Android 9+ 默认禁止明文流量 -->
     <application
@@ -39,6 +41,17 @@
                 <data android:scheme="https" android:host="gomusic.myocd.de5.net" />
             </intent-filter>
         </activity>
+
+        <!-- 应用内更新：把下载好的 APK 交给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name=".PlaybackService"

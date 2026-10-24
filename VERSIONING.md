@@ -55,3 +55,4 @@
   - 设置里可选：系统字体 / 思源宋体 / 思源黑体，切换后全局生效
   - 可变字体 wght 轴 250–900，默认 450；滑块拖动即时生效并实时保存
   - 用 FontVariation.weight 直接指定字重，Bold 在基准上再加一档，保留粗细层次
+- `1.7.1` 小迭代：修编译（FontVariation 需要 @OptIn(ExperimentalTextApi)；PI_F 常量误插在 import 中间）

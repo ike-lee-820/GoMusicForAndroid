@@ -1,10 +1,13 @@
 package de.myocd.gomusic
 
+@file:OptIn(ExperimentalTextApi::class)
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.font.FontWeight
 
 /** 系统字体（手机自带） */

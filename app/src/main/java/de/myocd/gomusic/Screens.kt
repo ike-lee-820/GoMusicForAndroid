@@ -150,9 +150,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 
 private const val PI_F = 3.14159265f
-import coil.compose.AsyncImage
 
 fun shareText(ctx: Context, text: String) {
     val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)

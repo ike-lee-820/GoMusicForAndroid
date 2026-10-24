@@ -417,6 +417,28 @@ object Netease {
      * 3. v1 + realIP（显式指定国内 IP）
      * 都拿不到就降一档音质继续，直到 standard。
      */
+    /**
+     * 探测这首歌实际有哪些音质：每个档位都试一次，能拿到地址的才返回。
+     *
+     * 每个档位只走一次 v1 基础请求（不再叠加 randomCNIP / realIP），
+     * 避免探测一次就发几十个请求拖慢播放。
+     */
+    fun availableLevels(id: Long): List<String> {
+        val out = LinkedHashSet<String>()
+        for (lv in NM_LEVELS) {
+            val r = runCatching {
+                get("/song/url/v1", "id" to id.toString(), "level" to lv)
+            }.getOrNull() ?: continue
+            if (r.code() != 200) continue
+            val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+            val u = first?.str("url")
+                ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+            if (!u.isNullOrBlank()) out.add(lv)
+        }
+        NmLog.note("音质探测 id=$id -> ${out.toList()}")
+        return out.toList()
+    }
+
     fun audioUrl(id: Long, quality: String, level: String? = null): String? {
         NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（新版 v1 + unblock）")
         // 指定了档位就优先试它，试不到再按设置降档

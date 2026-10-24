@@ -1386,6 +1386,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         controller?.setPlaybackSpeed(v)
     }
 
+    /** 歌曲 id -> 实际能拿到的音质档位，探测过就缓存，避免每首都重探 */
+    private val nmLevelsCache = java.util.concurrent.ConcurrentHashMap<Long, List<String>>()
+
     /** 当前是否为网易云音质档位名（quality 菜单可能是网易云的档位） */
     val nmQualityMode: Boolean get() = curSsid?.let { isNetease(it) } == true
     /** 网易云当前音质档位（空 = 跟随设置） */
@@ -1463,6 +1466,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             // 离线时只列已经下载过的音质（没下载的播不了，不显示）
             qualities = if (offline) downloadedQualities(id).ifEmpty { NM_LEVELS } else NM_LEVELS
             val nid = neteaseIdOf(id)
+            // 后台逐档位探测真实存在的音质，探测完只显示拿得到的那些
+            if (nid != null && !offline) {
+                val hit = nmLevelsCache[nid]
+                if (hit != null) {
+                    if (hit.isNotEmpty()) qualities = hit
+                } else {
+                    viewModelScope.launch {
+                        val lv = withContext(Dispatchers.IO) {
+                            runCatching { Netease.availableLevels(nid) }.getOrDefault(emptyList())
+                        }
+                        nmLevelsCache[nid] = lv
+                        if (lv.isNotEmpty() && curSsid == id && !offline) qualities = lv
+                    }
+                }
+            }
             viewModelScope.launch {
                 // 播放前用 /song/detail 补全封面 / 专辑 / 歌手
                 // （搜索接口给的 al.picUrl 经常是空的）

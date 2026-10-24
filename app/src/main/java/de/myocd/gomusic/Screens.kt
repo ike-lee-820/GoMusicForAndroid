@@ -1815,7 +1815,7 @@ fun SettingsSheet(vm: MainViewModel) {
                     Box(
                         Modifier.clip(RoundedCornerShape(50))
                             .background(if (sel) go.primary else go.surfaceHi)
-                            .clickable { vm.setZhConvert(m) }
+                            .clickable { vm.chooseZhConvert(m) }
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                     ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
                 }

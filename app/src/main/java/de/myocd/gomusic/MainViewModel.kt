@@ -1393,8 +1393,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var zhConvert by mutableIntStateOf(prefs.zhConvert)
         private set
 
-    /** 改简繁设置：立即生效（界面与文字都会跟着变） */
-    fun setZhConvert(m: Int) {
+    /** 改简繁设置：立即生效（界面与文字都会跟着变）
+     *  名字不能叫 setZhConvert —— 会和 var 自动生成的 setter 撞 JVM 签名 */
+    fun chooseZhConvert(m: Int) {
         zhConvert = m
         prefs.zhConvert = m
     }

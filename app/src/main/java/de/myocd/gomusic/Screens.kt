@@ -160,7 +160,7 @@ private const val PI_F = 3.14159265f
  * 相邻两行的纵向间距（dp）——这就是「行距」。
  * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
  */
-private const val ARC_ROW_SPACING_DP = 53f
+private const val ARC_ROW_SPACING_DP = 58.3f
 
 /**
  * 最外侧那行的最大倾斜角（度）。
@@ -1777,9 +1777,9 @@ fun WheelLyrics(
                     fontSize = if (isCur) 19.sp else 16.sp,
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
-                    textAlign = TextAlign.Center,
-                    // 完整显示，不裁剪：宽度放开、不限制行数，
-                    // 由外层容器自行换行
+                    // 左侧对齐
+                    textAlign = TextAlign.Start,
+                    // 不裁剪：超过宽度就换行
                     maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1910,9 +1910,9 @@ fun CircleLyrics(
                     fontSize = if (isCur) 16.sp else 13.sp,
                     lineHeight = if (isCur) 22.sp else 18.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
-                    textAlign = TextAlign.Center,
-                    // 完整显示，不裁剪：宽度放开、不限制行数，
-                    // 由外层容器自行换行
+                    // 左侧对齐
+                    textAlign = TextAlign.Start,
+                    // 不裁剪：超过宽度就换行
                     maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1971,7 +1971,9 @@ fun ArcLyrics(
     // 停手后回位用的动画偏移
     val animOff = remember { Animatable(0f) }
     var manualAt by remember { mutableLongStateOf(0L) }
-    val cur = base + animOff.value + dragOff
+    // 位置在这里统一裁剪，边界只依赖歌词行数，不会在拖动中跳变
+    val cur = (base + animOff.value + dragOff)
+        .coerceIn(-0.6f, lines.lastIndex.toFloat() + 0.6f)
     // 每滑一次就更新 manualAt，这个协程会重启并重新计时 3 秒
     LaunchedEffect(manualAt) {
         if (manualAt == 0L) return@LaunchedEffect
@@ -1990,10 +1992,11 @@ fun ArcLyrics(
                     onDragEnd = { manualAt = System.currentTimeMillis() },
                     onDragCancel = { manualAt = System.currentTimeMillis() },
                     onVerticalDrag = { _, dragAmount ->
-                        // 最多只能滑出可视范围一点点，避免甩得太远
-                        val lo = -base - animOff.value - 0.6f
-                        val hi = lines.lastIndex.toFloat() + 0.6f - base - animOff.value
-                        dragOff = (dragOff - dragAmount / rowPxDrag).coerceIn(lo, hi)
+                        // 拖动过程只累加，不做裁剪：
+                        // 之前按 base 算上下限，而播放时 base 一直在动，
+                        // 边界随之跳变会把 dragOff 反复夹回去，看着就不跟手。
+                        // 裁剪改到渲染时统一做
+                        dragOff -= dragAmount / rowPxDrag
                         manualAt = System.currentTimeMillis()
                     },
                 )
@@ -2026,9 +2029,9 @@ fun ArcLyrics(
             // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
             Box(
                 Modifier
-                    // 外层不设固定宽度：宽度一写死，里面斜着的文字就会被
-                    // 这个正矩形切掉一角，而外框本身又不跟文字平行
-                    .wrapContentWidth(unbounded = true)
+                    // 固定宽度，让每一行的左边缘对齐；
+                    // 外框跟着文字一起转（rotationZ 相同），不会被斜切
+                    .width(lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
                         // 外框跟着文字一起转，两者的边始终平行，不会被斜切
@@ -2051,7 +2054,7 @@ fun ArcLyrics(
                             manualAt = 0L
                             onSeek(lines[i].timeMs)
                         }
-                        .widthIn(max = lineW)
+                        .fillMaxWidth()
                         .graphicsLayer {
                             // 圆心角即切线角：不加截断，文字方向才始终贴合圆。
                             // 放在最内层，只影响绘制，不影响上面的命中框尺寸
@@ -2064,9 +2067,9 @@ fun ArcLyrics(
                     fontSize = if (isCur) 19.sp else 15.sp,
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
-                    textAlign = TextAlign.Center,
-                    // 完整显示，不裁剪：宽度放开、不限制行数，
-                    // 由外层容器自行换行
+                    // 左侧对齐
+                    textAlign = TextAlign.Start,
+                    // 不裁剪：超过宽度就换行
                     maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                 )

@@ -4,6 +4,10 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.material3.Typography
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -37,7 +41,11 @@ val LocalGo = compositionLocalOf {
 val OnPrimary = Color(0xFF1A1423)
 
 @Composable
-fun GoTheme(primary: Color, content: @Composable () -> Unit) {
+fun GoTheme(
+    primary: Color,
+    font: androidx.compose.ui.text.font.FontFamily? = null,
+    content: @Composable () -> Unit,
+) {
     val p by animateColorAsState(primary, tween(400), label = "primary")
     val c = GoColors(
         bg = Color(0xFF121014),
@@ -60,10 +68,43 @@ fun GoTheme(primary: Color, content: @Composable () -> Unit) {
             surfaceContainer = c.surface,
             surfaceContainerHigh = c.surface,
             surfaceContainerHighest = c.surfaceHi,
-        )
+        ),
+        typography = appTypography(font),
     ) {
-        CompositionLocalProvider(LocalGo provides c) {
+        CompositionLocalProvider(
+            LocalGo provides c,
+            LocalAppFont provides font,
+        ) {
             Surface(Modifier.fillMaxSize(), color = c.bg, contentColor = c.on) { content() }
         }
     }
 }
+
+/**
+ * 把全局字体套到整套排版上。
+ * [font] 为 null 时用系统字体，保持原本的样子。
+ */
+fun appTypography(font: androidx.compose.ui.text.font.FontFamily?): Typography {
+    if (font == null) return Typography()
+    val b = Typography()
+    return Typography(
+        displayLarge = b.displayLarge.copy(fontFamily = font),
+        displayMedium = b.displayMedium.copy(fontFamily = font),
+        displaySmall = b.displaySmall.copy(fontFamily = font),
+        headlineLarge = b.headlineLarge.copy(fontFamily = font),
+        headlineMedium = b.headlineMedium.copy(fontFamily = font),
+        headlineSmall = b.headlineSmall.copy(fontFamily = font),
+        titleLarge = b.titleLarge.copy(fontFamily = font),
+        titleMedium = b.titleMedium.copy(fontFamily = font),
+        titleSmall = b.titleSmall.copy(fontFamily = font),
+        bodyLarge = b.bodyLarge.copy(fontFamily = font),
+        bodyMedium = b.bodyMedium.copy(fontFamily = font),
+        bodySmall = b.bodySmall.copy(fontFamily = font),
+        labelLarge = b.labelLarge.copy(fontFamily = font),
+        labelMedium = b.labelMedium.copy(fontFamily = font),
+        labelSmall = b.labelSmall.copy(fontFamily = font),
+    )
+}
+
+/** 当前全局字体；null 表示用系统字体 */
+val LocalAppFont = compositionLocalOf<FontFamily?> { null }

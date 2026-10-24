@@ -173,7 +173,11 @@ fun Txt(
         overflow = TextOverflow.Ellipsis,
         textAlign = align,
         // 列表里不用等宽数字：字体特性会让文本排版变慢，滚动时能省下不少开销
-        style = if (tnum) Tnum else LocalTextStyle.current,
+        // 字体从 LocalAppFont 走，保证 tnum 分支也用上全局字体
+        style = (if (tnum) Tnum else LocalTextStyle.current).let {
+            val ff = LocalAppFont.current
+            if (ff != null) it.copy(fontFamily = ff) else it
+        },
     )
 }
 

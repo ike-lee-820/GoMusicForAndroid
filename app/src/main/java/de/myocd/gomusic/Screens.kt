@@ -2379,6 +2379,48 @@ fun SettingsSheet(vm: MainViewModel) {
             Txt("更新检查经 gh-proxy.com 加速", 11, color = go.muted)
             VS(16)
 
+            // ---------- 字体 ----------
+            Txt("字体", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FONT_NAMES.forEachIndexed { i, n ->
+                    val sel = vm.fontKind == i
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(if (sel) go.primary else go.surfaceHi)
+                            .clickable { vm.setFontKind(i) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
+                }
+            }
+            VS(10)
+            // 字重：可变字体的 wght 轴，拖动即时生效并保存
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt("字重", 13, color = go.muted)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(go.surfaceHi)
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                ) { Txt(vm.fontWght.toString(), 13, color = go.primary) }
+            }
+            Slider(
+                value = vm.fontWght.toFloat(),
+                // 拖动过程中就写入，松手或退出都不会丢
+                onValueChange = { vm.setFontWght(it.roundToInt()) },
+                valueRange = WGHT_MIN.toFloat()..WGHT_MAX.toFloat(),
+                steps = (WGHT_MAX - WGHT_MIN) / 10 - 1,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Txt(
+                if (vm.fontKind == FONT_SYSTEM) "系统字体不支持调字重，切换内置字体后可用"
+                else "范围 $WGHT_MIN–$WGHT_MAX，默认 $WGHT_DEFAULT；改动立即保存",
+                11, color = go.muted,
+            )
+            VS(16)
+
             // ---------- 简繁转换 ----------
             Txt("简繁转换", 15, weight = FontWeight.SemiBold)
             VS(8)

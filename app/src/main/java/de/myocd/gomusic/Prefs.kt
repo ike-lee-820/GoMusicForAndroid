@@ -104,6 +104,22 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("zh_convert", ZhConvert.TO_SIMPLE)
         set(v) { sp.edit().putInt("zh_convert", v).apply() }
 
+    /**
+     * 全局字体：
+     * 0 系统字体（默认）/ 1 思源宋体 / 2 思源黑体
+     */
+    var fontKind: Int
+        get() = sp.getInt("font_kind", 0)
+        set(v) { sp.edit().putInt("font_kind", v).apply() }
+
+    /**
+     * 可变字体的字重（wght 轴）。
+     * 思源宋体 / 思源黑体的轴范围是 250~900，这里默认 450。
+     */
+    var fontWght: Int
+        get() = sp.getInt("font_wght", 450).coerceIn(250, 900)
+        set(v) { sp.edit().putInt("font_wght", v.coerceIn(250, 900)).apply() }
+
     var nmAccount: String
         get() = sp.getString("nm_account", "") ?: ""
         set(v) { sp.edit().putString("nm_account", v).apply() }

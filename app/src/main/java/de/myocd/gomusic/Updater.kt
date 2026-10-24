@@ -21,6 +21,8 @@ object Updater {
     /** GitHub 加速前缀 */
     private const val PROXY = "https://gh-proxy.com/"
     private const val API_LATEST = "https://api.github.com/repos/$OWNER/$REPO/releases/latest"
+    /** 发布列表：用来在多个发布里挑版本号最大的那个 */
+    private const val API_RELEASES = "https://api.github.com/repos/$OWNER/$REPO/releases?per_page=20"
     private const val RELEASES_PAGE = "https://github.com/$OWNER/$REPO/releases"
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -32,6 +34,7 @@ object Updater {
         val page: String,            // Releases 页面
         val notes: String,           // 更新说明
         val size: Long,              // APK 大小（字节），0 = 未知
+        val draft: Boolean = false,  // 草稿发布，不参与更新
         val hasUpdate: Boolean,
     )
 
@@ -76,38 +79,64 @@ object Updater {
         return null
     }
 
-    /** 查最新版本；失败返回 null */
-    fun check(): Info? {
-        val body = getBody(API_LATEST) ?: return null
-        return runCatching {
-            val root = json.parseToJsonElement(body) as? JsonObject ?: return null
-            val tag = (root["tag_name"] as? JsonPrimitive)?.content
-                ?: (root["name"] as? JsonPrimitive)?.content
-                ?: return null
-            val latest = norm(tag)
-            var url = ""
-            var size = 0L
-            (root["assets"] as? JsonElement)?.jsonArray?.forEach { e ->
-                val o = e as? JsonObject ?: return@forEach
-                val name = (o["name"] as? JsonPrimitive)?.content ?: ""
-                if (name.endsWith(".apk", true)) {
-                    url = (o["browser_download_url"] as? JsonPrimitive)?.content ?: ""
-                    size = (o["size"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-                    return@forEach
-                }
+    /** 解析单个发布条目 */
+    private fun parseInfo(root: JsonObject): Info? = runCatching {
+        val tag = (root["tag_name"] as? JsonPrimitive)?.content
+            ?: (root["name"] as? JsonPrimitive)?.content
+            ?: return null
+        val latest = norm(tag)
+        var url = ""
+        var size = 0L
+        (root["assets"] as? JsonElement)?.jsonArray?.forEach { e ->
+            val o = e as? JsonObject ?: return@forEach
+            val name = (o["name"] as? JsonPrimitive)?.content ?: ""
+            if (name.endsWith(".apk", true)) {
+                url = (o["browser_download_url"] as? JsonPrimitive)?.content ?: ""
+                size = (o["size"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+                return@forEach
             }
-            val notes = (root["body"] as? JsonPrimitive)?.content?.take(600) ?: ""
-            Info(
-                latest = latest,
-                url = url,
-                page = RELEASES_PAGE,
-                notes = notes,
-                size = size,
-                hasUpdate = compare(latest, current()) > 0,
-            )
-        }.onFailure {
-            NmLog.note("更新检查解析失败：${it.message}")
-        }.getOrNull()
+        }
+        val notes = (root["body"] as? JsonPrimitive)?.content?.take(600) ?: ""
+        Info(
+            latest = latest,
+            url = url,
+            page = (root["html_url"] as? JsonPrimitive)?.content ?: RELEASES_PAGE,
+            notes = notes,
+            size = size,
+            draft = (root["draft"] as? JsonPrimitive)?.content?.toBoolean() ?: false,
+            hasUpdate = compare(latest, current()) > 0,
+        )
+    }.onFailure {
+        NmLog.note("更新检查解析失败：${it.message}")
+    }.getOrNull()
+
+    /**
+     * 查最新版本；失败返回 null。
+     *
+     * 优先拉发布列表、取其中版本号最大的那个：
+     * /releases/latest 只认非草稿且非预发布的发布，跨大版本发布或被标成
+     * 预发布时它会漏掉，导致明明有新版却不提示。列表取最大则不受这些影响。
+     */
+    fun check(): Info? {
+        val listBody = getBody(API_RELEASES)
+        if (listBody != null) {
+            val arr = runCatching {
+                json.parseToJsonElement(listBody) as? kotlinx.serialization.json.JsonArray
+            }.getOrNull()
+            val infos = arr?.mapNotNull { (it as? JsonObject)?.let(::parseInfo) }
+                ?.filter { !it.draft }
+            if (!infos.isNullOrEmpty()) {
+                val best = infos.maxWith(Comparator { a, b -> compare(a.latest, b.latest) })
+                NmLog.note("更新检查：列表里最新为 ${best.latest}（当前 ${current()}）")
+                return best
+            }
+        }
+        // 列表拿不到就退回单条接口
+        val body = getBody(API_LATEST) ?: return null
+        val root = runCatching {
+            json.parseToJsonElement(body) as? JsonObject
+        }.getOrNull() ?: return null
+        return parseInfo(root)
     }
 
     /**

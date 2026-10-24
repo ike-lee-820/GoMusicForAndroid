@@ -175,7 +175,7 @@ private const val ARC_MAX_TILT_DEG = 20f
  * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
  * 这里放大一点让滑动跟手（1.0 = 手指移动多少、歌词就移动多少）。
  */
-private const val ARC_DRAG_SENSITIVITY = 1.5f
+private const val ARC_DRAG_SENSITIVITY = 2.5f
 
 fun shareText(ctx: Context, text: String) {
     val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
@@ -1777,8 +1777,9 @@ fun WheelLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 过长的句子直接换行显示，不截断
-                    maxLines = 3,
+                    // 过长的句子直接换行显示，不截断。
+                    // 最多 2 行：折行高度必须小于行距，否则相邻两行又会叠在一起
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1909,8 +1910,9 @@ fun CircleLyrics(
                     lineHeight = if (isCur) 22.sp else 18.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 过长的句子直接换行显示，不截断
-                    maxLines = 3,
+                    // 过长的句子直接换行显示，不截断。
+                    // 最多 2 行：折行高度必须小于行距，否则相邻两行又会叠在一起
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1963,37 +1965,35 @@ fun ArcLyrics(
         animationSpec = tween(400),
         label = "arcBase",
     )
-    // 手动滑动的偏移；停手 3 秒后归零
-    val offset = remember { Animatable(0f) }
-    var manual by remember { mutableStateOf(false) }
+    // 手动滑动偏移：直接改状态（不用协程 snapTo），每个拖动事件立即生效，滑动才跟手
+    var dragOff by remember { mutableFloatStateOf(0f) }
+    // 停手后回位用的动画偏移
+    val animOff = remember { Animatable(0f) }
     var manualAt by remember { mutableLongStateOf(0L) }
-    val cur = base + offset.value
+    val cur = base + animOff.value + dragOff
     // 每滑一次就更新 manualAt，这个协程会重启并重新计时 3 秒
     LaunchedEffect(manualAt) {
-        if (!manual) return@LaunchedEffect
+        if (manualAt == 0L) return@LaunchedEffect
         delay(3000)
-        manual = false
-        offset.animateTo(0f, tween(500))
+        // 把手动偏移交给动画，再平滑回到跟播位置
+        animOff.snapTo(animOff.value + dragOff)
+        dragOff = 0f
+        animOff.animateTo(0f, tween(500))
     }
 
     BoxWithConstraints(
         modifier.fillMaxSize()
             .pointerInput(lines) {
                 detectVerticalDragGestures(
-                    onDragStart = { manual = true; manualAt = System.currentTimeMillis() },
+                    onDragStart = { manualAt = System.currentTimeMillis() },
                     onDragEnd = { manualAt = System.currentTimeMillis() },
                     onDragCancel = { manualAt = System.currentTimeMillis() },
                     onVerticalDrag = { _, dragAmount ->
-                        manual = true
-                        manualAt = System.currentTimeMillis()
-                        val rowPx = rowPxDrag
                         // 最多只能滑出可视范围一点点，避免甩得太远
-                        val lim = (lines.lastIndex.toFloat() + 0.6f)
-                        scope.launch {
-                            offset.snapTo(
-                                (offset.value - dragAmount / rowPx).coerceIn(-base - 0.6f, lim - base),
-                            )
-                        }
+                        val lo = -base - animOff.value - 0.6f
+                        val hi = lines.lastIndex.toFloat() + 0.6f - base - animOff.value
+                        dragOff = (dragOff - dragAmount / rowPxDrag).coerceIn(lo, hi)
+                        manualAt = System.currentTimeMillis()
                     },
                 )
             },
@@ -2028,17 +2028,24 @@ fun ArcLyrics(
                     .width(lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
-                        // 圆心角即切线角：不加截断，文字方向才始终贴合圆
-                        rotationZ = th * 180f / PI_F
+                        // 只做淡出；旋转放到文字自己的 graphicsLayer 上，
+                        // 否则点击区域会跟着旋转后的整行矩形一起放大，
+                        // 相邻两行的命中框互相重叠，点这一行会跳到下一行
                         alpha = fade
-                        transformOrigin = TransformOrigin(0.5f, 0.5f)
                     },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     zhText(lines[i].text),
                     Modifier
+                        // clickable 在 graphicsLayer 外层：命中框是文字未旋转时的
+                        // 紧凑矩形，行与行之间按行距排开、不会重叠
                         .clickable(enabled = lines[i].timeMs >= 0) { onSeek(lines[i].timeMs) }
+                        .graphicsLayer {
+                            // 圆心角即切线角：不加截断，文字方向才始终贴合圆
+                            rotationZ = th * 180f / PI_F
+                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        }
                         .padding(horizontal = 6.dp, vertical = 3.dp),
                     // 当前句用主题色
                     color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
@@ -2046,8 +2053,9 @@ fun ArcLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 过长的句子直接换行显示，不截断
-                    maxLines = 3,
+                    // 过长的句子直接换行显示，不截断。
+                    // 最多 2 行：折行高度必须小于行距，否则相邻两行又会叠在一起
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

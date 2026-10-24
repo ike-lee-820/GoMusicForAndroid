@@ -672,11 +672,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         NmLog.note("歌曲翻页完成 offset=$off 新增 " + real.size)
                     }
                 }
-                // 翻页期间换关键词就丢弃
-                if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
-                val s = result.first.distinctBy { it.ssid }
-                val a = result.second.distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
-                val ar = result.third.distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadMoreNetease($kw,$off)", e)

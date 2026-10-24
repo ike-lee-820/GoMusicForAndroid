@@ -127,3 +127,4 @@
   - 预取：切歌后提前把后面两首的地址取好
   - 缓冲：DefaultLoadControl 15s/60s/2.5s/5s + 优先凑时间长度；
     HTTP 超时收到 8 秒，避免网络差时干等
+- `2.0.2` 小迭代：修编译（Netease.kt 预取用到了 launch / Dispatchers / GlobalScope，缺导入）

@@ -11,6 +11,9 @@ import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 
 /** 曲库来源：本站 / 网易云 */
 const val SRC_LOCAL = "local"
@@ -460,7 +463,7 @@ object Netease {
         val k = cacheKey(id, quality, level)
         val hit = urlCache[k]
         if (hit != null && System.currentTimeMillis() - hit.second < URL_TTL_MS) return
-        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        GlobalScope.launch(Dispatchers.IO) {
             runCatching { audioUrl(id, quality, level) }
                 .onFailure { NmLog.note("预取音源失败：${it.message}") }
         }

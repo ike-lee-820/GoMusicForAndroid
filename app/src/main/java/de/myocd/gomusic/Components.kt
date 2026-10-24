@@ -190,6 +190,14 @@ fun VS(h: Int) = Spacer(Modifier.height(h.dp))
 
 /** 跑马灯：文字超出容器才滚动，两端停留 1.5 秒，约 40px/s */
 @Composable
+/**
+ * 单行跑马灯标题。
+ *
+ * 只在文字**放不下**时才滚动：basicMarquee 在不需要滚动的场景下
+ * 有时会整行不绘制（表现就是歌名凭空消失），这里先量一次宽度，
+ * 装得下就按普通 Text 显示，装不下才挂跑马灯。
+ */
+@Composable
 fun MarqueeText(
     text: String,
     size: Int,
@@ -198,20 +206,30 @@ fun MarqueeText(
     color: Color = LocalGo.current.on,
     align: TextAlign? = null,
 ) {
-    Text(
-        text,
+    if (text.isBlank()) return
+    var overflowing by remember(text, size) { mutableStateOf<Boolean?>(null) }
+    val m = if (overflowing == true) {
         modifier.basicMarquee(
             iterations = Int.MAX_VALUE,
             repeatDelayMillis = 1500,
             initialDelayMillis = 1500,
             velocity = 40.dp,
-        ),
+        )
+    } else modifier
+    Text(
+        text,
+        m,
         color = color,
         fontSize = size.sp,
         fontWeight = weight,
         maxLines = 1,
         softWrap = false,
         textAlign = align,
+        // 先按普通单行渲染量一次是否溢出，再决定要不要跑马灯
+        onTextLayout = { r ->
+            val v = r.hasVisualOverflow
+            if (overflowing != v) overflowing = v
+        },
     )
 }
 

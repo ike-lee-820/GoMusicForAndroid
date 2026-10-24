@@ -2391,7 +2391,7 @@ fun SettingsSheet(vm: MainViewModel) {
                     Box(
                         Modifier.clip(RoundedCornerShape(50))
                             .background(if (sel) go.primary else go.surfaceHi)
-                            .clickable { vm.setFontKind(i) }
+                            .clickable { vm.chooseFontKind(i) }
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                     ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
                 }
@@ -2409,7 +2409,7 @@ fun SettingsSheet(vm: MainViewModel) {
             Slider(
                 value = vm.fontWght.toFloat(),
                 // 拖动过程中就写入，松手或退出都不会丢
-                onValueChange = { vm.setFontWght(it.roundToInt()) },
+                onValueChange = { vm.chooseFontWght(it.roundToInt()) },
                 valueRange = WGHT_MIN.toFloat()..WGHT_MAX.toFloat(),
                 steps = (WGHT_MAX - WGHT_MIN) / 10 - 1,
                 modifier = Modifier.fillMaxWidth(),

@@ -1408,7 +1408,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 切换全局字体（0 系统 / 1 思源宋体 / 2 思源黑体） */
-    fun setFontKind(k: Int) {
+    fun chooseFontKind(k: Int) {
         fontKind = k
         prefs.fontKind = k
     }
@@ -1417,7 +1417,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 调整可变字体的字重（250~900）。
      * 拖动滑块时每次都会落盘，退出再进保持不变。
      */
-    fun setFontWght(w: Int) {
+    fun chooseFontWght(w: Int) {
         val v = w.coerceIn(250, 900)
         fontWght = v
         prefs.fontWght = v

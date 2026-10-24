@@ -46,7 +46,14 @@ sealed interface Screen {
     data class Artist(val name: String) : Screen
     data class PlaylistPage(val id: String) : Screen
     /** 网易云专辑 / 歌手里的歌曲列表 */
-    data class NmSongs(val kind: String, val id: Long, val title: String, val cover: String?) : Screen
+    data class NmSongs(
+        val kind: String,
+        val id: Long,
+        val title: String,
+        val cover: String?,
+        /** 专辑所属歌手（专辑页要显示歌手名） */
+        val artist: String = "",
+    ) : Screen
 }
 
 data class Group(
@@ -184,6 +191,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var nmPage by mutableStateOf<Group?>(null); private set
     var nmPageSongs by mutableStateOf<List<Song>>(emptyList()); private set
     var nmPageLoading by mutableStateOf(false); private set
+    /** 歌手页的专辑列表（歌手页有「歌曲」「专辑」两栏） */
+    var nmPageAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    var nmPageAlbumsLoading by mutableStateOf(false); private set
+    /** 歌手页当前分栏：0 歌曲 1 专辑 */
+    var nmPageTab by mutableIntStateOf(0); private set
+    /** 分页偏移与「还有下一页」 */
+    private var nmPageSongOffset = 0
+    private var nmPageAlbumOffset = 0
+    var nmPageSongsHasMore by mutableStateOf(false); private set
+    var nmPageAlbumsHasMore by mutableStateOf(false); private set
+    var nmPageLoadingMore by mutableStateOf(false); private set
+    /** 页头封面（歌手页用歌手自己的头像，不用专辑封面） */
+    var nmPageCover by mutableStateOf<String?>(null); private set
+    /** 页头副标题：专辑显示歌手名，歌手显示「网易云歌手」 */
+    var nmPageSubtitle by mutableStateOf(""); private set
     /** 播放历史（最近在前） */
     var history by mutableStateOf(prefs.history); private set
     /** 歌曲信息快照（含网易云），保证历史随时能显示歌名 */
@@ -716,8 +738,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             return
         }
         if (s.nmArtistId > 0) {
+            // 不传 s.coverUrl：那是歌曲/专辑封面，用了会把歌手头像显示成专辑图。
+            // 歌手真实头像进页面后用 /artist/detail 取。
             openNmGroup(
-                Group(s.artist, "网易云歌手", s.coverUrl, emptyList(),
+                Group(s.artist, "网易云歌手", null, emptyList(),
                     artist = s.artist, source = SRC_NETEASE,
                     nmId = s.nmArtistId, nmKind = "artist")
             )
@@ -750,16 +774,100 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 打开网易云专辑 / 歌手的歌曲列表 */
     fun openNmGroup(g: Group) {
-        stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover))
+        stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover, g.artist))
         nmPage = g
         nmPageSongs = emptyList()
+        nmPageAlbums = emptyList()
         nmPageLoading = true
-        viewModelScope.launch(Dispatchers.IO) {
-            val l = runCatching { Netease.songsOf(g.nmKind, g.nmId) }.getOrDefault(emptyList())
+        nmPageAlbumsLoading = g.nmKind == "artist"
+        nmPageTab = 0
+        nmPageSongOffset = 0
+        nmPageAlbumOffset = 0
+        nmPageSongsHasMore = false
+        nmPageAlbumsHasMore = false
+        // 歌手页不沿用歌曲封面：先留空，拿到歌手详情后填真实头像
+        nmPageCover = if (g.nmKind == "artist") null else g.cover
+        nmPageSubtitle = if (g.nmKind == "album") {
+            g.artist.ifBlank { "网易云专辑" }
+        } else {
+            "网易云歌手"
+        }
+        val kind = g.nmKind
+        val id = g.nmId
+        viewModelScope.launch {
+            val l = withContext(Dispatchers.IO) {
+                runCatching { Netease.songsOf(kind, id, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
+            }
             keepNetease(l)
-            withContext(Dispatchers.Main) {
-                nmPageSongs = l
-                nmPageLoading = false
+            nmPageSongs = l
+            nmPageSongOffset = NM_PAGE_SIZE
+            nmPageSongsHasMore = kind == "artist" && l.size >= NM_PAGE_SIZE
+            nmPageLoading = false
+            // 歌手：并行取头像与专辑列表
+            if (kind == "artist") {
+                launch {
+                    val d = withContext(Dispatchers.IO) {
+                        runCatching { Netease.artistDetail(id) }.getOrNull()
+                    }
+                    // 用歌手自己的头像，避免误用专辑封面
+                    if (d?.cover != null) nmPageCover = d.cover
+                }
+                launch {
+                    val al = withContext(Dispatchers.IO) {
+                        runCatching { Netease.artistAlbums(id, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
+                    }
+                    nmPageAlbums = al
+                    nmPageAlbumOffset = NM_PAGE_SIZE
+                    nmPageAlbumsHasMore = al.size >= NM_PAGE_SIZE
+                    nmPageAlbumsLoading = false
+                }
+            }
+        }
+    }
+
+    /** 歌手 / 专辑页：切换分栏 */
+    fun chooseNmPageTab(t: Int) { nmPageTab = t }
+
+    /** 歌手页：歌曲或专辑滑到底时加载下一页 */
+    fun loadMoreNmPage(kind: Int) {
+        val g = nmPage ?: return
+        if (nmPageLoadingMore) return
+        val songMode = kind == 0
+        if (songMode && (!nmPageSongsHasMore || g.nmKind != "artist")) return
+        if (!songMode && !nmPageAlbumsHasMore) return
+        val off = if (songMode) nmPageSongOffset else nmPageAlbumOffset
+        val kindStr = g.nmKind
+        val id = g.nmId
+        nmPageLoadingMore = true
+        NmLog.note("详情页翻页 kind=$kind offset=$off id=$id")
+        viewModelScope.launch {
+            try {
+                if (songMode) {
+                    val add = withContext(Dispatchers.IO) {
+                        runCatching { Netease.songsOf(kindStr, id, NM_PAGE_SIZE, off) }.getOrDefault(emptyList())
+                    }
+                    keepNetease(add)
+                    val seen = nmPageSongs.map { it.ssid }.toHashSet()
+                    val real = add.filter { it.ssid !in seen }
+                    nmPageSongs = nmPageSongs + real
+                    nmPageSongOffset = off + NM_PAGE_SIZE
+                    nmPageSongsHasMore = real.isNotEmpty()
+                } else {
+                    val add = withContext(Dispatchers.IO) {
+                        runCatching { Netease.artistAlbums(id, NM_PAGE_SIZE, off) }.getOrDefault(emptyList())
+                    }
+                    val seen = nmPageAlbums.map { it.nmId }.toHashSet()
+                    val real = add.filter { it.nmId !in seen }
+                    nmPageAlbums = nmPageAlbums + real
+                    nmPageAlbumOffset = off + NM_PAGE_SIZE
+                    nmPageAlbumsHasMore = real.isNotEmpty()
+                }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadMoreNmPage($kind,$off)", e)
+                if (songMode) nmPageSongsHasMore = false else nmPageAlbumsHasMore = false
+            } finally {
+                nmPageLoadingMore = false
             }
         }
     }
@@ -768,7 +876,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun clearNmPage() {
         nmPage = null
         nmPageSongs = emptyList()
+        nmPageAlbums = emptyList()
         nmPageLoading = false
+        nmPageAlbumsLoading = false
+        nmPageLoadingMore = false
+        nmPageSongsHasMore = false
+        nmPageAlbumsHasMore = false
+        nmPageTab = 0
+        nmPageSongOffset = 0
+        nmPageAlbumOffset = 0
+        nmPageCover = null
+        nmPageSubtitle = ""
     }
 
     fun pushHistory(ssid: String) {
@@ -791,6 +909,39 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 历史页开关 */
     var showHistory by mutableStateOf(false)
+
+    // ================= 检查更新 ================
+    /** 当前版本 */
+    val appVersion: String get() = Updater.current()
+    /** 检查中 */
+    var updateChecking by mutableStateOf(false); private set
+    /** 检查结果；null = 还没查或查询失败 */
+    var updateInfo by mutableStateOf<Updater.Info?>(null); private set
+    /** 只在启动时静默查一次，有更新才提示 */
+    private var autoChecked = false
+
+    /** 检查更新。[silent] = true 时查不到更新不提示 */
+    fun checkUpdate(silent: Boolean = false) {
+        if (updateChecking) return
+        updateChecking = true
+        viewModelScope.launch {
+            val info = withContext(Dispatchers.IO) { runCatching { Updater.check() }.getOrNull() }
+            updateInfo = info
+            updateChecking = false
+            when {
+                info == null -> if (!silent) toast("检查更新失败，请检查网络")
+                info.hasUpdate -> toast("发现新版本 ${info.latest}")
+                !silent -> toast("当前已是最新版本 ${appVersion}")
+            }
+        }
+    }
+
+    /** 启动时静默检查一次 */
+    fun autoCheckUpdate() {
+        if (autoChecked) return
+        autoChecked = true
+        checkUpdate(silent = true)
+    }
 
     // ================= 首页 =================
     /** 每日推荐（需要登录） */

@@ -1373,6 +1373,7 @@ fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
     var hex by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
+    var openUpdate by remember { mutableStateOf(false) }
     val presets = listOf(
         0xFFD0BCFF, 0xFFFF8A80, 0xFFFFB74D, 0xFFFFF176,
         0xFF81C784, 0xFF4DD0E1, 0xFF64B5F6, 0xFFF48FB1,
@@ -1512,8 +1513,33 @@ fun SettingsSheet(vm: MainViewModel) {
                 GoButton("已下载 ${vm.downloads.size} 首", icon = Icons.Outlined.Download) { vm.showDownloads = true }
                 GoButton("清空下载", icon = Icons.Outlined.Delete) { confirmClear = true }
             }
+            VS(16)
+
+            // ---------- 检查更新 ----------
+            Txt("检查更新", 15, weight = FontWeight.SemiBold)
             VS(8)
-            Txt("GoMusic Android ${BuildConfig.VERSION_NAME}", 12, color = go.muted)
+            val up = vm.updateInfo
+            Txt(
+                when {
+                    up?.hasUpdate == true -> "发现新版本 ${up.latest}（当前 ${vm.appVersion}）"
+                    up != null -> "当前已是最新版本 ${vm.appVersion}"
+                    else -> "当前版本 ${vm.appVersion}"
+                },
+                12, color = if (up?.hasUpdate == true) go.primary else go.muted,
+            )
+            VS(8)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton(
+                    if (vm.updateChecking) "检查中…" else "检查更新",
+                    icon = Icons.Outlined.Refresh,
+                    enabled = !vm.updateChecking,
+                ) { vm.checkUpdate() }
+                if (up?.hasUpdate == true) {
+                    GoButton("下载更新", primary = true, icon = Icons.Outlined.Download) { openUpdate = true }
+                }
+            }
+            VS(8)
+            Txt("更新检查经 gh-proxy.com 加速", 11, color = go.muted)
             VS(8)
         }
     }
@@ -1523,6 +1549,50 @@ fun SettingsSheet(vm: MainViewModel) {
             vm.clearDownloads()
         }
     }
+    if (openUpdate) {
+        val up = vm.updateInfo
+        if (up != null) UpdateDialog(up) { openUpdate = false }
+        else openUpdate = false
+    }
+}
+
+/** 发现新版本时的更新弹层：显示版本号、大小、说明，并提供加速下载 */
+@Composable
+fun UpdateDialog(info: Updater.Info, onDismiss: () -> Unit) {
+    val go = LocalGo.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = go.surface,
+        title = { Txt("发现新版本 ${info.latest}", 16, weight = FontWeight.SemiBold) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Txt("当前版本 ${Updater.current()}", 12, color = go.muted)
+                if (info.size > 0) {
+                    VS(4)
+                    Txt("大小 ${"%.1f".format(info.size / 1024f / 1024f)} MB", 12, color = go.muted)
+                }
+                if (info.notes.isNotBlank()) {
+                    VS(8)
+                    Txt(info.notes, 12, color = go.on)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                // 用浏览器打开加速后的下载地址，交给系统下载
+                runCatching {
+                    val i = android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(Updater.downloadUrl(info)),
+                    )
+                    ctx.startActivity(i)
+                }.onFailure { }
+                onDismiss()
+            }) { Text("下载更新", color = go.primary) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("稍后", color = go.muted) } },
+    )
 }
 
 @Composable

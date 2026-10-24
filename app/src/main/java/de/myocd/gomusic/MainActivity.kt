@@ -41,6 +41,8 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(vm.needPhonePerm) {
                 if (vm.consumePhonePerm()) phonePermission.launch(Manifest.permission.READ_PHONE_STATE)
             }
+            // 启动时静默检查一次更新，有新版才提示
+            LaunchedEffect(Unit) { vm.autoCheckUpdate() }
             GoTheme(vm.primary) { MainScreen(vm) }
         }
     }

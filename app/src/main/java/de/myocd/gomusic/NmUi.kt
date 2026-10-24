@@ -3,6 +3,8 @@ package de.myocd.gomusic
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -168,21 +170,60 @@ private fun GoField(value: String, onValue: (String) -> Unit, hint: String) {
     )
 }
 
-/** 网易云专辑 / 歌手里的歌曲列表页 */
+/**
+ * 触底加载下一页（详情页用）。
+ * 监听放在列表外面常驻，避免放在 item 里被回收后协程取消。
+ */
+@Composable
+private fun PageReachEnd(
+    hasMore: Boolean,
+    lastIndex: () -> Int?,
+    total: () -> Int,
+    onReachEnd: () -> Unit,
+) {
+    if (!hasMore) return
+    LaunchedEffect(hasMore) {
+        snapshotFlow {
+            val last = lastIndex()
+            val t = total()
+            if (last != null && t > 0) last >= t - 3 else false
+        }.collect { atEnd -> if (atEnd) onReachEnd() }
+    }
+}
+
+@Composable
+private fun PageLoadingMore(text: String) {
+    val go = LocalGo.current
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(color = go.primary, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(8.dp))
+        Txt(text, 12, color = go.muted)
+    }
+}
+
+/** 网易云专辑 / 歌手页。歌手有「歌曲」「专辑」两栏，各自滑到底加载下一页 */
 @Composable
 fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
     val go = LocalGo.current
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { vm.clearNmPage() } }
+    val isArtist = s.kind == "artist"
+    val cover = vm.nmPageCover ?: s.cover
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     Column(Modifier.fillMaxSize()) {
         TopBar(vm)
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CoverWithSource(s.cover, Modifier.size(88.dp), 16.dp, source = SRC_NETEASE)
+                CoverWithSource(cover, Modifier.size(88.dp), 16.dp, source = SRC_NETEASE)
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Txt(s.title, 18, weight = FontWeight.Bold, maxLines = 2)
+                    Txt(titleWithSource(s.title, SRC_NETEASE), 18, weight = FontWeight.Bold, maxLines = 2)
                     Spacer(Modifier.height(4.dp))
-                    Txt(if (s.kind == "album") "网易云专辑" else "网易云歌手", 12, color = go.muted)
+                    // 专辑显示歌手名，歌手显示「网易云歌手」
+                    Txt(vm.nmPageSubtitle.ifBlank { if (isArtist) "网易云歌手" else "网易云专辑" }, 12, color = go.muted)
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -199,21 +240,70 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
             // 歌单操作：整页新建歌单，或选已有歌单加入
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GoButton("新建歌单并添加", enabled = vm.nmPageSongs.isNotEmpty()) {
-                    vm.createFromNmPage(s.title, s.cover)
+                    vm.createFromNmPage(s.title, cover)
                 }
                 GoButton("添加至歌单", enabled = vm.nmPageSongs.isNotEmpty()) {
-                    vm.pick(vm.nmPageSongs.map { it.ssid }, s.title, s.cover)
+                    vm.pick(vm.nmPageSongs.map { it.ssid }, s.title, cover)
                 }
             }
             Spacer(Modifier.height(8.dp))
+            if (isArtist) {
+                // 歌手：歌曲 / 专辑 两栏
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GoButton("歌曲", primary = vm.nmPageTab == 0) { vm.chooseNmPageTab(0) }
+                    GoButton("专辑", primary = vm.nmPageTab == 1) { vm.chooseNmPageTab(1) }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
         }
-        if (vm.nmPageLoading) {
+        if (vm.nmPageLoading && vm.nmPageTab == 0) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = go.primary)
             }
+        } else if (isArtist && vm.nmPageTab == 1) {
+            // ---------- 歌手：专辑栏 ----------
+            if (vm.nmPageAlbumsLoading && vm.nmPageAlbums.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = go.primary)
+                }
+            } else {
+                val albums = vm.nmPageAlbums
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+                    if (albums.isEmpty()) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                                Txt("没有拿到专辑", 14, color = go.muted)
+                            }
+                        }
+                    }
+                    itemsIndexed(
+                        albums,
+                        key = { i, g -> "nm" + g.nmId + "#" + i },
+                    ) { _, g ->
+                        GroupRow(
+                            titleWithSource(g.title, g.source), g.subtitle, g.cover,
+                            source = g.source,
+                            onClick = { vm.openNmGroup(g) },
+                            onAdd = null,
+                        )
+                    }
+                    if (vm.nmPageAlbumsHasMore) item { PageLoadingMore("正在加载更多专辑") }
+                }
+            }
         } else {
+            // ---------- 歌曲栏 ----------
             val list = vm.nmPageSongs
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+            PageReachEnd(
+                hasMore = vm.nmPageSongsHasMore && !vm.nmPageLoadingMore,
+                lastIndex = { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index },
+                total = { listState.layoutInfo.totalItemsCount },
+                onReachEnd = { vm.loadMoreNmPage(0) },
+            )
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                state = listState,
+                contentPadding = PaddingValues(bottom = 8.dp),
+            ) {
                 itemsIndexed(list, key = { i, it -> "${it.ssid}#$i" }) { i, song ->
                     SongRow(
                         song, song.ssid == vm.curSsid, vm.isPlaying,
@@ -224,6 +314,7 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
                         onDownload = { vm.download(listOf(song)) },
                     )
                 }
+                if (vm.nmPageSongsHasMore) item { PageLoadingMore("正在加载更多歌曲") }
             }
         }
     }

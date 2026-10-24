@@ -491,12 +491,16 @@ object Netease {
      * 专辑 / 歌手的歌曲列表。
      * 专辑走 /album，歌手走 /artist/songs；拿到后再用 song/detail 补全。
      */
-    fun songsOf(kind: String, id: Long, limit: Int = 50): List<Song> {
-        NmLog.note("取 $kind 的歌曲 id=$id")
+    /** 专辑 / 歌手的歌曲列表。歌手支持 offset 分页（滑到底继续加载） */
+    fun songsOf(kind: String, id: Long, limit: Int = 30, offset: Int = 0): List<Song> {
+        NmLog.note("取 $kind 的歌曲 id=$id offset=$offset")
         val root = if (kind == "album") {
             get("/album", "id" to id.toString())
         } else {
-            get("/artist/songs", "id" to id.toString(), "limit" to limit.toString(), "offset" to "0")
+            get(
+                "/artist/songs", "id" to id.toString(),
+                "limit" to limit.toString(), "offset" to offset.toString(),
+            )
         }
         val arr = resultArray(root, "songs")
         if (arr.isEmpty()) {
@@ -506,6 +510,52 @@ object Netease {
             return enrich(alt.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
         }
         return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
+    }
+
+    /** 歌手的专辑列表（分页） */
+    fun artistAlbums(id: Long, limit: Int = 30, offset: Int = 0): List<Group> {
+        val root = get(
+            "/artist/album", "id" to id.toString(),
+            "limit" to limit.toString(), "offset" to offset.toString(),
+        )
+        val arr = resultArray(root, "hotAlbums")
+            .ifEmpty { resultArray(root, "albums") }
+        NmLog.note("歌手专辑 id=$id offset=$offset 返回 ${arr.size} 条")
+        return arr.mapNotNull { o ->
+            val aid = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (aid <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = o.obj("artist")?.str("name") ?: o.obj("ar")?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                album = name,
+                source = SRC_NETEASE,
+                nmId = aid,
+                nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 歌手详情：拿歌手自己的头像，避免误用专辑封面 */
+    fun artistDetail(id: Long): Group? {
+        val root = get("/artist/detail", "id" to id.toString())
+        val d = root.obj("data") ?: return null
+        val artist = d.obj("artist") ?: return null
+        val aid = idOf(artist)
+        val name = artist.str("name").orEmpty()
+        if (aid <= 0L || name.isBlank()) return null
+        return Group(
+            title = name,
+            subtitle = "网易云歌手",
+            cover = pic(artist.str("picUrl", "img1v1Url", "cover")),
+            songs = emptyList(),
+            artist = name,
+            source = SRC_NETEASE,
+            nmId = aid,
+            nmKind = "artist",
+        )
     }
 
     // ================= 首页 =================

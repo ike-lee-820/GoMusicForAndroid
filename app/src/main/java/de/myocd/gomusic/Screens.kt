@@ -666,9 +666,13 @@ private fun LoadingMoreRow(text: String = "正在加载更多") {
 fun SongsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
     val ranked = vm.rankedSongs
-    val local = remember(ranked, q) {
+    val zhMode = LocalZhMode.current
+    val local = remember(ranked, q, zhMode) {
         if (q.isEmpty()) ranked
-        else ranked.filter { it.title.contains(q, true) || it.artist.contains(q, true) }
+        else ranked.filter {
+            localMatch(it.title, q, zhMode) || localMatch(it.artist, q, zhMode) ||
+                localMatch(it.album, q, zhMode)
+        }
     }
     // 两套曲库不合并（不去重），按规则交错展示
     val list = remember(local, vm.nmSongs) { vm.mix(local, vm.nmSongs) }
@@ -759,8 +763,11 @@ fun HistoryRow(vm: MainViewModel) {
 @Composable
 fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
-    val local = remember(vm.albumGroupList, q) {
-        vm.albumGroupList.filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
+    val zhMode = LocalZhMode.current
+    val local = remember(vm.albumGroupList, q, zhMode) {
+        vm.albumGroupList.filter {
+            q.isEmpty() || localMatch(it.title, q, zhMode) || localMatch(it.artist, q, zhMode)
+        }
     }
     // 去重：同名专辑可能属于不同歌手，key 必须唯一，否则 Lazy 会因重复 key 崩溃
     val groups = remember(local, vm.nmAlbums) {
@@ -809,8 +816,9 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
 @Composable
 fun ArtistsTab(vm: MainViewModel) {
     val q = vm.query.trim()
-    val local = remember(vm.artistGroupList, q) {
-        vm.artistGroupList.filter { q.isEmpty() || it.title.contains(q, true) }
+    val zhMode = LocalZhMode.current
+    val local = remember(vm.artistGroupList, q, zhMode) {
+        vm.artistGroupList.filter { q.isEmpty() || localMatch(it.title, q, zhMode) }
     }
     // 去重：key 必须唯一，否则 Lazy 会因重复 key 崩溃
     val groups = remember(local, vm.nmArtists) {
@@ -1465,7 +1473,7 @@ fun LyricsList(vm: MainViewModel) {
                 val cur = i == idx
                 val size = if (cur) 19 else 17
                 Text(
-                    l.text,
+                    zhText(l.text),
                     Modifier.fillMaxWidth()
                         .clickable(enabled = l.timeMs >= 0) { vm.seekTo(l.timeMs) }
                         .padding(horizontal = 24.dp, vertical = 4.dp),
@@ -1786,6 +1794,41 @@ fun SettingsSheet(vm: MainViewModel) {
             }
             VS(8)
             Txt("更新检查经 gh-proxy.com 加速", 11, color = go.muted)
+            VS(16)
+
+            // ---------- 简繁转换 ----------
+            Txt("简繁转换", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            val zhOpts = listOf(
+                ZhConvert.TO_SIMPLE to "转换成简体",
+                ZhConvert.TO_TRAD to "转换成繁体",
+                ZhConvert.SEARCH_ONLY to "仅搜索统一",
+                ZhConvert.OFF to "不转换",
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                zhOpts.forEach { (m, n) ->
+                    val sel = vm.zhConvert == m
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(if (sel) go.primary else go.surfaceHi)
+                            .clickable { vm.setZhConvert(m) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
+                }
+            }
+            VS(8)
+            Txt(
+                when (vm.zhConvert) {
+                    ZhConvert.TO_TRAD -> "歌名、歌词、歌手与界面文字统一显示繁体"
+                    ZhConvert.SEARCH_ONLY -> "界面不转换；搜索本站时简体与繁体的结果一起返回"
+                    ZhConvert.OFF -> "保持原样，不做任何转换"
+                    else -> "歌名、歌词、歌手与界面文字统一显示简体"
+                },
+                11, color = go.muted,
+            )
             VS(8)
         }
     }

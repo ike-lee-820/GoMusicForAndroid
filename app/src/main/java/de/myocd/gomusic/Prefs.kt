@@ -96,6 +96,14 @@ class Prefs(ctx: Context) {
         get() = sp.getString("nm_level", "")!!
         set(v) { sp.edit().putString("nm_level", v).apply() }
 
+    /**
+     * 简繁转换模式：
+     * 0 转成简体（默认）/ 1 转成繁体 / 2 仅搜索统一 / 3 不转换
+     */
+    var zhConvert: Int
+        get() = sp.getInt("zh_convert", ZhConvert.TO_SIMPLE)
+        set(v) { sp.edit().putInt("zh_convert", v).apply() }
+
     var nmAccount: String
         get() = sp.getString("nm_account", "") ?: ""
         set(v) { sp.edit().putString("nm_account", v).apply() }

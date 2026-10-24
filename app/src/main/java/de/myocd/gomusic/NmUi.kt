@@ -224,11 +224,10 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
                 Column(Modifier.weight(1f)) {
                     Txt(titleWithSource(s.title, SRC_NETEASE), 18, weight = FontWeight.Bold, maxLines = 2)
                     Spacer(Modifier.height(4.dp))
-                    // 专辑显示歌手名（拿到前显示「加载中」），歌手显示「网易云歌手」
-                    Txt(
-                        if (isArtist) "网易云歌手" else vm.nmPageSubtitle.ifBlank { "网易云专辑" },
-                        12, color = go.muted,
-                    )
+                    // 歌手页副标题留空（原来写「网易云歌手」）；专辑页显示歌手名
+                    if (!isArtist) {
+                        Txt(vm.nmPageSubtitle, 12, color = go.muted)
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))

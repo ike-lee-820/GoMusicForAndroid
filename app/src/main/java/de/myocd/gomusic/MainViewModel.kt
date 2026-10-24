@@ -810,7 +810,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmPageAlbumsHasMore = false
         // 歌手页不沿用歌曲封面：先留空，拿到歌手详情后填真实头像
         nmPageCover = if (g.nmKind == "artist") null else g.cover
-        // 专辑页副标题显示歌手名；列表没带歌手时稍后用 /album 详情补
+        // 专辑页副标题显示歌手名（列表没带时稍后补）；歌手页留空
         nmPageSubtitle = if (g.nmKind == "album") g.artist else ""
         val kind = g.nmKind
         val id = g.nmId
@@ -1388,6 +1388,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 歌曲 id -> 实际能拿到的音质档位，探测过就缓存，避免每首都重探 */
     private val nmLevelsCache = java.util.concurrent.ConcurrentHashMap<Long, List<String>>()
+
+    /** 简繁转换模式：0 简体 / 1 繁体 / 2 仅搜索统一 / 3 不转换 */
+    var zhConvert by mutableIntStateOf(prefs.zhConvert)
+        private set
+
+    /** 改简繁设置：立即生效（界面与文字都会跟着变） */
+    fun setZhConvert(m: Int) {
+        zhConvert = m
+        prefs.zhConvert = m
+    }
 
     /** 当前是否为网易云音质档位名（quality 菜单可能是网易云的档位） */
     val nmQualityMode: Boolean get() = curSsid?.let { isNetease(it) } == true

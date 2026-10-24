@@ -69,6 +69,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
             GoTheme(vm.primary) {
+                // 简繁转换：设置一改，界面与文字全部跟着变
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalZhMode provides vm.zhConvert,
+                ) {
                 MainScreen(vm)
                 // 全屏更新弹窗：启动检测到新版本 / 设置里点更新都会弹
                 if (vm.showUpdate) UpdateScreen(vm)
@@ -78,6 +82,7 @@ class MainActivity : ComponentActivity() {
                         vm.toastMsg,
                         Modifier.navigationBarsPadding().padding(bottom = 56.dp + 64.dp + 16.dp),
                     )
+                }
                 }
             }
         }

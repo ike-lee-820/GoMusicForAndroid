@@ -1,6 +1,6 @@
-package de.myocd.gomusic
-
 @file:OptIn(ExperimentalTextApi::class)
+
+package de.myocd.gomusic
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember

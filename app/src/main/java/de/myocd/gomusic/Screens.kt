@@ -1260,7 +1260,9 @@ private fun saveShareFile(ctx: android.content.Context, name: String, text: Stri
     )
     runCatching {
         if (!dir.exists()) dir.mkdirs()
-        java.io.File(dir, "$safe.txt").writeText(text)
+        val f = java.io.File(dir, "$safe.txt")
+        f.writeText(text)
+        f
     }.onSuccess {
         vm.toast("已保存：${it.absolutePath}")
     }.onFailure {

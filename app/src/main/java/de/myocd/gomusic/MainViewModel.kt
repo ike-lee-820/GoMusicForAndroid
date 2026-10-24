@@ -28,9 +28,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 
-private const val MODE_LIST_LOOP = 0
-private const val MODE_SHUFFLE = 1
-private const val MODE_REPEAT_ONE = 2
 import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -44,6 +41,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+
+private const val MODE_LIST_LOOP = 0
+private const val MODE_SHUFFLE = 1
+private const val MODE_REPEAT_ONE = 2
 
 sealed interface Screen {
     data class Album(val artist: String, val album: String) : Screen

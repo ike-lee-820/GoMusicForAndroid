@@ -24,8 +24,8 @@ android {
         applicationId = "de.myocd.gomusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.5.0"
+        versionCode = 21
+        versionName = "1.5.1"
     }
 
     signingConfigs {
@@ -85,4 +85,6 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.palette:palette-ktx:1.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // 简繁转换：转换到香港繁体用 opencc4j 的 ZhHkConverterUtil
+    implementation("com.github.houbb:opencc4j:1.14.0")
 }

@@ -53,6 +53,10 @@ class MainActivity : ComponentActivity() {
             }
             // 启动时静默检查一次更新，有新版就弹全屏弹窗
             LaunchedEffect(Unit) { vm.autoCheckUpdate() }
+            // 后台预热简繁转换词典，避免第一次显示文字时卡一下
+            LaunchedEffect(Unit) {
+                withContext(kotlinx.coroutines.Dispatchers.IO) { ZhConvert.warmUp() }
+            }
             // 检查完成后若发现新版本，自动弹一次
             LaunchedEffect(vm.updateInfo, vm.updateChecking) {
                 if (!vm.updateChecking) vm.maybeShowUpdateDialog()

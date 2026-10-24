@@ -8,7 +8,7 @@ package de.myocd.gomusic
  *
  * 模式（Prefs.zhConvert）：
  * - 0 转成简体：歌名 / 歌词 / 歌手 / 界面文字统一显示简体
- * - 1 转成繁体：同上，统一显示繁体
+ * - 1 转成香港繁体：同上，用 opencc4j 的香港用字（如「軟件」「冷氣」）
  * - 2 仅搜索统一：界面不转，只在本站搜索时把简体与繁体两种写法的结果叠加
  * - 3 不转换
  */
@@ -105,8 +105,79 @@ object ZhConvert {
         return m
     }
 
-    /** 转成简体 */
+    /** opencc4j 是否可用：加载词典失败时自动退回内嵌表 */
+    @Volatile
+    private var useOpencc: Boolean? = null
+
+    /** 转换结果缓存：界面每帧都会调用，带分词转换不能每次重算 */
+    private const val CACHE_MAX = 3000
+    private val cache = object : LinkedHashMap<String, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > CACHE_MAX
+    }
+
+    @Synchronized
+    private fun memo(key: String, calc: () -> String): String {
+        cache[key]?.let { return it }
+        val v = calc()
+        cache[key] = v
+        return v
+    }
+
+    private fun ok(): Boolean {
+        val u = useOpencc
+        if (u != null) return u
+        val v = runCatching {
+            // 触发一次词典加载，失败就退回内嵌表
+            com.github.houbb.opencc4j.util.ZhHkConverterUtil.toTraditional("测试")
+            true
+        }.getOrDefault(false)
+        useOpencc = v
+        NmLog.note("简繁转换引擎：${if (v) "opencc4j" else "内嵌表（opencc4j 不可用）"}")
+        return v
+    }
+
+    /** 预热：后台线程提前加载词典，避免首次转换卡一下 */
+    fun warmUp() {
+        runCatching { ok() }
+    }
+
+    /**
+     * 转成简体。
+     * 优先 opencc4j（词组级，一简对多繁处理更准），失败退回内嵌表。
+     */
     fun toSimple(s: String): String {
+        if (s.isEmpty()) return s
+        if (ok()) {
+            memo("s" + s) {
+                runCatching {
+                    com.github.houbb.opencc4j.util.ZhConverterUtil.toSimple(s)
+                }.getOrNull() ?: simpleByTable(s)
+            }.let { return it }
+        }
+        return simpleByTable(s)
+    }
+
+    /**
+     * 转成香港繁体。
+     * 用 opencc4j 的 ZhHkConverterUtil：先转标准繁体，再套香港用字习惯
+     * （如「软件 / 軟件」「空调 / 冷氣」）。失败退回内嵌表。
+     */
+    fun toTrad(s: String): String {
+        if (s.isEmpty()) return s
+        if (ok()) {
+            memo("t" + s) {
+                runCatching {
+                    com.github.houbb.opencc4j.util.ZhHkConverterUtil.toTraditional(s)
+                }.getOrNull() ?: tradByTable(s)
+            }.let { return it }
+        }
+        return tradByTable(s)
+    }
+
+    // ---------- 内嵌表兜底 ----------
+
+    private fun simpleByTable(s: String): String {
         if (s.isEmpty()) return s
         var out: StringBuilder? = null
         for (i in s.indices) {
@@ -124,8 +195,7 @@ object ZhConvert {
         return out?.toString() ?: s
     }
 
-    /** 转成繁体 */
-    fun toTrad(s: String): String {
+    private fun tradByTable(s: String): String {
         if (s.isEmpty()) return s
         var out: StringBuilder? = null
         for (i in s.indices) {

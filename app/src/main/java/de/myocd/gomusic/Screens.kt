@@ -159,7 +159,7 @@ private const val PI_F = 3.14159265f
  * 相邻两行的纵向间距（dp）——这就是「行距」。
  * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
  */
-private const val ARC_ROW_SPACING_DP = 200f
+private const val ARC_ROW_SPACING_DP = 80f
 
 /**
  * 最外侧那行的最大倾斜角（度）。
@@ -2001,7 +2001,7 @@ fun ArcLyrics(
     ) {
         // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 7 行）
         val rowSpan = ARC_ROW_SPACING_DP
-        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 7)
+        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 11)
         val span = (rows / 2).coerceAtLeast(1)
         // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
         val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f

@@ -24,8 +24,8 @@ android {
         applicationId = "de.myocd.gomusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 27
-        versionName = "1.5.7"
+        versionCode = 28
+        versionName = "1.6.0"
     }
 
     signingConfigs {

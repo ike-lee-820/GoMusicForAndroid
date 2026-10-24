@@ -948,6 +948,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var homeRecommend by mutableStateOf<List<Song>>(emptyList()); private set
     /** 新歌速递 */
     var homeNewSongs by mutableStateOf<List<Song>>(emptyList()); private set
+    /** 热门歌手 */
+    var homeTopArtists by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 最新专辑（新碟上架） */
+    var homeNewAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 离线模式下首页要展示的已下载歌曲 */
+    val homeDownloaded: List<Song> get() = LocalLib.songs(downloads)
     /** 热搜词 */
     var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
     var homeLoading by mutableStateOf(false); private set
@@ -974,6 +980,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             homeRecommend = emptyList()
             homeNewSongs = emptyList()
             homeHotWords = emptyList()
+            homeTopArtists = emptyList()
+            homeNewAlbums = emptyList()
             homeLoading = false
             return
         }
@@ -983,15 +991,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val dR = async(Dispatchers.IO) { Netease.recommendSongs() }
                 val dN = async(Dispatchers.IO) { Netease.topSongs(newSongType) }
                 val dH = async(Dispatchers.IO) { Netease.hotSearch() }
+                val dA = async(Dispatchers.IO) { Netease.topArtists(30, 0) }
+                val dAl = async(Dispatchers.IO) { Netease.newestAlbums(30) }
                 val r = dR.await()
                 val n = dN.await()
                 val h = dH.await()
+                val artists = dA.await()
+                val albums = dAl.await()
                 keepNetease(r + n)
                 homeRecommend = r
                 homeNewSongs = n
                 homeHotWords = h
+                homeTopArtists = artists
+                homeNewAlbums = albums
                 homeLoaded = true
-                NmLog.note("首页加载完成：推荐 ${r.size} / 新歌 ${n.size} / 热搜 ${h.size}")
+                NmLog.note(
+                    "首页加载完成：推荐 ${r.size} / 新歌 ${n.size} / 热搜 ${h.size}" +
+                        " / 热门歌手 ${artists.size} / 最新专辑 ${albums.size}"
+                )
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadHome", e)
@@ -1285,8 +1302,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 网易云歌曲：歌词走网易云接口，优先级高于本站
         if (isNetease(id)) {
             if (count) pushHistory(id)
-            // 网易云歌曲：音质档位与本站分开，菜单里列网易云自己的档位
-            qualities = NM_LEVELS
+            // 网易云歌曲：音质档位与本站分开，菜单里列网易云自己的档位。
+            // 离线时只列已经下载过的音质（没下载的播不了，不显示）
+            qualities = if (offline) downloadedQualities(id).ifEmpty { NM_LEVELS } else NM_LEVELS
             val nid = neteaseIdOf(id)
             viewModelScope.launch {
                 // 播放前用 /song/detail 补全封面 / 专辑 / 歌手
@@ -1318,6 +1336,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 离线模式：直接读本地歌词，绝不发网络请求
         // （否则会走 3 次重试 + 退避等待，歌词要十几秒才出来，还会拖住其他请求）
         if (offline) {
+            // 离线只能播已下载的音质，菜单里就不列没下载的
+            qualities = downloadedQualities(id)
             viewModelScope.launch {
                 val t = withContext(Dispatchers.IO) { localLyrics(id) }
                 if (curSsid == id) lyric = lyricLines(t)
@@ -1328,7 +1348,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 val d = withContext(Dispatchers.IO) { Api.detail(id) }
                 if (curSsid != id) return@launch
-                qualities = d.audio.keys.sortedBy { Api.rank(it) }
+                // 离线只显示已下载的音质
+                qualities = if (offline) {
+                    downloadedQualities(id)
+                } else {
+                    d.audio.keys.sortedBy { Api.rank(it) }
+                }
                 var t = d.lyrics
                 if (t.isBlank()) t = withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
                 if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
@@ -1432,27 +1457,58 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ================= 下载 / 提示 / 链接 =================
     fun isDownloaded(ssid: String): Boolean = ssid in downloadedIds
 
+    /** 当前下载要用的音质（网易云歌曲用网易云档位） */
+    private fun downloadQuality(s: Song): String =
+        if (s.source == SRC_NETEASE) nmLevel.takeIf { it.isNotBlank() } ?: nmLevelOfQuality(quality)
+        else quality
+
+    /** 这首歌是否已经下载过 [q] 这个音质 */
+    fun isDownloadedWithQuality(ssid: String, q: String): Boolean =
+        downloads.any { it.ssid == ssid && (q.isBlank() || it.quality == q) }
+
+    /** 这首歌已经下载了哪些音质 */
+    fun downloadedQualities(ssid: String): List<String> =
+        downloads.filter { it.ssid == ssid && it.audio.isNotBlank() }
+            .map { it.quality }.filter { it.isNotBlank() }.distinct()
+
     /** 下载歌曲本体 + 封面 + 歌词 + 歌曲信息，并写入本地记录（离线可用） */
     fun download(list: List<Song>) {
         if (list.isEmpty()) return
         if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
-        // 已下载过、或正在下载的直接跳过，避免重复下载
-        val todo = list.filter { it.ssid !in downloading && !isDownloaded(it.ssid) }
+        // 同一首歌可以下多个音质：按（歌曲 + 音质）判断是否已下载
+        val todo = list.filter { s ->
+            val q = downloadQuality(s)
+            s.ssid !in downloading && !isDownloadedWithQuality(s.ssid, q)
+        }
         if (todo.isEmpty()) {
             toast(
                 when {
-                    list.all { isDownloaded(it.ssid) } -> "已下载过，可在「设置 → 已下载」删除后重新下载"
+                    list.all { isDownloadedWithQuality(it.ssid, downloadQuality(it)) } ->
+                        "这个音质已下载过，换一个音质可在播放页切换后再下载"
                     else -> "已在下载队列中"
                 }
             )
             return
         }
+        // 列表里可能混着本站 / 网易云，按音质是否一致分组下载
+        val groups = todo.groupBy { downloadQuality(it) }
         downloading = downloading + todo.map { it.ssid }
-        toast("开始下载 ${todo.size} 首")
+        toast("开始下载 ${todo.size} 首（${qualityLabel(todo.first().let { downloadQuality(it) })}）")
+        groups.forEach { (q, items) -> runDownload(items, q) }
+    }
+
+    /** 实际执行下载：逐个顺序下载，进度同时更新到通知与应用内进度条 */
+    private fun runDownload(todo: List<Song>, quality: String) {
         val noti = Noti(app)
         noti.ensureChannel()
+        // 开始下载时立刻给一次应用内提示，不用等通知栏
+        toast(
+            if (todo.size > 1) "开始下载 ${todo.size} 首（${qualityLabel(quality)}）"
+            else "开始下载：${todo.firstOrNull()?.title ?: ""}（${qualityLabel(quality)}）",
+        )
         // 逐个顺序下载：速度才是当前这一首的真实速度，通知与进度条也才对得上
         viewModelScope.launch(Dispatchers.IO) {
+            var ok = 0
             todo.forEachIndexed { i, s ->
                 noti.progress(s.title, i + 1, todo.size, -1, "", "")
                 withContext(Dispatchers.Main) {
@@ -1482,12 +1538,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.Main) {
                     downloading = downloading - s.ssid
                     r.onSuccess { rec ->
-                        val l = prefs.downloads.filter { it.ssid != rec.ssid } + rec
+                        // 同歌不同音质各自保留一条记录
+                        val l = prefs.downloads.filter {
+                            !(it.ssid == rec.ssid && it.quality == rec.quality)
+                        } + rec
                         prefs.downloads = l
                         downloads = l
                         if (offline) songs = LocalLib.songs(l)
+                        ok++
                         noti.done("${s.title} 下载完成")
-                        toast("已下载：${s.title}")
+                        toast("已下载：${s.title}（${qualityLabel(rec.quality)}）")
                     }.onFailure {
                         noti.done("${s.title} 下载失败")
                         toast("下载失败：${s.title}")
@@ -1497,30 +1557,45 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) {
                 dlStatus = null
                 noti.cancel()
+                // 批量下载结束时再给一次汇总提示，避免只看到单首的 toast
+                if (todo.size > 1) toast("下载结束：成功 $ok 首，失败 ${todo.size - ok} 首")
             }
         }
     }
 
-    /** 重新下载：先删掉旧文件与记录，再下一次（文件丢失/损坏时用） */
-    fun redownload(ssid: String) {
-        val rec = prefs.downloads.firstOrNull { it.ssid == ssid } ?: return
+    /** 重新下载某一音质（文件丢失 / 损坏时用） */
+    fun redownloadQuality(rec: DownloadRecord) {
         viewModelScope.launch(Dispatchers.IO) {
-            LocalLib.delete(app, rec)
-            val l = prefs.downloads.filter { it.ssid != ssid }
+            LocalLib.deleteRecord(app, rec)
+            val l = prefs.downloads.filterNot { it.ssid == rec.ssid && it.quality == rec.quality }
             prefs.downloads = l
             withContext(Dispatchers.Main) {
                 downloads = l
-                download(listOf(Song(ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })))
+                val song = Song(rec.ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })
+                downloadWithQuality(listOf(song), rec.quality)
             }
         }
     }
 
-    /** 删除单条下载（同时删除文件） */
-    fun deleteDownload(ssid: String) {
-        val rec = prefs.downloads.firstOrNull { it.ssid == ssid } ?: return
+    /** 删除某一个音质的下载（同一首歌的其他音质保留） */
+    fun deleteDownloadQuality(rec: DownloadRecord) {
         viewModelScope.launch(Dispatchers.IO) {
-            LocalLib.delete(app, rec)
-            val l = prefs.downloads.filter { it.ssid != ssid }
+            LocalLib.deleteRecord(app, rec)
+            val l = prefs.downloads.filterNot { it.ssid == rec.ssid && it.quality == rec.quality }
+            prefs.downloads = l
+            withContext(Dispatchers.Main) {
+                downloads = l
+                if (offline) songs = LocalLib.songs(l)
+                toast("已删除：${rec.title}（${qualityLabel(rec.quality)}）")
+            }
+        }
+    }
+
+    /** 删除一首歌的全部音质 */
+    fun deleteDownload(ssid: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.downloads.filter { it.ssid == ssid }.forEach { LocalLib.deleteRecord(app, it) }
+            val l = prefs.downloads.filterNot { it.ssid == ssid }
             prefs.downloads = l
             withContext(Dispatchers.Main) {
                 downloads = l
@@ -1530,9 +1605,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 按指定音质下载（重新下载时用） */
+    fun downloadWithQuality(list: List<Song>, q: String) {
+        if (list.isEmpty()) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        val todo = list.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, q) }
+        if (todo.isEmpty()) { toast("这个音质已下载过"); return }
+        runDownload(todo, q)
+    }
+
     fun clearDownloads() {
         viewModelScope.launch(Dispatchers.IO) {
-            prefs.downloads.forEach { LocalLib.delete(app, it) }
+            prefs.downloads.forEach { LocalLib.deleteRecord(app, it) }
             prefs.downloads = emptyList()
             withContext(Dispatchers.Main) {
                 downloads = emptyList()

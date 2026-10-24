@@ -381,8 +381,10 @@ fun OfflineBar(vm: MainViewModel) {
 }
 
 /**
- * 首页：每日推荐 / 新歌速递 / 历史记录 / 热搜歌曲。
- * 排版与歌曲页顶部的历史栏一致（横向卡片行）。
+ * 首页。
+ *
+ * 顺序：历史记录置顶，其后依次是每日推荐、新歌速递、热门歌手、最新专辑、热搜歌曲。
+ * 离线模式：只展示已下载的歌曲。
  */
 @Composable
 fun HomeTab(vm: MainViewModel) {
@@ -392,15 +394,52 @@ fun HomeTab(vm: MainViewModel) {
     val rec = vm.homeRecommend
     val news = vm.homeNewSongs
     val hots = vm.homeHotWords
+    val artists = vm.homeTopArtists
+    val albums = vm.homeNewAlbums
     val his = vm.historySongs
+    // 离线：没有推荐位，直接列出已下载
+    if (vm.offline) {
+        val dl = vm.homeDownloaded
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+            item { HomeHeader("已下载（${dl.size}）") }
+            if (dl.isEmpty()) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                        Txt("还没有下载歌曲", 14, color = go.muted)
+                    }
+                }
+            } else {
+                items(dl, key = { it.ssid }) { s ->
+                    SongRow(
+                        s, s.ssid == vm.curSsid, vm.isPlaying,
+                        downloaded = true,
+                        downloading = false,
+                        onClick = { vm.playSongs(dl, dl.indexOf(s)) },
+                        onAdd = { vm.pick(listOf(s.ssid), s.title, s.coverUrl) },
+                        onDownload = null,
+                    )
+                }
+            }
+        }
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        // 历史记录始终置顶
+        if (his.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("历史记录", "全部") { vm.showHistory = true }
+                    HomeSongRow(his.take(20), vm)
+                }
+            }
+        }
         if (!vm.nmReady) {
             item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    Txt("首页需要接入网易云曲库", 14, weight = FontWeight.SemiBold)
+                    Txt("接入网易云可显示每日推荐等栏目", 14, weight = FontWeight.SemiBold)
                     VS(4)
                     Txt(
-                        "在「设置」里开启「接入网易云曲库」并登录后，这里会显示每日推荐、新歌速递与热搜",
+                        "在「设置」里开启「接入网易云曲库」并登录后，这里会显示每日推荐、新歌速递、热门歌手、最新专辑与热搜",
                         12, color = go.muted,
                     )
                     VS(10)
@@ -433,11 +472,19 @@ fun HomeTab(vm: MainViewModel) {
         if (news.isNotEmpty()) {
             item { NewSongSection(vm, news) }
         }
-        if (his.isNotEmpty()) {
+        if (artists.isNotEmpty()) {
             item {
                 Column(Modifier.fillMaxWidth()) {
-                    HomeHeader("历史记录", "全部") { vm.showHistory = true }
-                    HomeSongRow(his.take(20), vm)
+                    HomeHeader("热门歌手")
+                    HomeArtistRow(vm, artists.take(20))
+                }
+            }
+        }
+        if (albums.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("最新专辑")
+                    HomeAlbumRow(vm, albums.take(20))
                 }
             }
         }
@@ -445,6 +492,46 @@ fun HomeTab(vm: MainViewModel) {
             item { HotSection(vm, hots) }
         }
     }
+}
+
+/** 横向歌手卡片行 */
+@Composable
+private fun HomeArtistRow(vm: MainViewModel, list: List<Group>) {
+    val go = LocalGo.current
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(list, key = { "nm${it.nmId}" }) { g ->
+            Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 128, 42.dp)
+                VS(6)
+                Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
+                Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
+            }
+        }
+    }
+    VS(14)
+}
+
+/** 横向专辑卡片行 */
+@Composable
+private fun HomeAlbumRow(vm: MainViewModel, list: List<Group>) {
+    val go = LocalGo.current
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(list, key = { "nm${it.nmId}" }) { g ->
+            Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 128, 12.dp)
+                VS(6)
+                Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
+                Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
+            }
+        }
+    }
+    VS(14)
 }
 
 /** 首页区块标题：左边标题，右边可选的操作文字 */
@@ -602,10 +689,7 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
         onReachEnd = { vm.loadMoreNetease(0) },
     )
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
-        // 顶部：播放历史（本站 + 网易云）
-        if (q.isEmpty() && vm.historySongs.isNotEmpty()) {
-            item { HistoryRow(vm) }
-        }
+        // 历史只在首页展示，歌曲页不再显示历史栏
         if (vm.nmSearching) {
             item {
                 Row(
@@ -1606,9 +1690,10 @@ fun DownloadsSheet(vm: MainViewModel) {
                 contentAlignment = Alignment.Center,
             ) { Txt("还没有下载歌曲", 14, color = go.muted) }
         } else {
+            // 同一首歌可能下载了多个音质，key 要带上音质才唯一
             val list = remember(vm.downloads) { vm.downloads.sortedByDescending { it.time } }
             LazyColumn(contentPadding = PaddingValues(bottom = 8.dp)) {
-                items(list, key = { it.ssid }, contentType = { "dl" }) { rec ->
+                items(list, key = { "${it.ssid}|${it.quality}" }, contentType = { "dl" }) { rec ->
                     val song = Song(rec.ssid, rec.title, rec.artist, rec.album, rec.cover.ifBlank { null })
                     Row(
                         Modifier.fillMaxWidth().height(64.dp)
@@ -1625,8 +1710,8 @@ fun DownloadsSheet(vm: MainViewModel) {
                                 12, color = go.muted, maxLines = 1,
                             )
                         }
-                        IconBtn(Icons.Outlined.Refresh, "重新下载") { vm.redownload(rec.ssid) }
-                        IconBtn(Icons.Outlined.Delete, "删除下载") { vm.deleteDownload(rec.ssid) }
+                        IconBtn(Icons.Outlined.Refresh, "重新下载") { vm.redownloadQuality(rec) }
+                        IconBtn(Icons.Outlined.Delete, "删除这个音质") { vm.deleteDownloadQuality(rec) }
                     }
                 }
             }

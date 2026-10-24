@@ -1422,23 +1422,6 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { vm.next() }
                 }
                 VS(8)
-                // 分享 / 下载 / 加入歌单 / 音质 / 倍速（原来在右上角）
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconBtn(Icons.Outlined.Share, "分享", size = 30.dp, tint = Color.White) {
-                        shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
-                    }
-                    IconBtn(Icons.Outlined.Download, "下载", size = 30.dp, tint = Color.White) { vm.download(listOf(s)) }
-                    IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", size = 30.dp, tint = Color.White) {
-                        vm.pick(listOf(s.ssid), s.title, s.coverUrl)
-                    }
-                    QualityMenu(vm, tint = Color.White)
-                    SpeedMenu(vm, tint = Color.White)
-                }
-                VS(8)
                 // 播放列表 / 播放方式
                 Row(
                     Modifier.fillMaxWidth(),
@@ -1466,7 +1449,6 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val ctx = LocalContext.current
                     IconBtn(Icons.Outlined.Share, "分享", size = 30.dp, tint = Color.White) {
                         shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
                     }
@@ -1773,7 +1755,8 @@ fun WheelLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    maxLines = 2,
+                    // 一句只占一行：折行会把行撑高，间距看着又被吃掉
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1904,7 +1887,8 @@ fun CircleLyrics(
                     lineHeight = if (isCur) 22.sp else 18.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    maxLines = 2,
+                    // 一句只占一行：折行会把行撑高，间距看着又被吃掉
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1950,9 +1934,8 @@ fun ArcLyrics(
         return
     }
     val scope = rememberCoroutineScope()
-    val span = 5
-    // 行高决定相邻两行在弧上的间距（纵向间距 = r × stepRad ≈ rowH）
-    val rowH = 72.dp
+    // 当前句上下各显示 2 行。行数越少，每行分到的间距越大
+    val span = 2
     // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
     val base by animateFloatAsState(
         targetValue = idx.coerceAtLeast(0).toFloat(),
@@ -1996,11 +1979,14 @@ fun ArcLyrics(
         contentAlignment = Alignment.Center,
     ) {
         val r = maxHeight * radiusFactor
-        // 每行对应的圆心角：由行高弧长 / 半径推出，几何自洽
-        val stepRad = rowH.value / r.value.coerceAtLeast(1f)
+        // 相邻两行的纵向间距：把可视高度按 (2*span+1) 均分，
+        // 这样整段弧正好落在屏幕内，间距也取到最大
+        val rowSpan = maxHeight.value / (span * 2 + 1)
+        // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
+        val stepRad = rowSpan / r.value.coerceAtLeast(1f)
         val rPx = r.value
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        val lineW = maxWidth * 0.8f
+        val lineW = maxWidth * 0.72f
         val from = (cur - span).toInt().coerceAtLeast(0)
         val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
         for (i in from..to) {
@@ -2008,7 +1994,7 @@ fun ArcLyrics(
             val th = d * stepRad
             val x = -rPx * (1 - cos(th)) + shift
             val y = rPx * sin(th)
-            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0.3f, 1f)
+            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0.25f, 1f)
             val isCur = i == idx
             // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
             Box(
@@ -2016,7 +2002,8 @@ fun ArcLyrics(
                     .width(lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
-                        rotationZ = (th * 180f / PI_F).coerceIn(-10f, 10f)
+                        // 圆心角即切线角：不加截断，文字方向才始终贴合圆
+                        rotationZ = th * 180f / PI_F
                         alpha = fade
                         transformOrigin = TransformOrigin(0.5f, 0.5f)
                     },
@@ -2033,7 +2020,8 @@ fun ArcLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    maxLines = 2,
+                    // 一句只占一行：折行会把行撑高，间距看着又被吃掉
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

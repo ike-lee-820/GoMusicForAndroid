@@ -1552,6 +1552,401 @@ fun SimpleSeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
     }
 }
 
+@Composable
+fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
+    val go = LocalGo.current
+    val ctx = LocalContext.current
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val coverSize = minOf(maxWidth * 0.86f, 360.dp)
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Cover(
+                s.coverUrl,
+                Modifier.size(coverSize).clickable {
+                    vm.showPlayer = false
+                    vm.openNmSongAlbum(s)
+                },
+                20.dp,
+            )
+            VS(20)
+            MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
+            VS(4)
+            Txt(
+                s.artist, 14, color = go.muted, maxLines = 1,
+                modifier = Modifier.clickable {
+                    vm.showPlayer = false
+                    vm.openNmSongArtist(s)
+                }.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+            VS(2)
+            // 专辑名
+            Txt(s.album.ifBlank { "未知专辑" }, 13, color = go.muted, maxLines = 1)
+
+            if (snippet) {
+                VS(8)
+                val idx = vm.lyricIndex
+                val lines = vm.lyric
+                Column(
+                    Modifier.fillMaxWidth().height(84.dp).clickable { vm.showLyrics = true },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    if (lines.isEmpty()) {
+                        if (vm.lyricLoading) Txt("正在加载歌词…", 14, color = go.muted)
+                        else Txt("暂无歌词", 14, color = go.muted)
+                    } else {
+                        val i = idx.coerceAtLeast(0)
+                        listOf(i - 1, i, i + 1).forEach { k ->
+                            val t = lines.getOrNull(k)?.text ?: ""
+                            Txt(
+                                t, if (k == i) 17 else 14,
+                                weight = if (k == i) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (k == i && idx >= 0) go.primary else go.muted,
+                                maxLines = 1, align = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
+            }
+
+            VS(8)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                IconBtn(Icons.Outlined.Share, "分享") { shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}") }
+                IconBtn(Icons.Outlined.Download, "下载") { vm.download(listOf(s)) }
+                IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
+                QualityMenu(vm)
+                SpeedMenu(vm)
+            }
+            VS(8)
+            SeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconBtn(
+                    when (vm.playMode) { 0 -> Icons.Outlined.Repeat; 1 -> Icons.Outlined.Shuffle; else -> Icons.Outlined.RepeatOne },
+                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode], size = 44.dp,
+                ) { vm.cycleMode() }
+                IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 44.dp) { vm.prev() }
+                IconBtn(
+                    if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                    if (vm.isPlaying) "暂停" else "播放", size = 56.dp, tint = OnPrimary, bg = go.primary,
+                ) { vm.togglePlay() }
+                IconBtn(Icons.Outlined.SkipNext, "下一首", size = 44.dp) { vm.next() }
+                IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表", size = 44.dp) { vm.showQueue = true }
+            }
+            VS(16)
+        }
+    }
+}
+
+@Composable
+fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
+    val go = LocalGo.current
+    var open by remember { mutableStateOf(false) }
+    val opts = vm.qualities.ifEmpty { listOf(vm.quality) }
+    // 网易云歌曲用网易云自己的档位名，标签与选中态都要按档位判断
+    val isNm = opts.firstOrNull() in NM_LEVELS
+    val curKey = if (isNm) vm.nmLevel else vm.quality
+    Box {
+        IconBtn(Icons.Outlined.HighQuality, "音质", tint = tint) { open = true }
+        DropdownMenu(open, { open = false }, Modifier.background(go.surface)) {
+            opts.forEach { k ->
+                val label = if (k in NM_LEVELS) nmLevelLabel(k) else qualityLabel(k)
+                DropdownMenuItem(
+                    text = { Text(label, color = if (k == curKey) go.primary else go.on) },
+                    onClick = { vm.updateQuality(k); open = false },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SpeedMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
+    val go = LocalGo.current
+    var open by remember { mutableStateOf(false) }
+    val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+    Box {
+        IconBtn(Icons.Outlined.Speed, "倍速", tint = tint) { open = true }
+        DropdownMenu(open, { open = false }, Modifier.background(go.surface)) {
+            speeds.forEach { v ->
+                DropdownMenuItem(
+                    text = { Text("${v}×", color = if (v == vm.speed) go.primary else go.on) },
+                    onClick = { vm.updateSpeed(v); open = false },
+                )
+            }
+        }
+    }
+}
+
+// =====================================================================
+// 歌词
+// =====================================================================
+
+/**
+ * 中心旋转式歌词（滚轮）。
+ *
+ * 当前行固定在正中，其余行绕一个圆柱面分布在上下两侧：
+ * 越远的行越小、越淡、绕 X 轴转得越多，形成滚轮的透视感。
+ * 上下滑动可以旋转选行，点某一行直接跳到那一句。
+ */
+@Composable
+fun WheelLyrics(
+    lines: List<LrcLine>,
+    idx: Int,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    onSeek: (Long) -> Unit,
+) {
+    if (lines.isEmpty()) {
+        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
+                }
+            } else {
+                Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+            }
+        }
+        return
+    }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val rowH = with(density) { 52.dp.toPx() }
+    // 每行占的圆心角：越小排列越平，越大透视越明显
+    val angleDeg = 11f
+    val angleRad = angleDeg * 0.017453292f
+    val radius = rowH / sin(angleRad)
+    val offset = remember { Animatable(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    // 手动操作后的冷却时间：这段时间内不自动跟随播放进度
+    var manualUntil by remember { mutableLongStateOf(0L) }
+    val last = lines.lastIndex.coerceAtLeast(0).toFloat()
+
+    // 跟播：当前行变化时滚到正中
+    LaunchedEffect(idx, lines.size) {
+        if (idx >= 0 && !dragging && System.currentTimeMillis() > manualUntil) {
+            offset.animateTo(idx.toFloat().coerceIn(0f, last), spring(stiffness = Spring.StiffnessLow))
+        }
+    }
+
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        Box(
+            Modifier.fillMaxSize()
+                .pointerInput(lines) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            manualUntil = Long.MAX_VALUE
+                            scope.launch { offset.stop() }
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            // 松手后对齐到最近的一行，冷却 4 秒再恢复跟播
+                            manualUntil = System.currentTimeMillis() + 4000
+                            scope.launch {
+                                offset.animateTo(
+                                    offset.value.roundToInt().toFloat().coerceIn(0f, last),
+                                    spring(stiffness = Spring.StiffnessLow),
+                                )
+                            }
+                        },
+                        onDragCancel = {
+                            dragging = false
+                            manualUntil = System.currentTimeMillis() + 4000
+                        },
+                        onVerticalDrag = { _, dragAmount ->
+                            // 手指向上（dragAmount 为负）时看后面的行
+                            val d = -dragAmount / rowH
+                            scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, last)) }
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            val cur = offset.value
+            val span = 7
+            val from = (cur - span).toInt().coerceAtLeast(0)
+            val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+            for (i in from..to) {
+                val d = i - cur
+                val theta = d * angleRad
+                val y = radius * sin(theta)
+                val depth = cos(theta).coerceAtLeast(0f)
+                val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
+                val isCur = abs(d) < 0.5f
+                Text(
+                    zhText(lines[i].text),
+                    Modifier
+                        .graphicsLayer {
+                            translationY = y
+                            rotationX = d * angleDeg
+                            scaleX = 0.88f + 0.12f * depth
+                            scaleY = 0.88f + 0.12f * depth
+                            alpha = 0.16f + 0.84f * fade
+                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        }
+                        .clickable(enabled = lines[i].timeMs >= 0) {
+                            manualUntil = System.currentTimeMillis() + 6000
+                            onSeek(lines[i].timeMs)
+                        }
+                        .padding(horizontal = 28.dp, vertical = 3.dp),
+                    color = Color.White,
+                    fontSize = if (isCur) 19.sp else 16.sp,
+                    lineHeight = if (isCur) 30.sp else 26.sp,
+                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                    // 左侧对齐
+                    textAlign = TextAlign.Start,
+                    // 不裁剪：超过宽度就换行
+                    maxLines = Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 以中心为圆心的圆形滚动歌词。
+ *
+ * 歌词沿以封面中心为圆心、[radius] 为半径的圆周排列：
+ * 当前行固定在正上方（12 点方向），其余行按角度分布在两侧并绕圆心旋转，
+ * 字身沿切线方向对齐，越远越小越淡。
+ * 上下滑动可以手动旋转圆盘，点某一行直接跳到那一句。
+ */
+@Composable
+fun CircleLyrics(
+    lines: List<LrcLine>,
+    idx: Int,
+    radius: Dp,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    onSeek: (Long) -> Unit,
+) {
+    if (lines.isEmpty()) {
+        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载歌词…", 13, color = Color.White.copy(alpha = 0.7f))
+                }
+            } else {
+                Txt("暂无歌词", 13, color = Color.White.copy(alpha = 0.55f))
+            }
+        }
+        return
+    }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val rPx = with(density) { radius.toPx() }
+    // 相邻两行之间夹的角度；弧长用来把手指拖动距离换算成行偏移
+    val stepDeg = 13f
+    val stepRad = stepDeg * 0.017453292f
+    val arcPx = (rPx * stepRad).coerceAtLeast(1f)
+    val offset = remember { Animatable(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    // 手动操作后的冷却时间：这段时间内不自动跟随播放进度
+    var manualUntil by remember { mutableLongStateOf(0L) }
+    val last = lines.lastIndex.coerceAtLeast(0).toFloat()
+
+    LaunchedEffect(idx, lines.size) {
+        if (idx >= 0 && !dragging && System.currentTimeMillis() > manualUntil) {
+            offset.animateTo(idx.toFloat().coerceIn(0f, last), spring(stiffness = Spring.StiffnessLow))
+        }
+    }
+
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val lineW = maxWidth * 0.62f
+        Box(
+            Modifier.fillMaxSize()
+                .pointerInput(lines) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            manualUntil = Long.MAX_VALUE
+                            scope.launch { offset.stop() }
+                        },
+                        onDragEnd = {
+                            dragging = false
+                            // 松手后对齐到最近的一行，冷却 4 秒再恢复跟播
+                            manualUntil = System.currentTimeMillis() + 4000
+                            scope.launch {
+                                offset.animateTo(
+                                    offset.value.roundToInt().toFloat().coerceIn(0f, last),
+                                    spring(stiffness = Spring.StiffnessLow),
+                                )
+                            }
+                        },
+                        onDragCancel = {
+                            dragging = false
+                            manualUntil = System.currentTimeMillis() + 4000
+                        },
+                        onVerticalDrag = { _, dragAmount ->
+                            // 手指向上（dragAmount 为负）时看后面的行
+                            val d = -dragAmount / arcPx
+                            scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, last)) }
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            val cur = offset.value
+            val span = 8
+            val from = (cur - span).toInt().coerceAtLeast(0)
+            val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+            for (i in from..to) {
+                val d = i - cur
+                val theta = d * stepDeg
+                val rad = theta * 0.017453292f
+                // 圆周坐标：当前行在正上方（角度 0 -> x=0, y=-r）
+                val x = rPx * sin(rad)
+                val y = -rPx * cos(rad)
+                val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
+                val isCur = abs(d) < 0.5f
+                Text(
+                    zhText(lines[i].text),
+                    Modifier
+                        .width(lineW)
+                        .graphicsLayer {
+                            translationX = x
+                            translationY = y
+                            rotationZ = theta
+                            alpha = 0.18f + 0.82f * fade
+                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        }
+                        .clickable(enabled = lines[i].timeMs >= 0) {
+                            manualUntil = System.currentTimeMillis() + 6000
+                            onSeek(lines[i].timeMs)
+                        }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    color = Color.White,
+                    fontSize = if (isCur) 16.sp else 13.sp,
+                    lineHeight = if (isCur) 22.sp else 18.sp,
+                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                    // 左侧对齐
+                    textAlign = TextAlign.Start,
+                    // 不裁剪：超过宽度就换行
+                    maxLines = Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 /**
  * 圆弧歌词：歌词排在一个真正的圆上。
  *

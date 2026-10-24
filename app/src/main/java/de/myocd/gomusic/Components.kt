@@ -188,8 +188,6 @@ fun HS(w: Int) = Spacer(Modifier.width(w.dp))
 @Composable
 fun VS(h: Int) = Spacer(Modifier.height(h.dp))
 
-/** 跑马灯：文字超出容器才滚动，两端停留 1.5 秒，约 40px/s */
-@Composable
 /**
  * 单行跑马灯标题。
  *

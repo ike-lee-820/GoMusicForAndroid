@@ -160,3 +160,7 @@
     - 透明度改用 smoothstep（原来线性 + 0.25 下限，一行会从「不渲染」
       直接跳到 0.25，所以很生硬）
     - 完全透明的行不再响应点击
+- `2.0.7` 小迭代：修编译（上一版改进度条时误删了 PlayerBody / QualityMenu /
+  SpeedMenu 三个函数；MarqueeText 上出现两个 @Composable）
+  - 三个函数已从 2.0.4 版本恢复，并补回竖版播放器的专辑名
+  - 清理 Theme.kt 里重复的 import

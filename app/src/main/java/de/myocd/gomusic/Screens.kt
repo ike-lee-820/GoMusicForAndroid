@@ -159,7 +159,7 @@ private const val PI_F = 3.14159265f
  * 相邻两行的纵向间距（dp）——这就是「行距」。
  * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
  */
-private const val ARC_ROW_SPACING_DP = 80f
+private const val ARC_ROW_SPACING_DP = 53f
 
 /**
  * 最外侧那行的最大倾斜角（度）。
@@ -1777,9 +1777,9 @@ fun WheelLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 过长的句子直接换行显示，不截断。
-                    // 最多 2 行：折行高度必须小于行距，否则相邻两行又会叠在一起
-                    maxLines = 2,
+                    // 完整显示，不裁剪：宽度放开、不限制行数，
+                    // 由外层容器自行换行
+                    maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1910,9 +1910,9 @@ fun CircleLyrics(
                     lineHeight = if (isCur) 22.sp else 18.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 过长的句子直接换行显示，不截断。
-                    // 最多 2 行：折行高度必须小于行距，否则相邻两行又会叠在一起
-                    maxLines = 2,
+                    // 完整显示，不裁剪：宽度放开、不限制行数，
+                    // 由外层容器自行换行
+                    maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -2001,7 +2001,7 @@ fun ArcLyrics(
     ) {
         // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 7 行）
         val rowSpan = ARC_ROW_SPACING_DP
-        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 11)
+        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 15)
         val span = (rows / 2).coerceAtLeast(1)
         // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
         val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
@@ -2012,7 +2012,7 @@ fun ArcLyrics(
         // 在高密度屏上实际半径只有设计的 1/density，弧会比预期弯得多
         val rPx = with(density) { rDp.dp.toPx() }
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        val lineW = maxWidth * 0.8f
+        val lineW = maxWidth * 1.0f
         val from = (cur - span).toInt().coerceAtLeast(0)
         val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
         for (i in from..to) {
@@ -2025,7 +2025,7 @@ fun ArcLyrics(
             // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
             Box(
                 Modifier
-                    .width(lineW)
+                    .widthIn(max = lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
                         // 只做淡出；旋转放到文字自己的 graphicsLayer 上，
@@ -2040,7 +2040,14 @@ fun ArcLyrics(
                     Modifier
                         // clickable 在 graphicsLayer 外层：命中框是文字未旋转时的
                         // 紧凑矩形，行与行之间按行距排开、不会重叠
-                        .clickable(enabled = lines[i].timeMs >= 0) { onSeek(lines[i].timeMs) }
+                        .clickable(enabled = lines[i].timeMs >= 0) {
+                            // 点了就立刻回到跟播：清掉手动偏移，
+                            // 位置交给播放进度重新算，避免停在手动位置上跳错行
+                            dragOff = 0f
+                            scope.launch { animOff.snapTo(0f) }
+                            manualAt = 0L
+                            onSeek(lines[i].timeMs)
+                        }
                         .graphicsLayer {
                             // 圆心角即切线角：不加截断，文字方向才始终贴合圆
                             rotationZ = th * 180f / PI_F
@@ -2053,9 +2060,9 @@ fun ArcLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 过长的句子直接换行显示，不截断。
-                    // 最多 2 行：折行高度必须小于行距，否则相邻两行又会叠在一起
-                    maxLines = 2,
+                    // 完整显示，不裁剪：宽度放开、不限制行数，
+                    // 由外层容器自行换行
+                    maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

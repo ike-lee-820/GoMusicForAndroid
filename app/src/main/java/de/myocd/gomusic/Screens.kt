@@ -1365,27 +1365,81 @@ private fun WideTopActions(vm: MainViewModel, s: Song) {
 @Composable
 fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxSize()) {
-        // ---------- 左：封面居中，歌词绕封面圆心滚动 ----------
+        // ---------- 左：专辑大图，下方歌手 / 专辑名 / 进度条 / 控制 ----------
         BoxWithConstraints(
-            Modifier.weight(1.25f).fillMaxHeight(),
+            Modifier.weight(1f).fillMaxHeight(),
             contentAlignment = Alignment.Center,
         ) {
-            // 半径按短边取，比例再小也不会把歌词挤出屏幕
-            val r = minOf(maxWidth, maxHeight) * 0.34f
-            Box(contentAlignment = Alignment.Center) {
+            val coverSize = minOf(maxWidth * 0.62f, maxHeight * 0.62f).coerceAtLeast(80.dp)
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
                 Cover(
                     s.coverUrl,
-                    Modifier.size(r * 1.5f).clickable {
+                    Modifier.size(coverSize).clickable {
                         vm.showPlayer = false
                         vm.openNmSongAlbum(s)
                     },
                     16.dp,
                 )
-                CircleLyrics(
-                    vm.lyric, vm.lyricIndex, r,
-                    Modifier.size(r * 2.6f), vm.lyricLoading,
-                ) { vm.seekTo(it) }
+                VS(10)
+                // 第一行小字：歌手
+                Txt(s.artist, 12, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                VS(2)
+                // 第二行：专辑名
+                Txt(s.album.ifBlank { "未知专辑" }, 15, color = Color.White, maxLines = 1)
+                VS(8)
+                SimpleSeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
+                Row(Modifier.fillMaxWidth(0.92f)) {
+                    Txt(fmt(vm.positionMs), 11, color = Color.White.copy(alpha = 0.6f))
+                    Spacer(Modifier.weight(1f))
+                    Txt(fmt(vm.durationMs), 11, color = Color.White.copy(alpha = 0.6f))
+                }
+                VS(4)
+                // 上一首 / 播放 / 下一首
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 38.dp, tint = Color.White) { vm.prev() }
+                    HS(4)
+                    IconBtn(
+                        if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                        if (vm.isPlaying) "暂停" else "播放",
+                        size = 52.dp, tint = Color.Black, bg = Color.White,
+                    ) { vm.togglePlay() }
+                    HS(4)
+                    IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { vm.next() }
+                }
+                VS(2)
+                // 播放列表 / 播放方式
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 32.dp, tint = Color.White) {
+                        vm.showQueue = true
+                    }
+                    HS(8)
+                    IconBtn(
+                        when (vm.playMode) {
+                            0 -> Icons.Outlined.Repeat
+                            1 -> Icons.Outlined.Shuffle
+                            else -> Icons.Outlined.RepeatOne
+                        },
+                        listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
+                        size = 32.dp, tint = Color.White,
+                    ) { vm.cycleMode() }
+                }
             }
+        }
+        // ---------- 右：竖排滚动歌词 ----------
+        Box(Modifier.weight(1f).fillMaxHeight()) {
+            VerticalLyrics(vm.lyric, vm.lyricIndex, Modifier.fillMaxSize(), vm.lyricLoading) { vm.seekTo(it) }
         }
         // ---------- 右：歌曲信息 + 进度条 + 控制（竖排，高度不够也放得下） ----------
         Column(
@@ -1859,6 +1913,77 @@ fun CircleLyrics(
                     textAlign = TextAlign.Center,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 竖排滚动歌词（与参考图一致）。
+ *
+ * 当前句居中高亮，前后几句依次淡显；可以上下滑动浏览，
+ * 点某一句直接跳到那一句。跟播时自动把当前句滚回正中，
+ * 手动滑动后暂停几秒再恢复。
+ */
+@Composable
+fun VerticalLyrics(
+    lines: List<LrcLine>,
+    idx: Int,
+    modifier: Modifier = Modifier,
+    loading: Boolean = false,
+    curColor: Color = Color.White,
+    dimColor: Color = Color.White.copy(alpha = 0.42f),
+    onSeek: (Long) -> Unit,
+) {
+    if (lines.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载歌词…", 14, color = dimColor)
+                }
+            } else {
+                Txt("暂无歌词", 14, color = dimColor)
+            }
+        }
+        return
+    }
+    val st = rememberLazyListState()
+    var manualUntil by remember { mutableLongStateOf(0L) }
+    var auto by remember { mutableStateOf(false) }
+    LaunchedEffect(st) {
+        snapshotFlow { st.isScrollInProgress }.collect { if (it && !auto) manualUntil = System.currentTimeMillis() + 4000 }
+    }
+    // 当前行变化时居中；刚手动滑过就先不动
+    LaunchedEffect(idx, lines.size) {
+        if (idx >= 0 && System.currentTimeMillis() > manualUntil) {
+            auto = true
+            try { st.animateScrollToItem(idx) } finally { auto = false }
+        }
+    }
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = st,
+            contentPadding = PaddingValues(vertical = maxHeight / 2 - 30.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            itemsIndexed(lines) { i, l ->
+                val cur = i == idx
+                Text(
+                    zhText(l.text),
+                    Modifier.fillMaxWidth()
+                        .clickable(enabled = l.timeMs >= 0) { manualUntil = System.currentTimeMillis() + 6000; onSeek(l.timeMs) }
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                    color = if (cur) curColor else dimColor,
+                    fontSize = if (cur) 19.sp else 16.sp,
+                    lineHeight = if (cur) 30.sp else 26.sp,
+                    fontWeight = if (cur) FontWeight.Bold else FontWeight.Normal,
+                    textAlign = TextAlign.Center,
                 )
             }
         }

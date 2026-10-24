@@ -1930,7 +1930,7 @@ fun ArcLyrics(
     modifier: Modifier = Modifier,
     loading: Boolean = false,
     curColor: Color = Color.White,
-    radiusFactor: Float = 1.35f,
+    radiusFactor: Float = 3.0f,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
@@ -1951,9 +1951,8 @@ fun ArcLyrics(
     }
     val scope = rememberCoroutineScope()
     val span = 5
-    // 行高影响弧上相邻两行的圆心角（stepRad = rowH / r），
-    // 加大它既是加大行距，也让弧的弯曲更明显
-    val rowH = 62.dp
+    // 行高决定相邻两行在弧上的间距（纵向间距 = r × stepRad ≈ rowH）
+    val rowH = 72.dp
     // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
     val base by animateFloatAsState(
         targetValue = idx.coerceAtLeast(0).toFloat(),
@@ -2001,7 +2000,7 @@ fun ArcLyrics(
         val stepRad = rowH.value / r.value.coerceAtLeast(1f)
         val rPx = r.value
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        val lineW = maxWidth * 0.92f
+        val lineW = maxWidth * 0.8f
         val from = (cur - span).toInt().coerceAtLeast(0)
         val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
         for (i in from..to) {
@@ -2017,7 +2016,7 @@ fun ArcLyrics(
                     .width(lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
-                        rotationZ = (th * 180f / PI_F).coerceIn(-38f, 38f)
+                        rotationZ = (th * 180f / PI_F).coerceIn(-10f, 10f)
                         alpha = fade
                         transformOrigin = TransformOrigin(0.5f, 0.5f)
                     },

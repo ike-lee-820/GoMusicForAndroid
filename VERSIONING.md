@@ -58,3 +58,10 @@
 - `1.7.1` 小迭代：修编译（FontVariation 需要 @OptIn(ExperimentalTextApi)；PI_F 常量误插在 import 中间）
 - `1.7.2` 小迭代：修编译（@file:OptIn 必须写在 package 之前）
 - `1.7.3` 小迭代：修编译（setFontKind / setFontWght 与 var 自动生成的 setter 撞 JVM 签名，改名 chooseFontKind / chooseFontWght）
+- `1.8.0` 大迭代：横屏播放器改三栏，歌词改为按句跳转
+  - 横屏：左（专辑封面 / 歌手 / 歌名 / 专辑名）、中（控制区）、右（歌词）
+  - 之前横屏漏了歌名，只有歌手和专辑名
+  - 歌词不再跟播放进度匀速旋转：一句唱完立刻滚到下一句
+  - 歌词可上下滑动翻看，停手 3 秒自动回到当前句，中途再滑重新计时
+  - 当前句用主题色高亮
+  - 竖版补上专辑名

@@ -10,6 +10,7 @@ import kotlin.math.abs
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.animation.core.animateFloatAsState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.sin
@@ -1369,18 +1370,20 @@ private fun WideTopActions(vm: MainViewModel, s: Song) {
  */
 @Composable
 fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
+    val go = LocalGo.current
     Row(modifier.fillMaxSize()) {
-        // ---------- 左：专辑大图 + 歌手 / 专辑名，底部是控制区（全屏唯一进度条） ----------
+        // ---------- 左：专辑封面 / 歌手 / 歌名 ----------
         BoxWithConstraints(
-            Modifier.weight(1f).fillMaxHeight(),
+            Modifier.weight(1f).fillMaxHeight().padding(horizontal = 8.dp),
             contentAlignment = Alignment.Center,
         ) {
-            val coverSize = minOf(maxWidth * 0.58f, maxHeight * 0.52f).coerceAtLeast(80.dp)
+            val coverSize = minOf(maxWidth * 0.66f, maxHeight * 0.56f).coerceAtLeast(80.dp)
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
+                // 专辑：封面
                 Cover(
                     s.coverUrl,
                     Modifier.size(coverSize).clickable {
@@ -1390,24 +1393,39 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     16.dp,
                 )
                 VS(10)
-                // 第一行小字：歌手
-                Txt(s.artist, 12, color = Color.White.copy(alpha = 0.72f), maxLines = 1)
+                // 歌手
+                Txt(
+                    s.artist, 13, color = Color.White.copy(alpha = 0.72f), maxLines = 1,
+                    modifier = Modifier.clickable {
+                        vm.showPlayer = false
+                        vm.openNmSongArtist(s)
+                    }.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+                VS(4)
+                // 歌名
+                MarqueeText(s.title, 20, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
                 VS(2)
-                // 第二行：专辑名
-                Txt(s.album.ifBlank { "未知专辑" }, 15, color = Color.White, maxLines = 1)
+                // 专辑名
+                Txt(s.album.ifBlank { "未知专辑" }, 12, color = go.muted, maxLines = 1)
             }
-            // 控制区：进度条 + 时间 + 按钮，固定在左栏底部
+        }
+        // ---------- 中：控制区 ----------
+        BoxWithConstraints(
+            Modifier.weight(0.9f).fillMaxHeight().padding(horizontal = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
             Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+                Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
                 SimpleSeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
-                Row(Modifier.fillMaxWidth(0.92f)) {
+                Row(Modifier.fillMaxWidth()) {
                     Txt(fmt(vm.positionMs), 11, color = Color.White.copy(alpha = 0.6f))
                     Spacer(Modifier.weight(1f))
                     Txt(fmt(vm.durationMs), 11, color = Color.White.copy(alpha = 0.6f))
                 }
-                VS(2)
+                VS(8)
                 // 上一首 / 播放 / 下一首
                 Row(
                     Modifier.fillMaxWidth(),
@@ -1424,7 +1442,7 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     HS(4)
                     IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { vm.next() }
                 }
-                VS(2)
+                VS(8)
                 // 播放列表 / 播放方式
                 Row(
                     Modifier.fillMaxWidth(),
@@ -1445,14 +1463,14 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                         size = 32.dp, tint = Color.White,
                     ) { vm.cycleMode() }
                 }
-                VS(4)
             }
         }
-        // ---------- 右：圆弧歌词（排在一个真正的圆上） ----------
-        Box(Modifier.weight(1f).fillMaxHeight()) {
+        // ---------- 右：歌词区（可滑动，停手 3 秒回到当前句） ----------
+        Box(Modifier.weight(1.15f).fillMaxHeight()) {
             ArcLyrics(
-                vm.lyric, vm.lyricIndex, vm.positionMs,
+                vm.lyric, vm.lyricIndex,
                 Modifier.fillMaxSize(), vm.lyricLoading,
+                curColor = go.primary,
             ) { vm.seekTo(it) }
         }
     }
@@ -1510,6 +1528,9 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     vm.openNmSongArtist(s)
                 }.padding(horizontal = 12.dp, vertical = 6.dp),
             )
+            VS(2)
+            // 专辑名
+            Txt(s.album.ifBlank { "未知专辑" }, 13, color = go.muted, maxLines = 1)
 
             if (snippet) {
                 VS(8)
@@ -1880,16 +1901,17 @@ fun CircleLyrics(
  * 每行的位置（沿弧的横纵偏移）与倾斜角（沿半径方向）都由同一个圆心角算出，
  * 所以行与行之间的相对关系是真实的圆周几何，不是各自硬歪一个角度。
  *
- * 旋转是连续的：按播放进度在两句之间插值成浮点行号，圆盘平滑转动，
- * 不是一行一行跳。可以上下滑动手动转动，点某一句直接跳过去。
+ * 定位按「句」走：一句唱完立刻滚到下一句，不做跟播放进度的匀速旋转。
+ * 可以上下滑动手动翻看；停手 3 秒后自动回到当前句，中途再滑会重新计时。
+ * 当前句用主题色高亮。
  */
 @Composable
 fun ArcLyrics(
     lines: List<LrcLine>,
     idx: Int,
-    positionMs: Long,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
+    curColor: Color = Color.White,
     radiusFactor: Float = 1.35f,
     onSeek: (Long) -> Unit,
 ) {
@@ -1898,7 +1920,7 @@ fun ArcLyrics(
             if (loading) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(
-                        color = Color.White, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                        color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
                     )
                     HS(8)
                     Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
@@ -1910,44 +1932,39 @@ fun ArcLyrics(
         return
     }
     val scope = rememberCoroutineScope()
-    var hPx by remember { mutableIntStateOf(1) }
     val span = 6
     val rowH = 44.dp
-    // 连续行号：按进度在两句之间插值，圆盘才会平滑转动
-    val target = remember(lines, positionMs) {
-        if (idx >= 0) floatIndex(lines, positionMs) else 0f
+    // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
+    val base by animateFloatAsState(
+        targetValue = idx.coerceAtLeast(0).toFloat(),
+        animationSpec = tween(400),
+        label = "arcBase",
+    )
+    // 手动滑动的偏移；停手 3 秒后归零
+    val offset = remember { Animatable(0f) }
+    var manual by remember { mutableStateOf(false) }
+    var manualAt by remember { mutableLongStateOf(0L) }
+    val cur = base + offset.value
+    // 每滑一次就更新 manualAt，这个协程会重启并重新计时 3 秒
+    LaunchedEffect(manualAt) {
+        if (!manual) return@LaunchedEffect
+        delay(3000)
+        manual = false
+        offset.animateTo(0f, tween(500))
     }
-    val smooth by animateFloatAsState(target, spring(stiffness = Spring.StiffnessLow), label = "arc")
-    val delta = remember { Animatable(0f) }
-    var dragging by remember { mutableStateOf(false) }
-    var frozen by remember { mutableFloatStateOf(0f) }
-    val cur = (if (dragging) frozen else smooth) + delta.value
 
     BoxWithConstraints(
         modifier.fillMaxSize()
-            .onSizeChanged { hPx = it.height.coerceAtLeast(1) }
             .pointerInput(lines) {
                 detectVerticalDragGestures(
-                    onDragStart = {
-                        dragging = true
-                        frozen = cur
-                        scope.launch { delta.snapTo(0f) }
-                    },
-                    onDragEnd = {
-                        dragging = false
-                        // 松手后平滑回到跟播位置
-                        scope.launch {
-                            delta.snapTo(frozen + delta.value - smooth)
-                            delta.animateTo(0f, tween(600))
-                        }
-                    },
-                    onDragCancel = {
-                        dragging = false
-                        scope.launch { delta.animateTo(0f, tween(400)) }
-                    },
+                    onDragStart = { manual = true; manualAt = System.currentTimeMillis() },
+                    onDragEnd = { manualAt = System.currentTimeMillis() },
+                    onDragCancel = { manualAt = System.currentTimeMillis() },
                     onVerticalDrag = { _, dragAmount ->
-                        val rowPx = (hPx / (span * 2 + 1f)).coerceAtLeast(1f)
-                        scope.launch { delta.snapTo((delta.value - dragAmount / rowPx)) }
+                        manual = true
+                        manualAt = System.currentTimeMillis()
+                        val rowPx = (size.height / (span * 2 + 1f)).coerceAtLeast(1f)
+                        scope.launch { offset.snapTo(offset.value - dragAmount / rowPx) }
                     },
                 )
             },
@@ -1955,21 +1972,19 @@ fun ArcLyrics(
     ) {
         val r = maxHeight * radiusFactor
         // 每行对应的圆心角：由行高弧长 / 半径推出，几何自洽
-        val stepRad = (rowH.value / r.value.coerceAtLeast(1f))
+        val stepRad = rowH.value / r.value.coerceAtLeast(1f)
         val rPx = r.value
-        // 整体右移一点，让弧线在可视区里居中
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        val lineW = maxWidth * 0.86f
+        val lineW = maxWidth * 0.92f
         val from = (cur - span).toInt().coerceAtLeast(0)
         val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
         for (i in from..to) {
             val d = i - cur
             val th = d * stepRad
-            // 圆周坐标：圆心在左侧 r 处，歌词沿右侧弧展开
             val x = -rPx * (1 - cos(th)) + shift
             val y = rPx * sin(th)
-            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0.28f, 1f)
-            val isCur = abs(d) < 0.5f
+            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0.3f, 1f)
+            val isCur = i == idx
             Text(
                 zhText(lines[i].text),
                 Modifier
@@ -1982,7 +1997,8 @@ fun ArcLyrics(
                     }
                     .clickable(enabled = lines[i].timeMs >= 0) { onSeek(lines[i].timeMs) }
                     .padding(horizontal = 6.dp, vertical = 2.dp),
-                color = Color.White,
+                // 当前句用主题色
+                color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
                 fontSize = if (isCur) 18.sp else 15.sp,
                 lineHeight = if (isCur) 28.sp else 24.sp,
                 fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
@@ -1992,20 +2008,6 @@ fun ArcLyrics(
             )
         }
     }
-}
-
-/** 按播放进度算出浮点行号：在两句之间线性插值，供圆盘连续转动 */
-private fun floatIndex(lines: List<LrcLine>, pos: Long): Float {
-    if (lines.isEmpty()) return 0f
-    var i = 0
-    for (k in lines.indices) {
-        if (lines[k].timeMs in 0..pos) i = k else if (lines[k].timeMs > pos) break
-    }
-    if (i >= lines.lastIndex) return i.toFloat()
-    val t0 = lines[i].timeMs.coerceAtLeast(0)
-    val t1 = lines[i + 1].timeMs
-    if (t1 <= t0) return i.toFloat()
-    return i + ((pos - t0).toFloat() / (t1 - t0)).coerceIn(0f, 1f)
 }
 
 @Composable

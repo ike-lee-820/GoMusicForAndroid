@@ -30,7 +30,10 @@ fun neteaseIdOf(ssid: String?): Long? =
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)
 
 /** 网易云可选音质档位（从低到高） */
-val NM_LEVELS = listOf("standard", "higher", "exhigh", "lossless")
+val NM_LEVELS = listOf(
+    "standard", "higher", "exhigh", "lossless",
+    "hires", "jyeffect", "dolby", "vivid", "jymaster", "sky",
+)
 
 /** 网易云音质档位中文名 */
 fun nmLevelLabel(lv: String): String = when (lv) {
@@ -38,6 +41,12 @@ fun nmLevelLabel(lv: String): String = when (lv) {
     "higher" -> "较高 192k"
     "exhigh" -> "极高 320k"
     "lossless" -> "无损 FLAC"
+    "hires" -> "Hi-Res"
+    "jyeffect" -> "高清臻音"
+    "dolby" -> "杜比全景声"
+    "vivid" -> "臻音全景声"
+    "jymaster" -> "超清母带"
+    "sky" -> "沉浸环绕声"
     else -> lv
 }
 
@@ -533,6 +542,53 @@ object Netease {
                 album = name,
                 source = SRC_NETEASE,
                 nmId = aid,
+                nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 热门歌手 /top/artists，支持 offset 分页 */
+    fun topArtists(limit: Int = 30, offset: Int = 0): List<Group> {
+        val root = get("/top/artists", "offset" to offset.toString(), "limit" to limit.toString())
+        val arr = resultArray(root, "artists")
+            .ifEmpty { resultArray(root, "list") }
+        NmLog.note("热门歌手 offset=$offset 返回 ${arr.size} 条")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = "网易云歌手",
+                cover = pic(o.str("picUrl", "img1v1Url", "pic")),
+                songs = emptyList(),
+                artist = name,
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "artist",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 最新专辑（新碟上架） /album/newest */
+    fun newestAlbums(limit: Int = 30): List<Group> {
+        val root = get("/album/newest")
+        val arr = resultArray(root, "albums")
+        NmLog.note("最新专辑返回 ${arr.size} 条")
+        return arr.take(limit).mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            val ar = o.obj("artist") ?: o.obj("ar")
+            Group(
+                title = name,
+                subtitle = ar?.str("name") ?: "",
+                cover = pic(o.str("picUrl", "blurPicUrl", "pic")),
+                songs = emptyList(),
+                artist = ar?.str("name") ?: "",
+                album = name,
+                source = SRC_NETEASE,
+                nmId = id,
                 nmKind = "album",
             )
         }.distinctBy { it.nmId }

@@ -59,12 +59,14 @@ class PlaybackService : MediaSessionService() {
         val resolver = ResolvingDataSource.Resolver { spec ->
             if (spec.uri.scheme == "gomusic") {
                 val ssid = spec.uri.lastPathSegment ?: throw IOException("bad uri")
-                // 已下载过的歌曲直接放本地文件，离线也能播
-                val local = LocalLib.audioUri(applicationContext, ssid)
+                val p = Prefs(applicationContext)
+                // 已下载过的歌曲直接放本地文件，离线也能播。
+                // 同一首歌可能有多个音质的下载，按当前音质挑对应的那份
+                val wantQuality = if (neteaseIdOf(ssid) != null && p.nmLevel.isNotBlank()) p.nmLevel else p.quality
+                val local = LocalLib.audioUri(applicationContext, ssid, wantQuality)
                 if (local != null) {
                     spec.withUri(local)
                 } else {
-                    val p = Prefs(applicationContext)
                     val nid = neteaseIdOf(ssid)
                     val url = try {
                         if (nid != null && p.nmCookie.isNotBlank()) {

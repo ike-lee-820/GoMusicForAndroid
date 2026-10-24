@@ -108,7 +108,13 @@ object LocalLib {
             val key = d.audio.keys.minByOrNull { kotlin.math.abs(Api.rank(it) - Api.rank(quality)) }!!
             d.audio[key]!!.first()
         }
-        val base = safe("${song.artist} - ${song.title}")
+        // 同一首歌下多个音质时，文件名带上音质，避免后下的把先下的覆盖掉
+        val hasOther = qualitiesOf(ctx, song.ssid).isNotEmpty()
+        val base = if (hasOther && quality.isNotBlank()) {
+            safe("${song.artist} - ${song.title} [$quality]")
+        } else {
+            safe("${song.artist} - ${song.title}")
+        }
         val ext = url.substringBefore('?').substringAfterLast('.', "mp3")
             .takeIf { it.length in 2..4 } ?: "mp3"
 
@@ -166,9 +172,27 @@ object LocalLib {
         return rec.copy(meta = metaRef)
     }
 
-    /** 已下载的歌曲转换成列表用的 Song（封面指向本地文件） */
+    /**
+     * 本地音频地址。同一首歌可能下载了多个音质，这里按 [quality] 精确匹配；
+     * 没下载这个音质时，退而用已下载里最接近的一档。
+     */
+    fun audioUri(ctx: Context, ssid: String, quality: String = ""): Uri? {
+        val recs = Prefs(ctx).downloads.filter { it.ssid == ssid && it.audio.isNotBlank() }
+        if (recs.isEmpty()) return null
+        val rec = recs.firstOrNull { it.quality == quality }
+            ?: recs.minByOrNull { kotlin.math.abs(Api.rank(it.quality) - Api.rank(quality)) }
+            ?: return null
+        return rec.audio.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+    }
+
+    /** 某首歌已经下载了哪些音质 */
+    fun qualitiesOf(ctx: Context, ssid: String): List<String> =
+        Prefs(ctx).downloads.filter { it.ssid == ssid && it.audio.isNotBlank() }
+            .map { it.quality }.filter { it.isNotBlank() }.distinct()
+
+    /** 已下载的歌曲转换成列表用的 Song（同 ssid 多音质只留一条，避免列表 key 重复） */
     fun songs(recs: List<DownloadRecord>): List<Song> =
-        recs.map {
+        recs.distinctBy { it.ssid }.map {
             Song(
                 ssid = it.ssid,
                 title = it.title,
@@ -177,11 +201,6 @@ object LocalLib {
                 coverUrl = it.cover.ifBlank { null },
             )
         }
-
-    fun audioUri(ctx: Context, ssid: String): Uri? =
-        Prefs(ctx).downloads.firstOrNull { it.ssid == ssid }
-            ?.audio?.takeIf { it.isNotBlank() }
-            ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
     /** 读取本地歌词 / 信息文本 */
     fun readText(ctx: Context, ref: String): String {
@@ -197,14 +216,28 @@ object LocalLib {
         }.getOrDefault("")
     }
 
-    fun delete(ctx: Context, rec: DownloadRecord) {
-        listOf(rec.audio, rec.cover, rec.lyric, rec.meta).forEach { ref ->
+    /**
+     * 删掉一条下载记录对应的文件。
+     *
+     * 音频与信息文件是「每音质一份」，直接删；
+     * 封面 / 歌词是整首歌共用的，只有没有其他音质引用时才删，
+     * 否则会把同一首歌另一个音质的封面一起删掉。
+     */
+    fun deleteRecord(ctx: Context, rec: DownloadRecord) {
+        val others = Prefs(ctx).downloads.filter { it.ssid == rec.ssid && it.quality != rec.quality }
+        listOf(rec.audio, rec.meta).forEach { ref -> deleteRef(ctx, ref) }
+        listOf(rec.cover, rec.lyric).forEach { ref ->
             if (ref.isBlank()) return@forEach
-            runCatching {
-                val u = Uri.parse(ref)
-                if (u.scheme == "content") ctx.contentResolver.delete(u, null, null)
-                else u.path?.let { File(it).delete() }
-            }
+            if (others.none { it.cover == ref || it.lyric == ref }) deleteRef(ctx, ref)
+        }
+    }
+
+    private fun deleteRef(ctx: Context, ref: String) {
+        if (ref.isBlank()) return
+        runCatching {
+            val u = Uri.parse(ref)
+            if (u.scheme == "content") ctx.contentResolver.delete(u, null, null)
+            else u.path?.let { File(it).delete() }
         }
     }
 }

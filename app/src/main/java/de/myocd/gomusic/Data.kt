@@ -228,6 +228,13 @@ fun qualityLabel(k: String): String = when (k) {
     "high" -> "高品质"
     "normal" -> "标准"
     "low", "saver", "economy", "lite" -> "省流"
+    // 高规格音质
+    "hires" -> "Hi-Res"
+    "jyeffect" -> "高清臻音"
+    "dolby" -> "杜比全景声"
+    "vivid" -> "臻音全景声"
+    "jymaster" -> "超清母带"
+    "sky" -> "沉浸环绕声"
     else -> k
 }
 

@@ -435,6 +435,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         prefs.nmCookie = cookie
         Netease.cookie = cookie
+        homeLoaded = false
         showNmLogin = false
         viewModelScope.launch(Dispatchers.IO) {
             val n = name?.takeIf { it.isNotBlank() }
@@ -452,6 +453,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.nmCookie = ""
         prefs.nmAccount = ""
         Netease.cookie = ""
+        homeLoaded = false
         nmUser = null
         nmSongs = emptyList()
         nmAlbums = emptyList()
@@ -518,10 +520,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             nmArtists = emptyList()
             return
         }
+        // 立刻置为搜索中：让大加载动画马上出来，不用等防抖
+        nmSearching = true
         nmJob = viewModelScope.launch {
             try {
                 delay(400)
-                nmSearching = true
                 // 三个搜索并行发，不用串行等三倍时间
                 val songsDeferred = async(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
                 val albumsDeferred = async(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
@@ -529,6 +532,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val s = songsDeferred.await()
                 val a = albumsDeferred.await()
                 val ar = artistsDeferred.await()
+                // 分类型记日志：便于确认到底是哪一路没返回
+                NmLog.note("分类型结果：歌曲=${s.size} 专辑=${a.size} 歌手=${ar.size}（kw=$kw）")
                 if (!nmReady) return@launch
                 keepNetease(s)
                 rememberSongs(s)
@@ -540,9 +545,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 nmOffset = NM_PAGE_SIZE
                 nmHasMore = s.size >= NM_PAGE_SIZE
                 NmLog.note("搜索完成：歌曲 ${s.size} / 专辑 ${a.size} / 歌手 ${ar.size}")
-                if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
-                    NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
-                }
                 if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
                     NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
                 }
@@ -705,13 +707,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 热搜词 */
     var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
     var homeLoading by mutableStateOf(false); private set
-    /** 新歌速递地区：0 全部 / 7 华语 / 96 欧美 / 8 日本 / 16 韩国 */
-    var newSongType by mutableIntStateOf(0); private set
+    /** 新歌速递固定「全部」（type = 0），不提供地区切换 */
+    val newSongType: Int get() = 0
 
     private var homeJob: Job? = null
+    /** 首页是否已加载过：加载过就不再重复请求，切回首页直接用缓存 */
+    private var homeLoaded = false
 
-    /** 加载首页数据：每日推荐 + 新歌速递 + 热搜，三路并行 */
-    fun loadHome() {
+    /**
+     * 加载首页数据：每日推荐 + 新歌速递 + 热搜，三路并行。
+     *
+     * 默认只在第一次进入首页时真正请求；[force] = true 用于手动刷新。
+     */
+    fun loadHome(force: Boolean = false) {
+        // 换回首页直接用缓存，不再重复请求
+        if (homeLoaded && !force) {
+            NmLog.note("首页已加载过，使用缓存（force=$force）")
+            return
+        }
         homeJob?.cancel()
         if (!nmReady) {
             homeRecommend = emptyList()
@@ -733,6 +746,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 homeRecommend = r
                 homeNewSongs = n
                 homeHotWords = h
+                homeLoaded = true
+                NmLog.note("首页加载完成：推荐 ${r.size} / 新歌 ${n.size} / 热搜 ${h.size}")
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadHome", e)
@@ -740,13 +755,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 homeLoading = false
             }
         }
-    }
-
-    /** 切换新歌速递地区 */
-    fun chooseNewSongType(t: Int) {
-        if (newSongType == t) return
-        newSongType = t
-        loadHome()
     }
 
     /** 点热搜词：填入搜索框并回到歌曲页 */

@@ -386,10 +386,8 @@ fun OfflineBar(vm: MainViewModel) {
 @Composable
 fun HomeTab(vm: MainViewModel) {
     val go = LocalGo.current
-    // 每次进入首页都重新加载（之前只在启动时加载一次）
-    LaunchedEffect(vm.tab, vm.nmReady) {
-        if (vm.tab == TAB_HOME) vm.loadHome()
-    }
+    // 只在第一次进入首页时加载，换回首页直接用缓存
+    LaunchedEffect(vm.nmReady) { vm.loadHome() }
     val rec = vm.homeRecommend
     val news = vm.homeNewSongs
     val hots = vm.homeHotWords
@@ -484,27 +482,11 @@ private fun HomeSongRow(list: List<Song>, vm: MainViewModel) {
     VS(14)
 }
 
-/** 新歌速递：可切换地区（全部 / 华语 / 欧美 / 日本 / 韩国） */
+/** 新歌速递：只展示「全部」，不提供地区切换 */
 @Composable
 private fun NewSongSection(vm: MainViewModel, list: List<Song>) {
-    val go = LocalGo.current
-    val types = listOf("全部" to 0, "华语" to 7, "欧美" to 96, "日本" to 8, "韩国" to 16)
     Column(Modifier.fillMaxWidth()) {
         HomeHeader("新歌速递")
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            types.forEach { (n, t) ->
-                val sel = vm.newSongType == t
-                Box(
-                    Modifier.clip(RoundedCornerShape(50)).background(if (sel) go.primary else go.surfaceHi)
-                        .clickable { vm.chooseNewSongType(t) }
-                        .padding(horizontal = 12.dp, vertical = 5.dp),
-                ) { Txt(n, 12, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
-            }
-        }
-        VS(8)
         HomeSongRow(list.take(20), vm)
     }
 }
@@ -532,6 +514,27 @@ private fun HotSection(vm: MainViewModel, words: List<String>) {
     }
 }
 
+
+/**
+ * 首次搜索的大加载动画：盖住整个列表区，直到第一页结果回来才显示内容。
+ * 只在没有结果时显示，避免翻页时又盖一次。
+ */
+@Composable
+private fun FirstSearchLoading(vm: MainViewModel, text: String = "正在搜索网易云曲库") {
+    val go = LocalGo.current
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator(
+                color = go.primary,
+                modifier = Modifier.size(48.dp),
+                strokeWidth = 4.dp,
+            )
+            VS(16)
+            Txt(text, 14, color = go.muted)
+        }
+    }
+}
+
 @Composable
 fun SongsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
@@ -546,6 +549,11 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
     LaunchedEffect(vm.tab, q, vm.nmReady) {
         NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
         vm.searchNetease(q)
+    }
+    // 第一次搜索完成前，用大加载动画盖住，不先显示结果
+    if (vm.nmSearching && vm.nmSongs.isEmpty()) {
+        FirstSearchLoading(vm)
+        return
     }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         // 顶部：播放历史（本站 + 网易云）
@@ -653,6 +661,11 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
         NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
         vm.searchNetease(q)
     }
+    // 第一次搜索完成前用大加载动画，不先显示结果
+    if (vm.nmSearching && vm.nmAlbums.isEmpty()) {
+        FirstSearchLoading(vm, "正在搜索网易云专辑")
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         itemsIndexed(
             groups,
@@ -685,6 +698,11 @@ fun ArtistsTab(vm: MainViewModel) {
     LaunchedEffect(vm.tab, q, vm.nmReady) {
         NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
         vm.searchNetease(q)
+    }
+    // 第一次搜索完成前用大加载动画，不先显示结果
+    if (vm.nmSearching && vm.nmArtists.isEmpty()) {
+        FirstSearchLoading(vm, "正在搜索网易云歌手")
+        return
     }
     val cols = if (LocalConfiguration.current.screenWidthDp >= 768) 4 else 2
     LazyVerticalGrid(

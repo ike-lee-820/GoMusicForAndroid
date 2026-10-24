@@ -343,17 +343,22 @@ object Netease {
         return out.values.toList()
     }
 
+    /**
+     * 歌手搜索。type=100 返回空时，用单曲结果里的歌手聚合兜底，
+     * 保证「歌手」标签在网易云曲库下一定出内容。
+     */
     fun searchArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
         val arr = resultArray(rawSearch(keywords, 100, limit, offset), "artists")
-        NmLog.note("搜索歌手返回 ${arr.size} 条")
-        return arr.mapNotNull { o ->
-            val id = (o["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return@mapNotNull null
+        NmLog.note("搜索歌手 type=100 返回 ${arr.size} 条")
+        val out = LinkedHashMap<Long, Group>()
+        arr.forEach { o ->
+            val id = idOf(o)
             val name = o.str("name").orEmpty()
-            if (name.isBlank()) return@mapNotNull null
-            Group(
+            if (id <= 0L || name.isBlank()) return@forEach
+            out[id] = Group(
                 title = name,
                 subtitle = "网易云歌手",
-                cover = pic(o.str("picUrl", "img1v1Url", "img1v1Url")),
+                cover = pic(o.str("picUrl", "img1v1Url")),
                 songs = emptyList(),
                 artist = name,
                 source = SRC_NETEASE,
@@ -361,6 +366,30 @@ object Netease {
                 nmKind = "artist",
             )
         }
+        if (out.isEmpty()) {
+            NmLog.note("歌手搜索为空，改用单曲结果聚合歌手")
+            resultArray(rawSearch(keywords, 1, 30), "songs").forEach { o ->
+                val ar = (o["ar"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    ?: (o["artists"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    ?: return@forEach
+                val id = idOf(ar)
+                val name = ar.str("name").orEmpty()
+                if (id <= 0L || name.isBlank()) return@forEach
+                if (out.containsKey(id)) return@forEach
+                out[id] = Group(
+                    title = name,
+                    subtitle = "网易云歌手",
+                    cover = pic(ar.str("picUrl", "img1v1Url")),
+                    songs = emptyList(),
+                    artist = name,
+                    source = SRC_NETEASE,
+                    nmId = id,
+                    nmKind = "artist",
+                )
+            }
+            NmLog.note("聚合得到 ${out.size} 个歌手")
+        }
+        return out.values.toList()
     }
 
     // ================= 播放 / 歌词 / 详情 =================

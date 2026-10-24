@@ -152,6 +152,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import androidx.compose.foundation.layout.wrapContentWidth
 
 private const val PI_F = 3.14159265f
 
@@ -2025,21 +2026,23 @@ fun ArcLyrics(
             // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
             Box(
                 Modifier
-                    .widthIn(max = lineW)
+                    // 外层不设固定宽度：宽度一写死，里面斜着的文字就会被
+                    // 这个正矩形切掉一角，而外框本身又不跟文字平行
+                    .wrapContentWidth(unbounded = true)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
                     .graphicsLayer {
-                        // 只做淡出；旋转放到文字自己的 graphicsLayer 上，
-                        // 否则点击区域会跟着旋转后的整行矩形一起放大，
-                        // 相邻两行的命中框互相重叠，点这一行会跳到下一行
+                        // 外框跟着文字一起转，两者的边始终平行，不会被斜切
+                        rotationZ = th * 180f / PI_F
                         alpha = fade
+                        transformOrigin = TransformOrigin(0.5f, 0.5f)
                     },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     zhText(lines[i].text),
                     Modifier
-                        // clickable 在 graphicsLayer 外层：命中框是文字未旋转时的
-                        // 紧凑矩形，行与行之间按行距排开、不会重叠
+                        // clickable 在最外层：命中框是未旋转的紧凑矩形，
+                        // 行与行之间按行距排开，不会互相重叠跳错行
                         .clickable(enabled = lines[i].timeMs >= 0) {
                             // 点了就立刻回到跟播：清掉手动偏移，
                             // 位置交给播放进度重新算，避免停在手动位置上跳错行
@@ -2048,9 +2051,11 @@ fun ArcLyrics(
                             manualAt = 0L
                             onSeek(lines[i].timeMs)
                         }
+                        .widthIn(max = lineW)
                         .graphicsLayer {
-                            // 圆心角即切线角：不加截断，文字方向才始终贴合圆
-                            rotationZ = th * 180f / PI_F
+                            // 圆心角即切线角：不加截断，文字方向才始终贴合圆。
+                            // 放在最内层，只影响绘制，不影响上面的命中框尺寸
+                            rotationZ = 0f
                             transformOrigin = TransformOrigin(0.5f, 0.5f)
                         }
                         .padding(horizontal = 6.dp, vertical = 3.dp),

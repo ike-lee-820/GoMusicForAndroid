@@ -160,17 +160,23 @@ private const val PI_F = 3.14159265f
  * 相邻两行的纵向间距（dp）——这就是「行距」。
  * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
  */
-private const val ARC_ROW_SPACING_DP = 58.3f
+private const val ARC_ROW_SPACING_DP = 63f
 
 /**
  * 最外侧那行的最大倾斜角（度）。
  *
  * 圆心半径不再拍脑袋给倍数，而是由这个角度反推：
- *   r = 可见行数 × 行距 ÷ 最大倾斜角
+ *   r = 可见行数 × 行距 ÷ 最大倾斜角 × [ARC_RADIUS_BOOST]
  * 这样不管行距、屏幕怎么变，弧的弯曲程度始终稳定在能看清的一档，
  * 也不会因为半径过大把弧压成一条直线。
  */
 private const val ARC_MAX_TILT_DEG = 20f
+
+/**
+ * 圆心再拉远的倍数：1.0 = 按倾角刚好算出的半径，越大圆心越远、弧越平缓。
+ * 想让歌词摆得更开、更接近平铺，就调大它。
+ */
+private const val ARC_RADIUS_BOOST = 1.3f
 
 /**
  * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
@@ -2009,7 +2015,7 @@ fun ArcLyrics(
         val span = (rows / 2).coerceAtLeast(1)
         // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
         val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
-        val rDp = (span * rowSpan / tiltRad).coerceAtLeast(maxHeight.value * 0.5f)
+        val rDp = (span * rowSpan / tiltRad * ARC_RADIUS_BOOST).coerceAtLeast(maxHeight.value * 0.5f)
         // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
         val stepRad = rowSpan / rDp
         // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，

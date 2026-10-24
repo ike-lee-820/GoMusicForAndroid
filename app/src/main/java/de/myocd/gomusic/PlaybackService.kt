@@ -22,6 +22,7 @@ import androidx.media3.session.MediaSessionService
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.IOException
+import androidx.media3.exoplayer.DefaultLoadControl
 
 /**
  * 后台播放服务。
@@ -96,11 +97,24 @@ class PlaybackService : MediaSessionService() {
         val http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(mapOf("User-Agent" to NM_UA))
+            // 默认超时偏长，网络差时会干等很久才有反应
+            .setConnectTimeoutMs(8_000)
+            .setReadTimeoutMs(8_000)
         // 用 DefaultDataSource 包一层，才能播放本地 content:// / file:// 的音频
         val dsFactory = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, http), resolver)
 
+        // 加大缓冲：默认的缓冲量偏小，网络一抖就容易停下来转圈。
+        // prioritizeTimeOverSizeThresholds 让它优先凑够时间长度而不是数据量，
+        // 弱网下也能尽快开始播放并持续缓冲
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 60_000, 2_500, 5_000)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .setBackBuffer(30_000, false)
+            .build()
+
         val p = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dsFactory))
+            .setLoadControl(loadControl)
             .setAudioAttributes(buildAttrs(), true)
             .setHandleAudioBecomingNoisy(true)
             .build()

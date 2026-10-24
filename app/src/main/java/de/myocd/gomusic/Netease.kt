@@ -439,7 +439,49 @@ object Netease {
         return out.toList()
     }
 
+    /**
+     * 音源地址缓存。
+     *
+     * 取一次地址最坏要串行试 9 个音质档位 × 3 种参数，二十几次请求，
+     * 而这步是在 ExoPlayer 的准备线程上同步做的，等于点一首歌要干等
+     * 二十多个 HTTP 往返才开始出声——这就是「加载极慢」的原因。
+     * 缓存后切歌回来、重播都是秒开。地址有时效，过期时间放短一点。
+     */
+    private val urlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+    /** 缓存有效期：网易云 CDN 地址一般能撑几十分钟，留足余量取 10 分钟 */
+    private const val URL_TTL_MS = 10 * 60 * 1000L
+
+    private fun cacheKey(id: Long, quality: String, level: String?): String =
+        "$id|$quality|${level.orEmpty()}|${cookie.take(8).hashCode()}"
+
+    /** 预取音源地址：在后台提前把地址取好，等真正播放时直接命中缓存 */
+    fun prefetchAudioUrl(id: Long, quality: String, level: String? = null) {
+        val k = cacheKey(id, quality, level)
+        val hit = urlCache[k]
+        if (hit != null && System.currentTimeMillis() - hit.second < URL_TTL_MS) return
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { audioUrl(id, quality, level) }
+                .onFailure { NmLog.note("预取音源失败：${it.message}") }
+        }
+    }
+
     fun audioUrl(id: Long, quality: String, level: String? = null): String? {
+        // 命中缓存直接返回，不再走那一长串串行试档位
+        val k = cacheKey(id, quality, level)
+        urlCache[k]?.let { (u, t) ->
+            if (System.currentTimeMillis() - t < URL_TTL_MS) {
+                NmLog.note("音源命中缓存 id=$id")
+                return u
+            }
+            urlCache.remove(k)
+        }
+        val url = resolveAudioUrl(id, quality, level)
+        if (url != null) urlCache[k] = url to System.currentTimeMillis()
+        return url
+    }
+
+    private fun resolveAudioUrl(id: Long, quality: String, level: String?): String? {
         NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（新版 v1 + unblock）")
         // 指定了档位就优先试它，试不到再按设置降档
         val order = if (!level.isNullOrBlank()) {

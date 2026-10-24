@@ -1515,8 +1515,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun attach(c: MediaController) {
         c.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { this@MainViewModel.isPlaying = isPlaying }
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { onItem(mediaItem, true) }
-            override fun onTimelineChanged(timeline: Timeline, reason: Int) { refreshQueue() }
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                onItem(mediaItem, true)
+                prefetchAhead()
+            }
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                refreshQueue()
+                prefetchAhead()
+            }
         })
         applyMode(c)
         c.setPlaybackSpeed(speed)
@@ -1524,6 +1530,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         refreshQueue()
         onItem(c.currentMediaItem, false)
         afterConnect?.let { afterConnect = null; it() }
+    }
+
+    /** 预取后面几首的音源地址，切过去时直接命中缓存，不用再干等 */
+    private fun prefetchAhead() {
+        val c = controller ?: return
+        val p = Prefs(app)
+        val nm = neteaseIdOf(curSsid)
+        if (nm == null || p.nmCookie.isBlank()) return
+        Netease.cookie = p.nmCookie
+        val start = c.currentMediaItemIndex + 1
+        for (i in start until minOf(start + 2, c.mediaItemCount)) {
+            val nid = neteaseIdOf(c.getMediaItemAt(i).mediaId) ?: continue
+            Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
+        }
     }
 
     private fun refreshQueue() {

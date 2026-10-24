@@ -185,11 +185,6 @@ fun MainScreen(vm: MainViewModel) {
             NavBar(vm)
         }
 
-        GoToast(
-            vm.toastMsg,
-            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 56.dp + 64.dp + 16.dp),
-        )
-
         AnimatedVisibility(
             vm.showPlayer,
             enter = slideInVertically(tween(240)) { it } + fadeIn(tween(180)),
@@ -892,7 +887,9 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
     var deleting by remember { mutableStateOf<Playlist?>(null) }
     // 歌单导入 / 导出放在歌单总览页，合并成两个按钮
     var importing by remember { mutableStateOf(false) }
-    var exportingId by remember { mutableStateOf<String?>(null) }
+    // 导出支持一次选多个歌单；null = 弹层未打开
+    var exporting by remember { mutableStateOf(false) }
+    var exportPicked by remember { mutableStateOf(setOf<String>()) }
 
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         item {
@@ -901,7 +898,10 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                 Spacer(Modifier.width(8.dp))
                 GoButton("导入", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { importing = true }
                 Spacer(Modifier.width(8.dp))
-                GoButton("导出", icon = Icons.Outlined.Share) { exportingId = "" }
+                GoButton("导出", icon = Icons.Outlined.Share) {
+                    exportPicked = emptySet()
+                    exporting = true
+                }
             }
         }
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
@@ -932,9 +932,9 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
     }
     // 导入：粘贴还原字符
     if (importing) ImportPlaylistDialog(vm) { importing = false }
-    // 导出：先选歌单，再复制还原字符
-    if (exportingId != null) {
-        ExportPlaylistSheet(vm, exportingId, { exportingId = null }) { exportingId = it }
+    // 导出：选歌单（可多选）后复制还原字符
+    if (exporting) {
+        ExportPlaylistSheet(vm, exportPicked, { exporting = false }) { exportPicked = it }
     }
 }
 
@@ -952,7 +952,7 @@ fun ImportPlaylistDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         title = { Txt("导入歌单", 16, weight = FontWeight.SemiBold) },
         text = {
             Column {
-                Txt("粘贴以 GM1: 开头的还原字符", 12, color = go.muted)
+                Txt("粘贴还原字符；多个歌单可以一次粘贴多行", 12, color = go.muted)
                 VS(8)
                 SearchField(t, { t = it }, "还原字符", showIcon = false)
                 VS(6)
@@ -976,58 +976,77 @@ fun ImportPlaylistDialog(vm: MainViewModel, onDismiss: () -> Unit) {
 @Composable
 fun ExportPlaylistSheet(
     vm: MainViewModel,
-    picked: String?,
+    picked: Set<String>,
     onDismiss: () -> Unit,
-    onPick: (String) -> Unit,
+    onPick: (Set<String>) -> Unit,
 ) {
     val go = LocalGo.current
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val text = remember(picked) { if (picked.isNullOrBlank()) null else vm.exportPlaylist(picked) }
+    // 已确认生成时才算还原字符；未确认前只显示选了几个
+    var confirmed by remember { mutableStateOf(false) }
+    val text = remember(confirmed, picked) {
+        if (!confirmed || picked.isEmpty()) null else vm.exportPlaylists(picked.toList())
+    }
     GoSheet(onDismiss) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            if (picked.isNullOrBlank()) {
-                // 第一步：选歌单
-                Txt("导出哪个歌单？", 16, weight = FontWeight.SemiBold)
-                VS(4)
-                Txt("点一个歌单，生成它的还原字符", 12, color = go.muted)
-                VS(12)
+            Txt("导出歌单", 16, weight = FontWeight.SemiBold)
+            VS(4)
+            Txt("可以勾选多个，一次导出；复制后发给别人，对方用「导入」粘贴", 12, color = go.muted)
+            VS(12)
+            if (vm.playlists.isEmpty()) {
+                Txt("还没有歌单", 13, color = go.muted)
+            } else {
                 vm.playlists.forEach { p ->
+                    val sel = p.id in picked
                     Row(
                         Modifier.fillMaxWidth().height(56.dp)
-                            .clickable { onPick(p.id) }
+                            .clickable {
+                                confirmed = false
+                                onPick(if (sel) picked - p.id else picked + p.id)
+                            }
                             .padding(horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // 勾选框
+                        Box(
+                            Modifier.size(22.dp).clip(RoundedCornerShape(6.dp))
+                                .background(if (sel) go.primary else go.surfaceHi),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (sel) {
+                                Icon(
+                                    Icons.Outlined.Check, null,
+                                    tint = Color(0xFF1A1A1A), modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                        HS(12)
                         Column(Modifier.weight(1f)) {
                             Txt(p.name, 15, weight = FontWeight.Medium, maxLines = 1)
                             Txt("${p.songs.size} 首", 12, color = go.muted, maxLines = 1)
                         }
                     }
                 }
-                if (vm.playlists.isEmpty()) Txt("还没有歌单", 13, color = go.muted)
+            }
+            VS(12)
+            if (picked.isEmpty()) {
+                Txt("先勾选要导出的歌单", 12, color = go.muted)
+            } else if (text == null) {
+                GoButton("生成还原字符（已选 ${picked.size} 个）", primary = true) { confirmed = true }
             } else {
-                // 第二步：显示还原字符
-                Txt("歌单还原字符", 16, weight = FontWeight.SemiBold)
-                VS(4)
-                Txt("复制这段文字发给别人，对方用「导入」粘贴即可", 12, color = go.muted)
+                Box(
+                    Modifier.fillMaxWidth().heightIn(max = 200.dp).verticalScroll(rememberScrollState())
+                        .clip(RoundedCornerShape(12.dp)).background(go.surfaceHi).padding(10.dp),
+                ) { Txt(text, 11, color = go.on) }
                 VS(12)
-                if (text == null) {
-                    Txt("这个歌单没有可导出的歌曲", 13, color = go.muted)
-                } else {
-                    Box(
-                        Modifier.fillMaxWidth().heightIn(max = 200.dp).verticalScroll(rememberScrollState())
-                            .clip(RoundedCornerShape(12.dp)).background(go.surfaceHi).padding(10.dp),
-                    ) { Txt(text, 11, color = go.on) }
-                    VS(12)
-                    GoButton("复制还原字符", primary = true) {
-                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("歌单还原字符", text))
-                        vm.toast("已复制还原字符")
-                    }
+                GoButton("复制还原字符", primary = true) {
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("歌单还原字符", text))
+                    vm.toast("已复制 ${picked.size} 个歌单的还原字符")
                 }
             }
             VS(16)
@@ -1500,7 +1519,21 @@ fun QueueSheet(vm: MainViewModel) {
             val i = vm.curIndex
             if (i > 0) st.scrollToItem((i - 1).coerceAtLeast(0))
         }
-        Txt("播放列表（${vm.queue.size}）", 16, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), FontWeight.SemiBold)
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Txt("播放列表（${vm.queue.size}）", 16, Modifier.weight(1f), FontWeight.SemiBold)
+            // 一键清空：保留正在播放的那一首，其余全部移除
+            Txt(
+                "清空", 13,
+                Modifier.clip(RoundedCornerShape(50)).background(go.surfaceHi)
+                    .clickable {
+                        if (vm.queue.size > 1) confirmClear = true else vm.clearQueue()
+                    }.padding(horizontal = 12.dp, vertical = 6.dp),
+                color = go.primary,
+            )
+        }
         LazyColumn(state = st, contentPadding = PaddingValues(bottom = 8.dp)) {
             reorderItems(
                 rs, vm.queue, 64.dp,

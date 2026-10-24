@@ -12,6 +12,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Box
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -70,6 +72,13 @@ class MainActivity : ComponentActivity() {
                 MainScreen(vm)
                 // 全屏更新弹窗：启动检测到新版本 / 设置里点更新都会弹
                 if (vm.showUpdate) UpdateScreen(vm)
+                // 提示放最外层：否则会被设置等底部弹层盖住看不见
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    GoToast(
+                        vm.toastMsg,
+                        Modifier.navigationBarsPadding().padding(bottom = 56.dp + 64.dp + 16.dp),
+                    )
+                }
             }
         }
     }

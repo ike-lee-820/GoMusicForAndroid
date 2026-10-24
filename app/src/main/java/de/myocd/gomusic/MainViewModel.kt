@@ -1610,6 +1610,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toast("已加入歌单")
     }
 
+    /**
+     * 一次导出多个歌单。
+     * 每个歌单生成一行还原字符，多行拼在一起；导入时按行拆分逐个还原。
+     */
+    fun exportPlaylists(ids: List<String>): String {
+        val lines = ids.mapNotNull { id -> exportPlaylist(id) }
+        if (lines.isEmpty()) toast("选中的歌单都没有可导出的歌曲")
+        return lines.joinToString("\n")
+    }
+
     /** 导出歌单：返回还原字符（可生成二维码 / 存文件 / 复制） */
     fun exportPlaylist(id: String): String? {
         val p = playlists.firstOrNull { it.id == id } ?: return null
@@ -1626,9 +1636,22 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 已存在同名歌单时追加到后面，不覆盖原有歌单。
      */
     fun importPlaylist(text: String): Boolean {
+        // 支持一次导入多个：每个歌单一行还原字符，逐行还原
+        val lines = text.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        if (lines.size > 1) {
+            var ok = 0
+            lines.forEach { if (importOne(it)) ok++ }
+            if (ok > 0) toast("已导入 $ok 个歌单")
+            else toast("还原字符无法识别，请检查是否完整")
+            return ok > 0
+        }
+        return importOne(text)
+    }
+
+    /** 还原单个歌单（一行还原字符） */
+    private fun importOne(text: String): Boolean {
         val snap = PlaylistShare.decode(text)
         if (snap == null) {
-            toast("还原字符无法识别，请检查是否完整")
             return false
         }
         if (snap.songs.isEmpty()) {

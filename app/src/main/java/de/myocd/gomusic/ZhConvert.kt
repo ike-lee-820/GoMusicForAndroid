@@ -109,18 +109,26 @@ object ZhConvert {
     @Volatile
     private var useOpencc: Boolean? = null
 
-    /** 转换结果缓存：界面每帧都会调用，带分词转换不能每次重算 */
+    /**
+     * 转换结果缓存：界面每帧都会调用，带分词转换不能每次重算。
+     * 超过上限就丢掉一批最旧的（近似 LRU，够用且不用动 LinkedHashMap 的钩子）。
+     */
     private const val CACHE_MAX = 3000
-    private val cache = object : LinkedHashMap<String, String>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
-            size > CACHE_MAX
-    }
+    private val cache = HashMap<String, String>(512)
+    private val order = java.util.ArrayList<String>(512)
 
     @Synchronized
     private fun memo(key: String, calc: () -> String): String {
         cache[key]?.let { return it }
         val v = calc()
         cache[key] = v
+        order.add(key)
+        if (cache.size > CACHE_MAX) {
+            // 丢掉最早缓存的一批，控制内存占用
+            val drop = order.take(CACHE_MAX / 2)
+            drop.forEach { cache.remove(it) }
+            order.removeAll(drop.toSet())
+        }
         return v
     }
 
@@ -149,11 +157,11 @@ object ZhConvert {
     fun toSimple(s: String): String {
         if (s.isEmpty()) return s
         if (ok()) {
-            memo("s" + s) {
+            return memo("s" + s) {
                 runCatching {
                     com.github.houbb.opencc4j.util.ZhConverterUtil.toSimple(s)
                 }.getOrNull() ?: simpleByTable(s)
-            }.let { return it }
+            }
         }
         return simpleByTable(s)
     }
@@ -166,11 +174,11 @@ object ZhConvert {
     fun toTrad(s: String): String {
         if (s.isEmpty()) return s
         if (ok()) {
-            memo("t" + s) {
+            return memo("t" + s) {
                 runCatching {
                     com.github.houbb.opencc4j.util.ZhHkConverterUtil.toTraditional(s)
                 }.getOrNull() ?: tradByTable(s)
-            }.let { return it }
+            }
         }
         return tradByTable(s)
     }

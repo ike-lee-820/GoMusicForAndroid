@@ -7,6 +7,7 @@
 package de.myocd.gomusic
 
 import kotlin.math.abs
+import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.roundToInt
@@ -117,9 +118,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -1433,7 +1436,7 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
         }
         // ---------- 右：中心旋转式歌词 ----------
         Box(Modifier.weight(1f).fillMaxHeight()) {
-            WheelLyrics(vm.lyric, vm.lyricIndex, Modifier.fillMaxSize()) { vm.seekTo(it) }
+            WheelLyrics(vm.lyric, vm.lyricIndex, Modifier.fillMaxSize(), vm.lyricLoading) { vm.seekTo(it) }
         }
     }
 }
@@ -1501,7 +1504,8 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     verticalArrangement = Arrangement.Center,
                 ) {
                     if (lines.isEmpty()) {
-                        Txt("暂无歌词", 14, color = go.muted)
+                        if (vm.lyricLoading) Txt("正在加载歌词…", 14, color = go.muted)
+                        else Txt("暂无歌词", 14, color = go.muted)
                     } else {
                         val i = idx.coerceAtLeast(0)
                         listOf(i - 1, i, i + 1).forEach { k ->
@@ -1606,11 +1610,24 @@ fun WheelLyrics(
     lines: List<LrcLine>,
     idx: Int,
     modifier: Modifier = Modifier,
+    loading: Boolean = false,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
+        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
+                }
+            } else {
+                Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+            }
         }
         return
     }
@@ -1714,7 +1731,21 @@ fun LyricsList(vm: MainViewModel) {
     val lines = vm.lyric
     val idx = vm.lyricIndex
     if (lines.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Txt("暂无歌词", 14, color = go.muted) }
+        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (vm.lyricLoading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = go.primary,
+                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                    )
+                    HS(8)
+                    Txt("正在加载歌词…", 14, color = go.muted)
+                }
+            } else {
+                Txt("暂无歌词", 14, color = go.muted)
+            }
+        }
         return
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {

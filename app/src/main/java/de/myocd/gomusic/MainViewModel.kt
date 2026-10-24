@@ -357,6 +357,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var durationMs by mutableLongStateOf(0L); private set
     var queue by mutableStateOf<List<QueueEntry>>(emptyList()); private set
     var lyric by mutableStateOf<List<LrcLine>>(emptyList()); private set
+    /** 歌词是否正在加载：UI 据此显示「正在加载」，而不是过早显示「暂无歌词」 */
+    var lyricLoading by mutableStateOf(false); private set
+    /** 当前歌词属于哪首歌：切音质会重新 replaceMediaItem，但歌词不用重取 */
+    private var lyricSsid: String? = null
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
 
     /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
@@ -1458,9 +1462,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val id = item?.mediaId?.takeIf { it.isNotEmpty() }
         curSsid = id
         curIndex = controller?.currentMediaItemIndex ?: 0
+        if (id == null) {
+            lyric = emptyList()
+            lyricLoading = false
+            lyricSsid = null
+            qualities = emptyList()
+            return
+        }
+        // 同一首歌：切换音质后会重新 replaceMediaItem 并再次回到这里，
+        // 这时歌词与可用音质都不用重来，也不该重复计一次播放
+        if (id == lyricSsid) return
         lyric = emptyList()
+        lyricLoading = true
         qualities = emptyList()
-        if (id == null) return
         if (count) {
             val m = counts.toMutableMap()
             m[id] = (m[id] ?: 0) + 1
@@ -1515,7 +1529,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                 }
                 if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
-                if (curSsid == id) lyric = lyricLines(t)
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
             }
             return
         }
@@ -1526,7 +1544,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             qualities = downloadedQualities(id)
             viewModelScope.launch {
                 val t = withContext(Dispatchers.IO) { localLyrics(id) }
-                if (curSsid == id) lyric = lyricLines(t)
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
             }
             return
         }
@@ -1543,10 +1565,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 var t = d.lyrics
                 if (t.isBlank()) t = withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
                 if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
-                if (curSsid == id) lyric = lyricLines(t)
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
             } catch (ignored: Exception) {
                 val t = withContext(Dispatchers.IO) { localLyrics(id) }
                 if (curSsid == id && t.isNotBlank()) lyric = lyricLines(t)
+                if (curSsid == id) {
+                    lyricLoading = false
+                    lyricSsid = id
+                }
             }
         }
     }

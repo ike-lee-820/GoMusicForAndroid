@@ -1572,15 +1572,9 @@ fun ArcLyrics(
     curColor: Color = Color.White,
     onSeek: (Long) -> Unit,
 ) {
-    // 加载中 / 暂无歌词 / 有歌词 三种状态之间淡入淡出，不再硬切
-    val st = if (lines.isEmpty()) (if (loading) 1 else 2) else 0
-    androidx.compose.animation.Crossfade(
-        targetState = st,
-        animationSpec = tween(320),
-        label = "lyricState",
-    ) { v ->
-        when (v) {
-            1 -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    if (lines.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (loading) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(
                         color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
@@ -1588,18 +1582,16 @@ fun ArcLyrics(
                     HS(8)
                     Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
                 }
-            }
-
-            2 -> Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            } else {
                 Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
             }
-
-            else -> ArcContent(
-                lines = lines, idx = idx, modifier = modifier,
-                curColor = curColor, onSeek = onSeek,
-            )
         }
+        return
     }
+    ArcContent(
+        lines = lines, idx = idx, modifier = modifier,
+        curColor = curColor, onSeek = onSeek,
+    )
 }
 
 @Composable
@@ -1670,14 +1662,21 @@ private fun ArcContent(
         val rPx = with(density) { rDp.dp.toPx() }
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
         val lineW = maxWidth * 1.0f
-        val from = (cur - span).toInt().coerceAtLeast(0)
-        val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+        // 多渲染一行作缓冲：让最外侧的行在透明度已经衰减到 0 之后
+        // 才被移出渲染范围，进出就不会「啪」地出现或消失
+        val edge = span + 1
+        val from = (cur - edge).toInt().coerceAtLeast(0)
+        val to = (cur + edge).toInt().coerceAtMost(lines.lastIndex)
         for (i in from..to) {
             val d = i - cur
             val th = d * stepRad
             val x = -rPx * (1 - cos(th)) + shift
             val y = rPx * sin(th)
-            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0.25f, 1f)
+            // 边缘平滑淡出：用 smoothstep，最外侧处的值与斜率都是 0，
+            // 行在边缘进出时不会有突跳（原来是线性再加 0.25 下限，
+            // 一行从「不渲染」直接跳到 0.25，所以看着很生硬）
+            val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
+            val fade = 1f - (t * t * (3f - 2f * t))
             val isCur = i == idx
             // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
             Box(
@@ -1699,7 +1698,7 @@ private fun ArcContent(
                     Modifier
                         // clickable 在最外层：命中框是未旋转的紧凑矩形，
                         // 行与行之间按行距排开，不会互相重叠跳错行
-                        .clickable(enabled = lines[i].timeMs >= 0) {
+                        .clickable(enabled = lines[i].timeMs >= 0 && fade > 0.12f) {
                             // 点了就立刻回到跟播：清掉手动偏移，
                             // 位置交给播放进度重新算，避免停在手动位置上跳错行
                             dragOff = 0f

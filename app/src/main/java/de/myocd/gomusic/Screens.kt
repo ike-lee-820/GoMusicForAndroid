@@ -1974,9 +1974,20 @@ fun VerticalLyrics(
         ) {
             itemsIndexed(lines) { i, l ->
                 val cur = i == idx
+                // 微微旋转：以当前行为基准，越靠外的行倾斜一点点，形成很轻的扇形
+                val d = if (idx >= 0) (i - idx).toFloat() else 0f
+                val rot = (d * 2.2f).coerceIn(-9f, 9f)
+                val fade = (1f - abs(d) / 9f).coerceIn(0.32f, 1f)
                 Text(
                     zhText(l.text),
                     Modifier.fillMaxWidth()
+                        .graphicsLayer {
+                            rotationZ = rot
+                            scaleX = 1f - 0.015f * abs(d)
+                            scaleY = 1f - 0.015f * abs(d)
+                            alpha = fade
+                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                        }
                         .clickable(enabled = l.timeMs >= 0) { manualUntil = System.currentTimeMillis() + 6000; onSeek(l.timeMs) }
                         .padding(horizontal = 24.dp, vertical = 6.dp),
                     color = if (cur) curColor else dimColor,

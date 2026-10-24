@@ -26,6 +26,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -714,6 +718,7 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
                 onClick = { vm.playSongs(list, i) },
                 onAdd = { vm.pick(listOf(s.ssid), s.title, s.coverUrl) },
                 onDownload = { vm.download(listOf(s)) },
+                        onQueue = { vm.addToQueue(s) },
             )
         }
         // 加载中占位放最后，跟着列表一起滚到底部
@@ -993,6 +998,7 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
                     onClick = { vm.playSongs(list, i) },
                     onAdd = { vm.pick(listOf(song.ssid), song.title, song.coverUrl) },
                     onDownload = { vm.download(listOf(song)) },
+                        onQueue = { vm.addToQueue(song) },
                 )
             }
         }
@@ -1062,6 +1068,7 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
                         onClick = { vm.playSongs(list, i) },
                         onAdd = { vm.pick(listOf(song.ssid), song.title, song.coverUrl) },
                         onDownload = { vm.download(listOf(song)) },
+                        onQueue = { vm.addToQueue(song) },
                     )
                 }
             }
@@ -1075,6 +1082,33 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
     val p = vm.playlists.firstOrNull { it.id == s.id }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
+    var importByText by remember { mutableStateOf(false) }
+    // 还原文件 / 二维码图片：用系统文件选择器，不额外申请存储权限
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val importFile = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val text = runCatching {
+            ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
+        }.getOrNull()
+        if (text.isNullOrBlank()) vm.toast("读取文件失败")
+        else vm.importPlaylist(text)
+    }
+    val importImage = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val bmp = runCatching {
+            android.provider.MediaStore.Images.Media.getBitmap(
+                ctx.contentResolver, uri,
+            )
+        }.getOrNull()
+        val text = bmp?.let { PlaylistShare.readQr(it) }
+        if (text.isNullOrBlank()) vm.toast("没能从图片里识别出二维码")
+        else vm.importPlaylist(text)
+    }
     if (p == null) {
         LaunchedEffect(Unit) { if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex) }
         return
@@ -1094,6 +1128,17 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                     VS(12)
                     GoButton("播放全部", icon = Icons.Outlined.PlayArrow, primary = true, enabled = songs.isNotEmpty()) {
                         vm.playSongs(songs, 0)
+                    }
+                    VS(8)
+                    // 歌单导入 / 导出：二维码、还原字符、还原文件
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        GoButton("导出歌单", icon = Icons.Outlined.Share) { exporting = true }
+                        GoButton("输入还原字符", icon = Icons.Outlined.Input) { importByText = true }
+                        GoButton("导入还原文件", icon = Icons.Outlined.FileOpen) { importFile.launch("*/*") }
+                        GoButton("扫码导入", icon = Icons.Outlined.QrCodeScanner) { importImage.launch("image/*") }
                     }
                 }
             }
@@ -1129,6 +1174,121 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
         vm.deletePlaylist(p.id)
         if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex)
     }
+    if (exporting) ExportSheet(vm, p.id, p.name) { exporting = false }
+    if (importByText) ImportTextDialog(vm) { importByText = false }
+}
+
+/**
+ * 导出歌单：二维码 + 还原字符。
+ * 歌单太大放不进二维码时，只给还原字符并提示改用文件导出。
+ */
+@Composable
+fun ExportSheet(vm: MainViewModel, id: String, name: String, onDismiss: () -> Unit) {
+    val go = LocalGo.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val text = remember(id) { vm.exportPlaylist(id) }
+    val bmp = remember(text) {
+        if (text != null && PlaylistShare.fitsQr(text)) PlaylistShare.qrBitmap(text) else null
+    }
+    GoSheet(onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            Txt("导出「$name」", 16, FontWeight.SemiBold)
+            VS(4)
+            Txt("用另一台设备扫二维码、输入还原字符或读取还原文件即可导入", 12, color = go.muted)
+            VS(14)
+            if (bmp != null) {
+                Box(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier.size(240.dp).clip(RoundedCornerShape(16.dp)).background(Color.White)
+                            .padding(10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        androidx.compose.foundation.Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "歌单还原二维码",
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+                VS(12)
+            } else {
+                Txt("歌单较大，二维码放不下，请用还原字符或文件导出", 12, color = go.muted)
+                VS(12)
+            }
+            if (text != null) {
+                Txt("还原字符（${text.length} 字符）", 13, color = go.muted)
+                VS(6)
+                Box(
+                    Modifier.fillMaxWidth().heightIn(max = 140.dp).verticalScroll(rememberScrollState())
+                        .clip(RoundedCornerShape(12.dp)).background(go.surfaceHi).padding(10.dp),
+                ) { Txt(text, 11, color = go.on) }
+                VS(10)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    GoButton("复制还原字符") {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("歌单还原字符", text))
+                        vm.toast("已复制还原字符")
+                    }
+                    GoButton("保存为文件") { saveShareFile(ctx, name, text, vm) }
+                }
+            }
+            VS(16)
+        }
+    }
+}
+
+/** 把还原字符存到 Download/gomusic/playlist/ 下 */
+private fun saveShareFile(ctx: android.content.Context, name: String, text: String, vm: MainViewModel) {
+    val safe = name.replace(Regex("[\\/:*?"<>|]"), "_").ifBlank { "playlist" }
+    val dir = java.io.File(
+        android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS,
+        ), "gomusic/playlist",
+    )
+    runCatching {
+        if (!dir.exists()) dir.mkdirs()
+        java.io.File(dir, "$safe.txt").writeText(text)
+    }.onSuccess {
+        vm.toast("已保存：${it.absolutePath}")
+    }.onFailure {
+        vm.toast("保存失败：${it.message}")
+    }
+}
+
+/** 输入还原字符导入歌单 */
+@Composable
+fun ImportTextDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+    val go = LocalGo.current
+    var t by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = go.surface,
+        title = { Txt("输入还原字符", 16, weight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Txt("粘贴以 GM1: 开头的还原字符", 12, color = go.muted)
+                VS(8)
+                SearchField(t, { t = it }, "还原字符", showIcon = false)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (t.isNotBlank()) vm.importPlaylist(t)
+                onDismiss()
+            }) { Text("导入", color = go.primary) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
+    )
 }
 
 // =====================================================================
@@ -1370,6 +1530,7 @@ fun LyricsPage(vm: MainViewModel) {
 @Composable
 fun QueueSheet(vm: MainViewModel) {
     val go = LocalGo.current
+    var confirmClear by remember { mutableStateOf(false) }
     GoSheet({ vm.showQueue = false }) {
         val st = rememberLazyListState()
         val rs = rememberReorderState()
@@ -1402,6 +1563,13 @@ fun QueueSheet(vm: MainViewModel) {
                     IconBtn(Icons.Outlined.Close, "从队列移除") { vm.removeQueue(i) }
                 }
             }
+        }
+    }
+
+    if (confirmClear) {
+        ConfirmDialog("清空播放列表？（保留正在播放的这一首）", { confirmClear = false }) {
+            confirmClear = false
+            vm.clearQueue()
         }
     }
 }

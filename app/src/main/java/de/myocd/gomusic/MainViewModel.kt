@@ -1214,6 +1214,30 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun moveQueue(from: Int, to: Int) { controller?.moveMediaItem(from, to) }
     fun removeQueue(i: Int) { controller?.removeMediaItem(i) }
 
+    /** 把一首歌追加到播放列表末尾（只加这一首，不动队列里已有的歌） */
+    fun addToQueue(s: Song) {
+        keepNetease(listOf(s))
+        val c = controller
+        if (c == null) {
+            afterConnect = { addToQueue(s) }
+            return
+        }
+        c.addMediaItem(toItem(s))
+        toast("已加入播放列表：${s.title}")
+    }
+
+    /** 清空播放列表（保留当前正在播放的那一首） */
+    fun clearQueue() {
+        val c = controller ?: return
+        val n = c.mediaItemCount
+        if (n <= 0) return
+        val cur = c.currentMediaItemIndex
+        // 先移除当前项之后的所有项，再移除之前的，始终保留正在播放的这首
+        for (i in n - 1 downTo cur + 1) c.removeMediaItem(i)
+        for (i in 0 until cur) c.removeMediaItem(0)
+        toast("已清空播放列表")
+    }
+
     fun cycleMode() {
         playMode = (playMode + 1) % 3
         prefs.playMode = playMode
@@ -1472,6 +1496,42 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             if (p.id == id) p.copy(songs = (p.songs + ssids).distinct()) else p
         })
         toast("已加入歌单")
+    }
+
+    /** 导出歌单：返回还原字符（可生成二维码 / 存文件 / 复制） */
+    fun exportPlaylist(id: String): String? {
+        val p = playlists.firstOrNull { it.id == id } ?: return null
+        val songs = songsByIds(p.songs)
+        if (songs.isEmpty()) {
+            toast("歌单是空的，没有可导出的内容")
+            return null
+        }
+        return PlaylistShare.encode(p, songs)
+    }
+
+    /**
+     * 导入歌单：由还原字符还原成一个新歌单。
+     * 已存在同名歌单时追加到后面，不覆盖原有歌单。
+     */
+    fun importPlaylist(text: String): Boolean {
+        val snap = PlaylistShare.decode(text)
+        if (snap == null) {
+            toast("还原字符无法识别，请检查是否完整")
+            return false
+        }
+        if (snap.songs.isEmpty()) {
+            toast("这个歌单里没有歌曲")
+            return false
+        }
+        // 记进快照，保证导入后歌单里能查到歌名信息
+        rememberSongs(snap.songs.map {
+            Song(it.ssid, it.title, it.artist, it.album, it.cover, source = it.source)
+        })
+        val ids = snap.songs.map { it.ssid }.distinct()
+        val p = Playlist(UUID.randomUUID().toString(), snap.name.ifBlank { "导入的歌单" }, ids)
+        savePl(playlists + p)
+        toast("已导入：${p.name}（${ids.size} 首）")
+        return true
     }
 
     fun renamePlaylist(id: String, name: String) =

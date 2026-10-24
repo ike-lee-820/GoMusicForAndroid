@@ -314,6 +314,7 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
                         onClick = { vm.playSongs(list, i) },
                         onAdd = { vm.pick(listOf(song.ssid), song.title, song.coverUrl) },
                         onDownload = { vm.download(listOf(song)) },
+                        onQueue = { vm.addToQueue(song) },
                     )
                 }
                 if (vm.nmPageSongsHasMore) item { PageLoadingMore("正在加载更多歌曲") }

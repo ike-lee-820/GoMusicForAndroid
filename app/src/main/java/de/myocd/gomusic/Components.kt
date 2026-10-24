@@ -387,6 +387,8 @@ fun SongRow(
     onClick: () -> Unit,
     onAdd: () -> Unit,
     onDownload: (() -> Unit)? = null,
+    /** 加入播放列表（只加这一首，不整列表一起加） */
+    onQueue: (() -> Unit)? = null,
 ) {
     val go = LocalGo.current
     Row(
@@ -418,6 +420,9 @@ fun SongRow(
                 },
                 onClick = onDownload,
             )
+        }
+        if (onQueue != null) {
+            IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "加入播放列表", onClick = onQueue)
         }
         IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", onClick = onAdd)
     }

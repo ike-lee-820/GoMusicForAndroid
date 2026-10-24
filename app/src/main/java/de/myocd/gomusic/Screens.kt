@@ -504,7 +504,7 @@ private fun HomeArtistRow(vm: MainViewModel, list: List<Group>) {
     ) {
         items(list, key = { "nm${it.nmId}" }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
-                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 128, 42.dp)
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 8.dp, circle = true)
                 VS(6)
                 Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
                 Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
@@ -524,7 +524,7 @@ private fun HomeAlbumRow(vm: MainViewModel, list: List<Group>) {
     ) {
         items(list, key = { "nm${it.nmId}" }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
-                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 128, 12.dp)
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
                 VS(6)
                 Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
                 Txt(g.subtitle, 11, color = go.muted, maxLines = 1)

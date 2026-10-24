@@ -27,6 +27,10 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+
+private const val MODE_LIST_LOOP = 0
+private const val MODE_SHUFFLE = 1
+private const val MODE_REPEAT_ONE = 2
 import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -135,6 +139,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 跟随封面取到的色 */
     var coverColor by mutableStateOf<Color?>(null); private set
     var quality by mutableStateOf(prefs.quality); private set
+    /** 播放模式：0 列表循环 / 1 随机播放 / 2 单曲循环 */
     var playMode by mutableIntStateOf(prefs.playMode); private set
     /** 后台播放被打断的策略：[FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
     var playFocus by mutableIntStateOf(prefs.playFocus); private set
@@ -1300,10 +1305,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (c.isPlaying) c.pause() else c.play()
     }
 
-    fun next() { controller?.seekToNext() }
+    fun next() {
+        val c = controller ?: return
+        // 单曲循环：不跳列表，直接把这一首从头重播
+        if (playMode == MODE_REPEAT_ONE) { c.seekTo(0); c.play(); return }
+        c.seekToNext()
+    }
 
     fun prev() {
         val c = controller ?: return
+        // 单曲循环：同上，从头重播这一首
+        if (playMode == MODE_REPEAT_ONE) { c.seekTo(0); c.play(); return }
         if (c.currentPosition > 3000) c.seekTo(0) else c.seekToPrevious()
     }
 
@@ -1345,8 +1357,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private fun applyMode(c: MediaController) {
         when (playMode) {
-            0 -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = false }
-            1 -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = true }
+            MODE_LIST_LOOP -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = false }
+            MODE_SHUFFLE -> { c.repeatMode = Player.REPEAT_MODE_ALL; c.shuffleModeEnabled = true }
             else -> { c.repeatMode = Player.REPEAT_MODE_ONE; c.shuffleModeEnabled = false }
         }
     }

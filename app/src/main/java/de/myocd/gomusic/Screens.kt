@@ -1806,7 +1806,7 @@ fun SettingsSheet(vm: MainViewModel) {
             vm.clearDownloads()
         }
     }
-
+}
 
 @Composable
 fun DownloadsSheet(vm: MainViewModel) {

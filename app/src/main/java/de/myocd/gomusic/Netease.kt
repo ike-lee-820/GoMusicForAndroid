@@ -14,6 +14,10 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import okhttp3.OkHttpClient
 
 /** 曲库来源：本站 / 网易云 */
 const val SRC_LOCAL = "local"
@@ -484,43 +488,91 @@ object Netease {
         return url
     }
 
-    private fun resolveAudioUrl(id: Long, quality: String, level: String?): String? {
-        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（新版 v1 + unblock）")
-        // 指定了档位就优先试它，试不到再按设置降档
-        val order = if (!level.isNullOrBlank()) {
-            (listOf(level) + levels(quality) + NM_LEVELS).distinct()
-        } else {
-            levels(quality)
-        }
-        for (lv in order) {
-            val tries = listOf(
-                "v1" to listOf("id" to id.toString(), "level" to lv),
-                "v1+randomCNIP" to listOf("id" to id.toString(), "level" to lv, "randomCNIP" to "true"),
-                "v1+realIP" to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
-            )
-            for ((name, ps) in tries) {
-                val r = get("/song/url/v1", *ps.toTypedArray())
-                if (r.code() != 200) continue
-                val arr = (r["data"] as? JsonElement)?.jsonArray
-                val first = arr?.firstOrNull()?.let { it as? JsonObject }
-                val u = first?.str("url")
-                if (!u.isNullOrBlank()) {
-                    NmLog.note("拿到地址（$name/$lv）：$u")
-                    return u
-                }
-                // 解灰有时会把地址放在别的字段里
-                val alt = first?.str("freeTrialInfo", "url")
-                if (!alt.isNullOrBlank() && alt.startsWith("http")) {
-                    NmLog.note("拿到地址（$name/$lv/备用字段）：$alt")
-                    return alt
-                }
+    /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
+    private val urlClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(12, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 单次请求：不重试、不 sleep。
+     *
+     * 通用 get() 会重试 4 次并递增 sleep（约 3 秒），而取播放地址时
+     * 一个档位拿不到就该立刻换下一个，重试只会把时间白白耗掉。
+     */
+    private fun getOnce(path: String, vararg params: Pair<String, String>): JsonObject? {
+        val sb = StringBuilder(NM_BASE).append(path).append('?')
+        params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
+        sb.append("unblock=true&")
+        if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
+        sb.append("timestamp=").append(System.currentTimeMillis())
+        val url = sb.toString()
+        return try {
+            val req = Request.Builder().url(url).header("Connection", "close").build()
+            urlClient.newCall(req).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.req(url)
+                NmLog.res(url, r.code, t)
+                if (!r.isSuccessful || t.isBlank()) null
+                else json.parseToJsonElement(t) as? JsonObject
             }
-            NmLog.note("level=$lv 三种方式都没有返回地址，继续降音质")
+        } catch (e: Exception) {
+            NmLog.note("单次请求失败：$path -> ${e.message}")
+            null
+        }
+    }
+
+    private data class UrlHit(val lv: String, val url: String)
+
+    /**
+     * 并发探测：把「档位 × 3 种参数变体」的请求一起发出去。
+     *
+     * 原来是一档一档串行试，最多 15 个档位 × 3 种参数 = 45 次串行请求，
+     * 每次还要重试 4 遍，等于点一首歌要干等几十个 HTTP 往返 —— 这就是
+     * 「加载极慢」的根因。改成并发后，耗时从「所有请求之和」变成
+     * 「最慢那一个请求」，通常一两秒就好。
+     */
+    private fun probeLevels(id: Long, levels: List<String>): List<UrlHit> {
+        if (levels.isEmpty()) return emptyList()
+        val jobs = levels.flatMap { lv ->
+            listOf(
+                lv to listOf("id" to id.toString(), "level" to lv),
+                lv to listOf("id" to id.toString(), "level" to lv, "randomCNIP" to "true"),
+                lv to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
+            )
+        }
+        return runBlocking(Dispatchers.IO) {
+            jobs.map { (lv, ps) ->
+                async {
+                    val r = getOnce("/song/url/v1", *ps.toTypedArray()) ?: return@async null
+                    val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    val u = first?.str("url")
+                        ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+                    if (u.isNullOrBlank()) null else UrlHit(lv, u)
+                }
+            }.awaitAll().filterNotNull()
+        }
+    }
+
+    private fun resolveAudioUrl(id: Long, quality: String, level: String?): String? {
+        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（并发探测）")
+        // 候选档位：指定的档位优先，然后按音质设置降档。
+        // 不再追加全部 NM_LEVELS：那会多出十来个几乎用不上的档位，
+        // levels(quality) 本身已经一路降到 standard
+        val cands = (listOfNotNull(level?.takeIf { it.isNotBlank() }) + levels(quality)).distinct()
+        val hits = probeLevels(id, cands)
+        // 按档位优先级取能用的最高音质
+        for (lv in cands) {
+            hits.firstOrNull { it.lv == lv }?.let {
+                NmLog.note("拿到地址（$lv）：${it.url}")
+                return it.url
+            }
         }
         // v1 拿不到时走 /song/url/match 解灰匹配（歌曲变灰时 v1 的地址会是空）
         runCatching {
-            val r = get("/song/url/match", "id" to id.toString())
-            val u = ((r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
+            val r = getOnce("/song/url/match", "id" to id.toString())
+            val u = ((r?.get("data") as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
             if (!u.isNullOrBlank()) {
                 NmLog.note("match 解灰拿到地址：$u")
                 return u
@@ -533,13 +585,9 @@ object Netease {
             val saved = cookie
             cookie = anon
             try {
-                for (lv in levels(quality)) {
-                    val r = get("/song/url/v1", "id" to id.toString(), "level" to lv, "randomCNIP" to "true")
-                    val u = ((r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
-                    if (!u.isNullOrBlank()) {
-                        NmLog.note("游客 cookie 拿到地址（$lv）：$u")
-                        return u
-                    }
+                probeLevels(id, levels(quality)).firstOrNull()?.let {
+                    NmLog.note("游客 cookie 拿到地址（${it.lv}）：${it.url}")
+                    return it.url
                 }
             } finally {
                 cookie = saved

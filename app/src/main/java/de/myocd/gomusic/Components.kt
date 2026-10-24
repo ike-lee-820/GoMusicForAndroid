@@ -188,30 +188,19 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 // ---------- 图片 ----------
 
 /**
- * 来源前缀：网易云曲库的结果在歌名 / 专辑名前加一个「(网)」，
+ * 来源标记：网易云曲库在封面右下角叠一个小图标，
  * 用来和本站曲库区分（不用图标、不用 emoji）。
  */
-fun srcPrefix(source: String): String = if (source == SRC_NETEASE) "(网)" else ""
+fun srcPrefix(source: String): String = ""
 
 /** 歌名 / 专辑名带来源前缀的显示文本 */
-fun titleWithSource(title: String, source: String): String =
-    if (source == SRC_NETEASE) "(网)$title" else title
+// 来源不再靠名字前缀区分，改为封面右下角叠图标，标题原样显示
+fun titleWithSource(title: String, source: String): String = title
 
 /**
  * 封面（来源统一靠名字前缀区分，不再在图上叠角标）。
  * 保留 source 参数是为了调用点不用改。
  */
-@Composable
-fun CoverWithSource(
-    cover: String?,
-    modifier: Modifier = Modifier,
-    radius: Dp = 8.dp,
-    circle: Boolean = false,
-    source: String = SRC_LOCAL,
-) {
-    Cover(cover, modifier, radius, circle)
-}
-
 @Composable
 fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
     val go = LocalGo.current

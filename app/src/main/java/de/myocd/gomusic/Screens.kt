@@ -890,11 +890,18 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
     var creating by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Playlist?>(null) }
     var deleting by remember { mutableStateOf<Playlist?>(null) }
+    // 歌单导入 / 导出放在歌单总览页，合并成两个按钮
+    var importing by remember { mutableStateOf(false) }
+    var exportingId by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         item {
-            Box(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                 GoButton("新建歌单", icon = Icons.Outlined.Add) { creating = true }
+                Spacer(Modifier.width(8.dp))
+                GoButton("导入", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { importing = true }
+                Spacer(Modifier.width(8.dp))
+                GoButton("导出", icon = Icons.Outlined.Share) { exportingId = "" }
             }
         }
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
@@ -922,6 +929,109 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
     }
     deleting?.let { p ->
         ConfirmDialog("删除歌单“${p.name}”？", { deleting = null }) { vm.deletePlaylist(p.id); deleting = null }
+    }
+    // 导入：粘贴还原字符
+    if (importing) ImportPlaylistDialog(vm) { importing = false }
+    // 导出：先选歌单，再复制还原字符
+    if (exportingId != null) {
+        ExportPlaylistSheet(vm, exportingId, { exportingId = null }) { exportingId = it }
+    }
+}
+
+/**
+ * 导入歌单：粘贴还原字符。
+ * 与已有歌单重名时会自动改名，不会覆盖原有歌单。
+ */
+@Composable
+fun ImportPlaylistDialog(vm: MainViewModel, onDismiss: () -> Unit) {
+    val go = LocalGo.current
+    var t by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = go.surface,
+        title = { Txt("导入歌单", 16, weight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Txt("粘贴以 GM1: 开头的还原字符", 12, color = go.muted)
+                VS(8)
+                SearchField(t, { t = it }, "还原字符", showIcon = false)
+                VS(6)
+                Txt("重名会自动改名，不会覆盖已有歌单", 11, color = go.muted)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (t.isNotBlank()) vm.importPlaylist(t)
+                onDismiss()
+            }) { Text("导入", color = go.primary) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
+    )
+}
+
+/**
+ * 导出歌单：选一个歌单后生成还原字符，可复制。
+ * [picked] 为空表示还没选，先列出歌单。
+ */
+@Composable
+fun ExportPlaylistSheet(
+    vm: MainViewModel,
+    picked: String?,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+) {
+    val go = LocalGo.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val text = remember(picked) { if (picked.isNullOrBlank()) null else vm.exportPlaylist(picked) }
+    GoSheet(onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            if (picked.isNullOrBlank()) {
+                // 第一步：选歌单
+                Txt("导出哪个歌单？", 16, weight = FontWeight.SemiBold)
+                VS(4)
+                Txt("点一个歌单，生成它的还原字符", 12, color = go.muted)
+                VS(12)
+                vm.playlists.forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().height(56.dp)
+                            .clickable { onPick(p.id) }
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Txt(p.name, 15, weight = FontWeight.Medium, maxLines = 1)
+                            Txt("${p.songs.size} 首", 12, color = go.muted, maxLines = 1)
+                        }
+                    }
+                }
+                if (vm.playlists.isEmpty()) Txt("还没有歌单", 13, color = go.muted)
+            } else {
+                // 第二步：显示还原字符
+                Txt("歌单还原字符", 16, weight = FontWeight.SemiBold)
+                VS(4)
+                Txt("复制这段文字发给别人，对方用「导入」粘贴即可", 12, color = go.muted)
+                VS(12)
+                if (text == null) {
+                    Txt("这个歌单没有可导出的歌曲", 13, color = go.muted)
+                } else {
+                    Box(
+                        Modifier.fillMaxWidth().heightIn(max = 200.dp).verticalScroll(rememberScrollState())
+                            .clip(RoundedCornerShape(12.dp)).background(go.surfaceHi).padding(10.dp),
+                    ) { Txt(text, 11, color = go.on) }
+                    VS(12)
+                    GoButton("复制还原字符", primary = true) {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("歌单还原字符", text))
+                        vm.toast("已复制还原字符")
+                    }
+                }
+            }
+            VS(16)
+        }
     }
 }
 
@@ -1084,33 +1194,6 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
     val p = vm.playlists.firstOrNull { it.id == s.id }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
-    var exporting by remember { mutableStateOf(false) }
-    var importByText by remember { mutableStateOf(false) }
-    // 还原文件 / 二维码图片：用系统文件选择器，不额外申请存储权限
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val importFile = rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val text = runCatching {
-            ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
-        }.getOrNull()
-        if (text.isNullOrBlank()) vm.toast("读取文件失败")
-        else vm.importPlaylist(text)
-    }
-    val importImage = rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val bmp = runCatching {
-            android.provider.MediaStore.Images.Media.getBitmap(
-                ctx.contentResolver, uri,
-            )
-        }.getOrNull()
-        val text = bmp?.let { PlaylistShare.readQr(it) }
-        if (text.isNullOrBlank()) vm.toast("没能从图片里识别出二维码")
-        else vm.importPlaylist(text)
-    }
     if (p == null) {
         LaunchedEffect(Unit) { if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex) }
         return
@@ -1131,17 +1214,7 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                     GoButton("播放全部", icon = Icons.Outlined.PlayArrow, primary = true, enabled = songs.isNotEmpty()) {
                         vm.playSongs(songs, 0)
                     }
-                    VS(8)
-                    // 歌单导入 / 导出：二维码、还原字符、还原文件
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        GoButton("导出歌单", icon = Icons.Outlined.Share) { exporting = true }
-                        GoButton("输入还原字符", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { importByText = true }
-                        GoButton("导入还原文件", icon = Icons.Outlined.Folder) { importFile.launch("*/*") }
-                        GoButton("扫码导入", icon = Icons.Outlined.QrCode) { importImage.launch("image/*") }
-                    }
+
                 }
             }
             reorderItems(
@@ -1176,125 +1249,8 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
         vm.deletePlaylist(p.id)
         if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex)
     }
-    if (exporting) ExportSheet(vm, p.id, p.name) { exporting = false }
-    if (importByText) ImportTextDialog(vm) { importByText = false }
 }
 
-/**
- * 导出歌单：二维码 + 还原字符。
- * 歌单太大放不进二维码时，只给还原字符并提示改用文件导出。
- */
-@Composable
-fun ExportSheet(vm: MainViewModel, id: String, name: String, onDismiss: () -> Unit) {
-    val go = LocalGo.current
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val text = remember(id) { vm.exportPlaylist(id) }
-    val bmp = remember(text) {
-        if (text != null && PlaylistShare.fitsQr(text)) PlaylistShare.qrBitmap(text) else null
-    }
-    GoSheet(onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Txt("导出「$name」", 16, weight = FontWeight.SemiBold)
-            VS(4)
-            Txt("用另一台设备扫二维码、输入还原字符或读取还原文件即可导入", 12, color = go.muted)
-            VS(14)
-            if (bmp != null) {
-                Box(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(
-                        Modifier.size(240.dp).clip(RoundedCornerShape(16.dp)).background(Color.White)
-                            .padding(10.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        androidx.compose.foundation.Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "歌单还原二维码",
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                }
-                VS(12)
-            } else {
-                Txt("歌单较大，二维码放不下，请用还原字符或文件导出", 12, color = go.muted)
-                VS(12)
-            }
-            if (text != null) {
-                Txt("还原字符（${text.length} 字符）", 13, color = go.muted)
-                VS(6)
-                Box(
-                    Modifier.fillMaxWidth().heightIn(max = 140.dp).verticalScroll(rememberScrollState())
-                        .clip(RoundedCornerShape(12.dp)).background(go.surfaceHi).padding(10.dp),
-                ) { Txt(text, 11, color = go.on) }
-                VS(10)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    GoButton("复制还原字符") {
-                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("歌单还原字符", text))
-                        vm.toast("已复制还原字符")
-                    }
-                    GoButton("保存为文件") { saveShareFile(ctx, name, text, vm) }
-                }
-            }
-            VS(16)
-        }
-    }
-}
-
-/** 把还原字符存到 Download/gomusic/playlist/ 下 */
-private fun saveShareFile(ctx: android.content.Context, name: String, text: String, vm: MainViewModel) {
-    val bad = charArrayOf('\\', '/', ':', '*', '?', '"', '<', '>', '|')
-    val safe = name.map { if (it in bad) '_' else it }.joinToString("").ifBlank { "playlist" }
-    val dir = java.io.File(
-        android.os.Environment.getExternalStoragePublicDirectory(
-            android.os.Environment.DIRECTORY_DOWNLOADS,
-        ), "gomusic/playlist",
-    )
-    runCatching {
-        if (!dir.exists()) dir.mkdirs()
-        val f = java.io.File(dir, "$safe.txt")
-        f.writeText(text)
-        f
-    }.onSuccess {
-        vm.toast("已保存：${it.absolutePath}")
-    }.onFailure {
-        vm.toast("保存失败：${it.message}")
-    }
-}
-
-/** 输入还原字符导入歌单 */
-@Composable
-fun ImportTextDialog(vm: MainViewModel, onDismiss: () -> Unit) {
-    val go = LocalGo.current
-    var t by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = go.surface,
-        title = { Txt("输入还原字符", 16, weight = FontWeight.SemiBold) },
-        text = {
-            Column {
-                Txt("粘贴以 GM1: 开头的还原字符", 12, color = go.muted)
-                VS(8)
-                SearchField(t, { t = it }, "还原字符", showIcon = false)
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (t.isNotBlank()) vm.importPlaylist(t)
-                onDismiss()
-            }) { Text("导入", color = go.primary) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
-    )
-}
 
 // =====================================================================
 // 全屏播放页

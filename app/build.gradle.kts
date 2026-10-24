@@ -24,8 +24,8 @@ android {
         applicationId = "de.myocd.gomusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.4.1"
+        versionCode = 15
+        versionName = "1.4.2"
     }
 
     signingConfigs {
@@ -85,6 +85,4 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.palette:palette-ktx:1.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    // 歌单导入导出：二维码生成与解析（纯 Java，不额外申请相机权限）
-    implementation("com.google.zxing:core:3.5.3")
 }

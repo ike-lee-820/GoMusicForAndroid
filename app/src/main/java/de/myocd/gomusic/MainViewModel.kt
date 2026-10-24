@@ -1614,10 +1614,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             Song(it.ssid, it.title, it.artist, it.album, it.cover, source = it.source)
         })
         val ids = snap.songs.map { it.ssid }.distinct()
-        val p = Playlist(UUID.randomUUID().toString(), snap.name.ifBlank { "导入的歌单" }, ids)
+        // 与已有歌单重名时，给导入的这个改名，不动原有歌单
+        val p = Playlist(UUID.randomUUID().toString(), uniqueName(snap.name.ifBlank { "导入的歌单" }), ids)
         savePl(playlists + p)
         toast("已导入：${p.name}（${ids.size} 首）")
         return true
+    }
+
+    /** 名字已被占用时追加 (2)(3)…，保证不覆盖已有歌单 */
+    private fun uniqueName(base: String): String {
+        val used = playlists.map { it.name }.toHashSet()
+        if (base !in used) return base
+        var i = 2
+        while ("$base($i)" in used) i++
+        return "$base($i)"
     }
 
     fun renamePlaylist(id: String, name: String) =

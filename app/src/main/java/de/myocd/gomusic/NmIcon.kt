@@ -109,7 +109,8 @@ fun CoverWithSource(
             Image(
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = "网易云曲库",
-                modifier = Modifier.align(Alignment.BottomEnd).fillMaxSize(0.10f),
+                // 占封面 20%（原 10% 的两倍）
+                modifier = Modifier.align(Alignment.BottomEnd).fillMaxSize(0.20f),
             )
         }
     }

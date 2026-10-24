@@ -494,10 +494,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 切换底部标签 */
     fun chooseTab(t: Int) {
-        cancelNeteaseSearch()
+        // 不再在这里取消搜索：切标签后每个标签的 LaunchedEffect 会以 tab 为 key
+        // 重新发起一次搜索，提前取消会导致新标签搜不到结果
         nmPage = null
         nmPageSongs = emptyList()
         tab = t
+        if (t == TAB_HOME) loadHome()
     }
 
     /** 搜索网易云（防抖）。未开启或未登录时直接清空，不发请求 */
@@ -538,6 +540,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 nmOffset = NM_PAGE_SIZE
                 nmHasMore = s.size >= NM_PAGE_SIZE
                 NmLog.note("搜索完成：歌曲 ${s.size} / 专辑 ${a.size} / 歌手 ${ar.size}")
+                if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
+                    NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
+                }
+                if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
+                    NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
+                }
             } catch (e: Throwable) {
                 // 切界面导致的取消属于正常行为，不提示、不报错
                 if (e is kotlinx.coroutines.CancellationException) throw e

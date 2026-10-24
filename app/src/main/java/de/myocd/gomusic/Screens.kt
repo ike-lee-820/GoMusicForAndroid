@@ -386,7 +386,10 @@ fun OfflineBar(vm: MainViewModel) {
 @Composable
 fun HomeTab(vm: MainViewModel) {
     val go = LocalGo.current
-    LaunchedEffect(vm.nmReady) { vm.loadHome() }
+    // 每次进入首页都重新加载（之前只在启动时加载一次）
+    LaunchedEffect(vm.tab, vm.nmReady) {
+        if (vm.tab == TAB_HOME) vm.loadHome()
+    }
     val rec = vm.homeRecommend
     val news = vm.homeNewSongs
     val hots = vm.homeHotWords
@@ -539,7 +542,11 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
     }
     // 两套曲库不合并（不去重），按规则交错展示
     val list = remember(local, vm.nmSongs) { vm.mix(local, vm.nmSongs) }
-    LaunchedEffect(q, vm.nmReady) { vm.searchNetease(q) }
+    // tab 也作为 key：切标签进页面时必定重新发起搜索
+    LaunchedEffect(vm.tab, q, vm.nmReady) {
+        NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
+        vm.searchNetease(q)
+    }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         // 顶部：播放历史（本站 + 网易云）
         if (q.isEmpty() && vm.historySongs.isNotEmpty()) {
@@ -641,7 +648,11 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
         vm.albumGroupList.filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
     }
     val groups = remember(local, vm.nmAlbums) { vm.mix(local, vm.nmAlbums) }
-    LaunchedEffect(q, vm.nmReady) { vm.searchNetease(q) }
+    // tab 也作为 key：切标签进页面时必定重新发起搜索
+    LaunchedEffect(vm.tab, q, vm.nmReady) {
+        NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
+        vm.searchNetease(q)
+    }
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         itemsIndexed(
             groups,
@@ -670,7 +681,11 @@ fun ArtistsTab(vm: MainViewModel) {
         vm.artistGroupList.filter { q.isEmpty() || it.title.contains(q, true) }
     }
     val groups = remember(local, vm.nmArtists) { vm.mix(local, vm.nmArtists) }
-    LaunchedEffect(q, vm.nmReady) { vm.searchNetease(q) }
+    // tab 也作为 key：切标签进页面时必定重新发起搜索
+    LaunchedEffect(vm.tab, q, vm.nmReady) {
+        NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
+        vm.searchNetease(q)
+    }
     val cols = if (LocalConfiguration.current.screenWidthDp >= 768) 4 else 2
     LazyVerticalGrid(
         GridCells.Fixed(cols),

@@ -1057,69 +1057,74 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * 应用内直升：下载完 APK 后直接用 PackageInstaller 覆盖安装。
      *
-     * 这是「升级」不是「重装」——包名与签名一致时系统会保留数据，
-     * 用户不需要先卸载，也不需要自己去找 APK 文件。
-     * Android 12（API 31）起自更新可以请求免确认，装不上再退回确认式安装。
+     * 这是「升级」不是「重装」——MODE_FULL_INSTALL + 同一包名 + 相同签名，
+     * 系统会保留数据，用户不需要先卸载。
+     *
+     * 这里不申请 USER_ACTION_NOT_REQUIRED（免确认）：
+     * 多数设备会拒绝它，而且是异步通过广播返回失败的，
+     * 提交时看不出问题，结果就是点了更新什么都没发生。
+     * 走标准流程会拿到 STATUS_PENDING_USER_ACTION，
+     * 由 InstallResultReceiver 把系统确认界面拉起来。
      */
     fun installApk(f: java.io.File) {
         needInstallPerm = false
         updateProgress = null
-        val installer = app.packageManager.packageInstaller
-
-        val write: (android.content.pm.PackageInstaller.Session) -> Unit = { session ->
-            session.openWrite("GoMusic", 0, f.length()).use { os ->
-                f.inputStream().use { it.copyTo(os) }
-                session.fsync(os)
-            }
+        updateFile = f
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { commitSession(f) }.onFailure {
+                NmLog.note("安装会话提交失败：${it.message}")
+            }.isSuccess
+            // 会话这条路走不通就退回系统安装界面
+            if (!ok) withContext(Dispatchers.Main) { installViaView(f) }
         }
+    }
 
-        val tryCommit: (Boolean) -> Int = { noConfirm ->
-            val p = android.content.pm.PackageInstaller.SessionParams(
-                android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
-            )
-            if (noConfirm && android.os.Build.VERSION.SDK_INT >= 31) {
-                runCatching {
-                    p.setRequireUserAction(
-                        android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED,
-                    )
-                }
+    /** 建立 PackageInstaller 会话并提交 */
+    private fun commitSession(f: java.io.File) {
+        val installer = app.packageManager.packageInstaller
+        val p = android.content.pm.PackageInstaller.SessionParams(
+            android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+        )
+        // 指定被更新的包名，系统才按「升级」处理从而保留数据
+        runCatching { p.setAppPackageName(app.packageName) }
+        val id = installer.createSession(p)
+        installer.openSession(id).use { ses ->
+            ses.openWrite("GoMusic", 0, f.length()).use { os ->
+                f.inputStream().use { it.copyTo(os) }
+                ses.fsync(os)
             }
-            runCatching { p.setAppPackageName(app.packageName) }
-            val id = installer.createSession(p)
-            installer.openSession(id).use { ses ->
-                write(ses)
-                val intent = android.content.Intent(app, InstallResultReceiver::class.java)
+            val pi = android.app.PendingIntent.getBroadcast(
+                app, id,
+                android.content.Intent(app, InstallResultReceiver::class.java)
                     .setAction(InstallResultReceiver.ACTION)
                     .putExtra(InstallResultReceiver.EXTRA_SESSION, id)
-                val pi = android.app.PendingIntent.getBroadcast(
-                    app, id, intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                        (if (android.os.Build.VERSION.SDK_INT >= 23)
-                            android.app.PendingIntent.FLAG_IMMUTABLE else 0),
-                )
-                ses.commit(pi.intentSender)
-            }
-            id
+                    .putExtra(InstallResultReceiver.EXTRA_FILE, f.absolutePath),
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (android.os.Build.VERSION.SDK_INT >= 23)
+                        android.app.PendingIntent.FLAG_IMMUTABLE else 0),
+            )
+            ses.commit(pi.intentSender)
         }
+        NmLog.note("安装会话已提交 id=$id")
+    }
 
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            // 先试免确认；系统不允许就退回需要用户点一次确认的安装
-            for (noConfirm in listOf(true, false)) {
-                val ok = runCatching { tryCommit(noConfirm); true }.getOrElse {
-                    NmLog.note("安装会话提交失败（免确认=$noConfirm）：${it.message}")
-                    false
-                }
-                if (ok) {
-                    if (noConfirm) withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        toast("正在后台更新，完成后会自动打开")
-                    }
-                    return@launch
-                }
-            }
-            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                toast("无法启动安装，请用「浏览器下载」方式更新")
-            }
+    /** 兜底：用系统安装界面打开 APK */
+    fun installViaView(f: java.io.File) {
+        val uri = runCatching {
+            androidx.core.content.FileProvider.getUriForFile(
+                app, "${app.packageName}.fileprovider", f,
+            )
+        }.getOrElse {
+            toast("无法打开安装界面：${it.message}")
+            return
         }
+        val i = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { app.startActivity(i) }
+            .onFailure { toast("无法打开安装界面：${it.message}") }
     }
 
     /** 安装权限结果回来后，继续安装已下载的 APK */

@@ -108,7 +108,7 @@ fun UpdateScreen(vm: MainViewModel) {
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) { vm.updateInApp() }
                 Spacer(Modifier.height(10.dp))
-                Txt("下载后直接安装，需要允许安装未知应用", 11, color = go.muted)
+                Txt("下载后自动拉起安装，覆盖升级会保留数据；需允许安装未知应用", 11, color = go.muted)
                 Spacer(Modifier.height(18.dp))
                 // 应用外更新
                 GoButton(

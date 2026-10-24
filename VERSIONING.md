@@ -128,3 +128,12 @@
   - 缓冲：DefaultLoadControl 15s/60s/2.5s/5s + 优先凑时间长度；
     HTTP 超时收到 8 秒，避免网络差时干等
 - `2.0.2` 小迭代：修编译（Netease.kt 预取用到了 launch / Dispatchers / GlobalScope，缺导入）
+- `2.0.3` 小迭代：修应用内更新点了没反应
+  - 之前申请 USER_ACTION_NOT_REQUIRED（免确认），多数设备会拒绝，
+    而且是异步通过广播返回失败，提交时看不出问题 —— 表现就是
+    点了更新什么都没发生
+  - 改为标准会话安装（MODE_FULL_INSTALL + 同包名，仍是覆盖升级保留数据），
+    由 InstallResultReceiver 拉起系统确认界面
+  - 会话失败 / 确认界面拉不起来时，退回系统安装界面打开 APK；
+    彻底失败才提示改用浏览器下载
+  - 结果有提示：成功、待确认、失败都给用户可见反馈

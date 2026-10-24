@@ -1025,9 +1025,10 @@ fun ExportPlaylistSheet(
                             contentAlignment = Alignment.Center,
                         ) {
                             if (sel) {
-                                Icon(
-                                    Icons.Outlined.Check, null,
-                                    tint = Color(0xFF1A1A1A), modifier = Modifier.size(16.dp),
+                                // 勾选标记：用小方块，不依赖额外图标
+                                Box(
+                                    Modifier.size(10.dp).clip(RoundedCornerShape(3.dp))
+                                        .background(Color(0xFF1A1A1A)),
                                 )
                             }
                         }

@@ -268,7 +268,7 @@ fun MiniPlayer(vm: MainViewModel) {
 @Composable
 fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
     val go = LocalGo.current
-    val titles = listOf("歌曲", "专辑", "歌手", "歌单")
+    val titles = listOf("歌曲", "专辑", "首页", "歌手", "歌单")
     val hints = listOf("搜索歌名或歌手", "搜索专辑名或歌手", "搜索歌名或歌手", "搜索歌手", "搜索歌单")
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
@@ -277,14 +277,14 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                 IconBtn(Icons.Outlined.Settings, "设置", size = 44.dp) { vm.showSettings = true }
             }
             VS(8)
-            SearchField(
-                vm.query, { vm.query = it }, hints[vm.tab],
-                onSearch = {
-                    if (vm.tab == TAB_HOME) vm.searchHotWord(vm.query.trim())
-                    else vm.searchNetease(vm.query.trim())
-                },
-            )
-            VS(8)
+            // 首页不显示搜索栏（首页内容都是推荐位，不需要搜索）
+            if (vm.tab != TAB_HOME) {
+                SearchField(
+                    vm.query, { vm.query = it }, hints[vm.tab],
+                    onSearch = { vm.searchNetease(vm.query.trim()) },
+                )
+                VS(8)
+            }
             if (vm.offline) OfflineBar(vm)
             DownloadBar(vm)
         }
@@ -1090,12 +1090,16 @@ fun QualityMenu(vm: MainViewModel) {
     val go = LocalGo.current
     var open by remember { mutableStateOf(false) }
     val opts = vm.qualities.ifEmpty { listOf(vm.quality) }
+    // 网易云歌曲用网易云自己的档位名，标签与选中态都要按档位判断
+    val isNm = opts.firstOrNull() in NM_LEVELS
+    val curKey = if (isNm) vm.nmLevel else vm.quality
     Box {
         IconBtn(Icons.Outlined.HighQuality, "音质") { open = true }
         DropdownMenu(open, { open = false }, Modifier.background(go.surface)) {
             opts.forEach { k ->
+                val label = if (k in NM_LEVELS) nmLevelLabel(k) else qualityLabel(k)
                 DropdownMenuItem(
-                    text = { Text(qualityLabel(k), color = if (k == vm.quality) go.primary else go.on) },
+                    text = { Text(label, color = if (k == curKey) go.primary else go.on) },
                     onClick = { vm.updateQuality(k); open = false },
                 )
             }

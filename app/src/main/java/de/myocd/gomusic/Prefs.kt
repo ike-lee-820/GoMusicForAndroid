@@ -91,6 +91,11 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putString("nm_cookie", v).apply() }
 
     /** 网易云账号昵称，空表示未登录 */
+    /** 网易云音质档位：standard / higher / exhigh / lossless，空 = 跟随设置 */
+    var nmLevel: String
+        get() = sp.getString("nm_level", "")!!
+        set(v) { sp.edit().putString("nm_level", v).apply() }
+
     var nmAccount: String
         get() = sp.getString("nm_account", "") ?: ""
         set(v) { sp.edit().putString("nm_account", v).apply() }

@@ -152,8 +152,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var nmOn by mutableStateOf(prefs.nmEnabled); private set
     /** 网易云账号昵称，空 = 未登录（未登录时不使用网易云搜索） */
     var nmUser by mutableStateOf(prefs.nmAccount.ifBlank { null }); private set
-    /** 是否已登录并可用 */
-    val nmReady: Boolean get() = nmOn && !nmUser.isNullOrBlank() && Netease.cookie.isNotBlank()
+    /**
+     * 是否已登录并可用。
+     *
+     * 只要求「开关打开 + cookie 存在」，不强求昵称：
+     * /user/account 经常取不到 profile，昵称拿不到就判定未登录的话，
+     * 会出现「明明登录了却不搜索」的情况。
+     */
+    val nmReady: Boolean get() = nmOn && Netease.cookie.isNotBlank()
     var nmSearching by mutableStateOf(false); private set
     var nmLoadingMore by mutableStateOf(false); private set
     /** 是否还有下一页（滑到底继续加载） */
@@ -926,9 +932,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         controller?.setPlaybackSpeed(v)
     }
 
+    /** 当前是否为网易云音质档位名（quality 菜单可能是网易云的档位） */
+    val nmQualityMode: Boolean get() = curSsid?.let { isNetease(it) } == true
+    /** 网易云当前音质档位（空 = 跟随设置） */
+    val nmLevel: String get() = prefs.nmLevel
+
     fun updateQuality(k: String) {
-        quality = k
-        prefs.quality = k
+        // 网易云歌曲：档位存到 nmLevel，不动本站的 quality
+        if (k in NM_LEVELS) {
+            prefs.nmLevel = k
+        } else {
+            quality = k
+            prefs.quality = k
+        }
         // 重新解析当前曲目地址并回到原位置
         val c = controller ?: return
         if (c.mediaItemCount == 0) return
@@ -989,6 +1005,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 网易云歌曲：歌词走网易云接口，优先级高于本站
         if (isNetease(id)) {
             if (count) pushHistory(id)
+            // 网易云歌曲：音质档位与本站分开，菜单里列网易云自己的档位
+            qualities = NM_LEVELS
             val nid = neteaseIdOf(id)
             viewModelScope.launch {
                 // 播放前用 /song/detail 补全封面 / 专辑 / 歌手

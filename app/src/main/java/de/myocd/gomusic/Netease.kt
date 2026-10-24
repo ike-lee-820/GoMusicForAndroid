@@ -29,6 +29,26 @@ fun neteaseIdOf(ssid: String?): Long? =
 /** 二维码轮询状态 */
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)
 
+/** 网易云可选音质档位（从低到高） */
+val NM_LEVELS = listOf("standard", "higher", "exhigh", "lossless")
+
+/** 网易云音质档位中文名 */
+fun nmLevelLabel(lv: String): String = when (lv) {
+    "standard" -> "标准 128k"
+    "higher" -> "较高 192k"
+    "exhigh" -> "极高 320k"
+    "lossless" -> "无损 FLAC"
+    else -> lv
+}
+
+/** 本站音质键 -> 网易云默认档位 */
+fun nmLevelOfQuality(quality: String): String = when (quality) {
+    "lossless" -> "lossless"
+    "high" -> "exhigh"
+    "normal" -> "higher"
+    else -> "standard"
+}
+
 object Netease {
     val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -355,9 +375,15 @@ object Netease {
      * 3. v1 + realIP（显式指定国内 IP）
      * 都拿不到就降一档音质继续，直到 standard。
      */
-    fun audioUrl(id: Long, quality: String): String? {
-        NmLog.note("开始取播放地址 id=$id quality=$quality（新版 v1 + unblock）")
-        for (lv in levels(quality)) {
+    fun audioUrl(id: Long, quality: String, level: String? = null): String? {
+        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（新版 v1 + unblock）")
+        // 指定了档位就优先试它，试不到再按设置降档
+        val order = if (!level.isNullOrBlank()) {
+            (listOf(level) + levels(quality) + NM_LEVELS).distinct()
+        } else {
+            levels(quality)
+        }
+        for (lv in order) {
             val tries = listOf(
                 "v1" to listOf("id" to id.toString(), "level" to lv),
                 "v1+randomCNIP" to listOf("id" to id.toString(), "level" to lv, "randomCNIP" to "true"),

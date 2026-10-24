@@ -79,6 +79,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
@@ -343,7 +344,12 @@ fun SearchField(
         value = value,
         onValueChange = onChange,
         singleLine = true,
-        textStyle = TextStyle(color = go.on, fontSize = 15.sp),
+        // 输入的文字也要用全局字体，否则切了字体后输入框还是系统字
+        textStyle = TextStyle(
+            color = go.on,
+            fontSize = 15.sp,
+            fontFamily = LocalAppFont.current,
+        ),
         cursorBrush = SolidColor(go.primary),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
         keyboardActions = KeyboardActions(onSearch = { onSearch?.invoke() }),
@@ -360,7 +366,15 @@ fun SearchField(
                     HS(8)
                 }
                 Box(Modifier.weight(1f)) {
-                    if (value.isEmpty()) Text(placeholder, color = go.muted, fontSize = 15.sp, maxLines = 1)
+                    if (value.isEmpty()) {
+                        Text(
+                            placeholder,
+                            color = go.muted,
+                            fontSize = 15.sp,
+                            fontFamily = LocalAppFont.current,
+                            maxLines = 1,
+                        )
+                    }
                     inner()
                 }
                 if (value.isNotEmpty() && showIcon) {

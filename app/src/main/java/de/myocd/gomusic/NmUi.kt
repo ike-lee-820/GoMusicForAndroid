@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /** 网易云登录 / 注册弹层：二维码登录 或 短信验证码登录注册 */
 @Composable
@@ -155,6 +156,12 @@ private fun GoField(value: String, onValue: (String) -> Unit, hint: String) {
         onValueChange = onValue,
         singleLine = true,
         placeholder = { Txt(hint, 14, color = go.muted) },
+        // 显式指定字体：输入框默认走主题排版，这里再兜一层更稳妥
+        textStyle = androidx.compose.ui.text.TextStyle(
+            color = go.on,
+            fontSize = 16.sp,
+            fontFamily = LocalAppFont.current,
+        ),
         modifier = Modifier.fillMaxWidth().height(52.dp),
         shape = RoundedCornerShape(12.dp),
         colors = TextFieldDefaults.colors(

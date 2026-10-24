@@ -162,11 +162,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val nmReady: Boolean get() = nmOn && Netease.cookie.isNotBlank()
     var nmSearching by mutableStateOf(false); private set
     var nmLoadingMore by mutableStateOf(false); private set
-    /** 是否还有下一页（滑到底继续加载） */
+    /** 歌曲是否还有下一页（滑到底继续加载） */
     var nmHasMore by mutableStateOf(false); private set
+    /** 专辑是否还有下一页 */
+    var nmAlbumsHasMore by mutableStateOf(false); private set
+    /** 歌手是否还有下一页 */
+    var nmArtistsHasMore by mutableStateOf(false); private set
+    /** 搜索代号：切标签/改关键词会自增，旧请求的结果不再生效，避免串扰 */
+    private var nmGen = 0
     /** 当前搜索关键词与翻页偏移（界面用它判断何时触发加载更多） */
     private var nmKeyword = ""
     private var nmOffset = 0
+    private var nmAlbumOffset = 0
+    private var nmArtistOffset = 0
     val nmKeywordForUi: String get() = nmKeyword
     val nmOffsetForUi: Int get() = nmOffset
     var nmSongs by mutableStateOf<List<Song>>(emptyList()); private set
@@ -511,7 +519,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         NmLog.note("searchNetease 调用：kw=$kw nmReady=$nmReady")
         nmKeyword = kw
         nmOffset = 0
+        nmAlbumOffset = 0
+        nmArtistOffset = 0
         nmHasMore = false
+        nmAlbumsHasMore = false
+        nmArtistsHasMore = false
         if (!nmReady || kw.isEmpty()) {
             nmSearching = false
             nmLoadingMore = false
@@ -520,6 +532,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             nmArtists = emptyList()
             return
         }
+        val gen = ++nmGen
         // 立刻置为搜索中：让大加载动画马上出来，不用等防抖
         nmSearching = true
         nmJob = viewModelScope.launch {
@@ -529,22 +542,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val songsDeferred = async(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
                 val albumsDeferred = async(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
                 val artistsDeferred = async(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
-                val s = songsDeferred.await()
-                val a = albumsDeferred.await()
-                val ar = artistsDeferred.await()
+                val s = songsDeferred.await().distinctBy { it.ssid }
+                val a = albumsDeferred.await().distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                val ar = artistsDeferred.await().distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
                 // 分类型记日志：便于确认到底是哪一路没返回
-                NmLog.note("分类型结果：歌曲=${s.size} 专辑=${a.size} 歌手=${ar.size}（kw=$kw）")
-                if (!nmReady) return@launch
+                NmLog.note("分类型结果：歌曲=" + s.size + " 专辑=" + a.size + " 歌手=" + ar.size + "（kw=$kw）")
+                // 关键词或代号变了说明已经切走，丢弃这批结果
+                if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
                 keepNetease(s)
-                rememberSongs(s)
                 // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
                 val c = counts
                 nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
                 nmAlbums = a
                 nmArtists = ar
                 nmOffset = NM_PAGE_SIZE
+                nmAlbumOffset = NM_PAGE_SIZE
+                nmArtistOffset = NM_PAGE_SIZE
                 nmHasMore = s.size >= NM_PAGE_SIZE
-                NmLog.note("搜索完成：歌曲 ${s.size} / 专辑 ${a.size} / 歌手 ${ar.size}")
+                nmAlbumsHasMore = a.size >= NM_PAGE_SIZE
+                nmArtistsHasMore = ar.size >= NM_PAGE_SIZE
+                NmLog.note("搜索完成：歌曲 " + s.size + " / 专辑 " + a.size + " / 歌手 " + ar.size)
                 if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
                     NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
                 }
@@ -552,41 +569,103 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 切界面导致的取消属于正常行为，不提示、不报错
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("searchNetease($kw)", e)
-                nmSongs = emptyList()
-                nmAlbums = emptyList()
-                nmArtists = emptyList()
-                toast("网易云搜索失败：${e.message?.take(40) ?: ""}")
+                if (gen == nmGen) {
+                    nmSongs = emptyList()
+                    nmAlbums = emptyList()
+                    nmArtists = emptyList()
+                    toast("网易云搜索失败：" + (e.message?.take(40) ?: ""))
+                }
             } finally {
-                nmSearching = false
+                // 只有当前这一代搜索才能收起加载态，避免旧任务把新搜索的加载态清掉
+                if (gen == nmGen) nmSearching = false
             }
         }
     }
 
-    /** 列表滑到底时向网易云请求下一页 */
-    fun loadMoreNetease() {
+    /**
+     * 列表滑到底时向网易云请求下一页。
+     * [kind]：0 歌曲 1 专辑 2 歌手，各自维护偏移量。
+     */
+    fun loadMoreNetease(kind: Int = 0) {
         val kw = nmKeyword
-        if (kw.isBlank() || !nmReady || nmLoadingMore || !nmHasMore) return
-        val off = nmOffset
-        val job = nmJob
-        if (job != null && job.isActive) return
+        if (kw.isBlank() || !nmReady || nmLoadingMore) return
+        val off = when (kind) {
+            1 -> nmAlbumOffset
+            2 -> nmArtistOffset
+            else -> nmOffset
+        }
+        val hasMore = when (kind) {
+            1 -> nmAlbumsHasMore
+            2 -> nmArtistsHasMore
+            else -> nmHasMore
+        }
+        if (!hasMore) return
+        // 上一页还没回来就不再发，避免重复请求同一页
+        if (nmLoadingMore) return
         nmLoadingMore = true
-        // 用独立 job：不占用搜索的 nmJob，避免加载更多被搜索取消
+        val gen = nmGen
+        NmLog.note("翻页开始 kind=$kind offset=$off kw=$kw")
+        // 用独立协程：不占用搜索的 nmJob，避免翻页被新搜索取消
         viewModelScope.launch {
             try {
-                // 翻页只请求歌曲：专辑 / 歌手首屏已够，少发两个请求明显更快
-                val s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
-                if (kw != nmKeyword || !nmReady) return@launch
+                val result = withContext(Dispatchers.IO) {
+                    when (kind) {
+                        1 -> Triple(
+                            emptyList<Song>(),
+                            Netease.searchAlbums(kw, NM_PAGE_SIZE, off),
+                            emptyList<Group>(),
+                        )
+                        2 -> Triple(
+                            emptyList<Song>(),
+                            emptyList<Group>(),
+                            Netease.searchArtists(kw, NM_PAGE_SIZE, off),
+                        )
+                        else -> Triple(
+                            Netease.searchSongs(kw, NM_PAGE_SIZE, off),
+                            emptyList<Group>(),
+                            emptyList<Group>(),
+                        )
+                    }
+                }
+                // 翻页期间换关键词就丢弃
+                if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                val s = result.first.distinctBy { it.ssid }
+                val a = result.second.distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                val ar = result.third.distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
                 keepNetease(s)
-                // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突
-                val seen = nmSongs.map { it.ssid }.toHashSet()
-                nmSongs = nmSongs + s.filter { it.ssid !in seen }
-                nmOffset = off + NM_PAGE_SIZE
-                nmHasMore = s.size >= NM_PAGE_SIZE
-                NmLog.note("翻页完成 offset=$off 新增 ${s.size} 首")
+                when (kind) {
+                    1 -> {
+                        val seen = nmAlbums.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
+                        val add = a.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
+                        nmAlbums = nmAlbums + add
+                        nmAlbumOffset = off + NM_PAGE_SIZE
+                        nmAlbumsHasMore = add.isNotEmpty()
+                    }
+                    2 -> {
+                        val seen = nmArtists.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
+                        val add = ar.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
+                        nmArtists = nmArtists + add
+                        nmArtistOffset = off + NM_PAGE_SIZE
+                        nmArtistsHasMore = add.isNotEmpty()
+                    }
+                    else -> {
+                        // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突
+                        val seen = nmSongs.map { it.ssid }.toHashSet()
+                        val add = s.filter { it.ssid !in seen }
+                        nmSongs = nmSongs + add
+                        nmOffset = off + NM_PAGE_SIZE
+                        nmHasMore = add.isNotEmpty()
+                        NmLog.note("翻页完成 offset=$off 新增 " + add.size + " 首")
+                    }
+                }
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadMoreNetease($kw,$off)", e)
-                nmHasMore = false
+                when (kind) {
+                    1 -> nmAlbumsHasMore = false
+                    2 -> nmArtistsHasMore = false
+                    else -> nmHasMore = false
+                }
             } finally {
                 nmLoadingMore = false
             }

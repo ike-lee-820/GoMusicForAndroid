@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -535,6 +536,44 @@ private fun FirstSearchLoading(vm: MainViewModel, text: String = "正在搜索�
     }
 }
 
+/**
+ * 触底加载下一页。
+ *
+ * 之前把监听放在列表里的 item 中，那个 item 一滚出屏幕就会被回收、协程被取消，
+ * 导致「滑到底不加载下一页」。现在放到列表外面，常驻监听可见范围。
+ */
+@Composable
+private fun ReachEndEffect(
+    hasMore: Boolean,
+    lastVisibleIndex: () -> Int?,
+    totalCount: () -> Int,
+    onReachEnd: () -> Unit,
+) {
+    if (!hasMore) return
+    LaunchedEffect(hasMore) {
+        snapshotFlow {
+            val last = lastVisibleIndex()
+            val total = totalCount()
+            if (last != null && total > 0) last >= total - 3 else false
+        }.collect { atEnd -> if (atEnd) onReachEnd() }
+    }
+}
+
+/** 列表底部「正在加载更多」占位 */
+@Composable
+private fun LoadingMoreRow(text: String = "正在加载更多") {
+    val go = LocalGo.current
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(color = go.primary, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        HS(8)
+        Txt(text, 12, color = go.muted)
+    }
+}
+
 @Composable
 fun SongsTab(vm: MainViewModel, state: LazyListState) {
     val q = vm.query.trim()
@@ -555,6 +594,13 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
         FirstSearchLoading(vm)
         return
     }
+    // 触底监听放在列表外，常驻生效
+    ReachEndEffect(
+        hasMore = vm.nmHasMore && !vm.nmLoadingMore,
+        lastVisibleIndex = { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index },
+        totalCount = { state.layoutInfo.totalItemsCount },
+        onReachEnd = { vm.loadMoreNetease(0) },
+    )
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         // 顶部：播放历史（本站 + 网易云）
         if (q.isEmpty() && vm.historySongs.isNotEmpty()) {
@@ -576,35 +622,7 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
                 }
             }
         }
-                // 滑到底部（最后一项真正露出）且还有下一页时，才请求下一页。
-        // 这里必须在 item 里判断可见性，否则会在列表刚组合时就触发一次请求。
-        if (vm.nmHasMore) {
-            item {
-                val go2 = LocalGo.current
-                // 最后一项露出时才触发，避免首屏就多请求一次
-                LaunchedEffect(Unit) {
-                    snapshotFlow { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
-                        .collect { last ->
-                            val total = state.layoutInfo.totalItemsCount
-                            if (last != null && last >= total - 2) vm.loadMoreNetease()
-                        }
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(
-                        color = go2.primary,
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    HS(8)
-                    Txt("正在加载更多", 12, color = go2.muted)
-                }
-            }
-        }
-itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }, contentType = { _, _ -> "song" }) { i, s ->
+        itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }, contentType = { _, _ -> "song" }) { i, s ->
             SongRow(
                 s, s.ssid == vm.curSsid, vm.isPlaying,
                 downloaded = vm.isDownloaded(s.ssid),
@@ -614,8 +632,11 @@ itemsIndexed(list, key = { i, s -> "${s.ssid}#$i" }, contentType = { _, _ -> "so
                 onDownload = { vm.download(listOf(s)) },
             )
         }
+        // 加载中占位放最后，跟着列表一起滚到底部
+        if (vm.nmHasMore) item { LoadingMoreRow() }
     }
 }
+
 
 /** 歌曲栏顶部：最近播放（本站与网易云都记录） */
 @Composable
@@ -655,10 +676,14 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
     val local = remember(vm.albumGroupList, q) {
         vm.albumGroupList.filter { q.isEmpty() || it.title.contains(q, true) || it.artist.contains(q, true) }
     }
-    val groups = remember(local, vm.nmAlbums) { vm.mix(local, vm.nmAlbums) }
+    // 去重：同名专辑可能属于不同歌手，key 必须唯一，否则 Lazy 会因重复 key 崩溃
+    val groups = remember(local, vm.nmAlbums) {
+        vm.mix(local, vm.nmAlbums)
+            .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title + "|" + it.artist }
+    }
     // tab 也作为 key：切标签进页面时必定重新发起搜索
     LaunchedEffect(vm.tab, q, vm.nmReady) {
-        NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
+        NmLog.note("界面触发搜索 tab=" + vm.tab + " q=$q")
         vm.searchNetease(q)
     }
     // 第一次搜索完成前用大加载动画，不先显示结果
@@ -666,10 +691,16 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
         FirstSearchLoading(vm, "正在搜索网易云专辑")
         return
     }
+    ReachEndEffect(
+        hasMore = vm.nmAlbumsHasMore && !vm.nmLoadingMore,
+        lastVisibleIndex = { state.layoutInfo.visibleItemsInfo.lastOrNull()?.index },
+        totalCount = { state.layoutInfo.totalItemsCount },
+        onReachEnd = { vm.loadMoreNetease(1) },
+    )
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         itemsIndexed(
             groups,
-            key = { i, g -> if (g.nmId > 0) "nm${'$'}{g.nmId}" else "loc${'$'}{g.title}#$i" },
+            key = { i, g -> if (g.nmId > 0) "nm" + g.nmId + "#" + i else "loc" + g.title + "|" + g.artist + "#" + i },
             contentType = { _, _ -> "album" },
         ) { _, g ->
             GroupRow(
@@ -684,8 +715,10 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
                 },
             )
         }
+        if (vm.nmAlbumsHasMore) item { LoadingMoreRow("正在加载更多专辑") }
     }
 }
+
 
 @Composable
 fun ArtistsTab(vm: MainViewModel) {
@@ -693,10 +726,13 @@ fun ArtistsTab(vm: MainViewModel) {
     val local = remember(vm.artistGroupList, q) {
         vm.artistGroupList.filter { q.isEmpty() || it.title.contains(q, true) }
     }
-    val groups = remember(local, vm.nmArtists) { vm.mix(local, vm.nmArtists) }
+    // 去重：key 必须唯一，否则 Lazy 会因重复 key 崩溃
+    val groups = remember(local, vm.nmArtists) {
+        vm.mix(local, vm.nmArtists).distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+    }
     // tab 也作为 key：切标签进页面时必定重新发起搜索
     LaunchedEffect(vm.tab, q, vm.nmReady) {
-        NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
+        NmLog.note("界面触发搜索 tab=" + vm.tab + " q=$q")
         vm.searchNetease(q)
     }
     // 第一次搜索完成前用大加载动画，不先显示结果
@@ -704,17 +740,25 @@ fun ArtistsTab(vm: MainViewModel) {
         FirstSearchLoading(vm, "正在搜索网易云歌手")
         return
     }
+    val gridState = rememberLazyGridState()
+    ReachEndEffect(
+        hasMore = vm.nmArtistsHasMore && !vm.nmLoadingMore,
+        lastVisibleIndex = { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index },
+        totalCount = { gridState.layoutInfo.totalItemsCount },
+        onReachEnd = { vm.loadMoreNetease(2) },
+    )
     val cols = if (LocalConfiguration.current.screenWidthDp >= 768) 4 else 2
     LazyVerticalGrid(
         GridCells.Fixed(cols),
         Modifier.fillMaxSize(),
+        state = gridState,
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(
             groups,
-            key = { if (it.nmId > 0) "nm${'$'}{it.nmId}" else "loc${'$'}{it.title}" },
+            key = { g -> if (g.nmId > 0) "nm" + g.nmId else "loc" + g.title },
             contentType = { "artist" },
         ) { g ->
             GroupCard(
@@ -730,21 +774,6 @@ fun ArtistsTab(vm: MainViewModel) {
     }
 }
 
-@Composable
-fun NameDialog(title: String, initial: String, onDismiss: () -> Unit, onOk: (String) -> Unit) {
-    val go = LocalGo.current
-    var t by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = go.surface,
-        title = { Txt(title, 16, weight = FontWeight.SemiBold) },
-        text = { SearchField(t, { t = it }, "歌单名称", showIcon = false) },
-        confirmButton = {
-            TextButton(onClick = { if (t.isNotBlank()) onOk(t.trim()) }) { Text("确定", color = go.primary) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
-    )
-}
 
 @Composable
 fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {

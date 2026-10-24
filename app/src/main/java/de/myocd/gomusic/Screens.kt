@@ -776,6 +776,22 @@ fun ArtistsTab(vm: MainViewModel) {
 
 
 @Composable
+fun NameDialog(title: String, initial: String, onDismiss: () -> Unit, onOk: (String) -> Unit) {
+    val go = LocalGo.current
+    var t by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = go.surface,
+        title = { Txt(title, 16, weight = FontWeight.SemiBold) },
+        text = { SearchField(t, { t = it }, "歌单名称", showIcon = false) },
+        confirmButton = {
+            TextButton(onClick = { if (t.isNotBlank()) onOk(t.trim()) }) { Text("确定", color = go.primary) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
+    )
+}
+
+@Composable
 fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
     val go = LocalGo.current
     val q = vm.query.trim()

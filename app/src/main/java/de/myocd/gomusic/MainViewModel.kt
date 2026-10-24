@@ -204,6 +204,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var nmPageLoadingMore by mutableStateOf(false); private set
     /** 页头封面（歌手页用歌手自己的头像，不用专辑封面） */
     var nmPageCover by mutableStateOf<String?>(null); private set
+    /** 详情页内容缓存：kind/id -> (歌曲, 专辑)，返回上层时直接复用，不再重复请求 */
+    private val nmPageCache = java.util.concurrent.ConcurrentHashMap<String, Pair<List<Song>, List<Group>>>()
     /** 页头副标题：专辑显示歌手名，歌手显示「网易云歌手」 */
     var nmPageSubtitle by mutableStateOf(""); private set
     /** 播放历史（最近在前） */
@@ -773,8 +775,29 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 打开网易云专辑 / 歌手的歌曲列表 */
-    fun openNmGroup(g: Group) {
-        stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover, g.artist))
+    fun openNmGroup(g: Group) = openNmGroup(g, push = true)
+
+    /**
+     * 确保当前显示的详情页数据与 [s] 对应。
+     *
+     * 之前详情页在离开时无条件 clearNmPage()，而从歌手页点进专辑时，
+     * 旧页面的 dispose 会把新页面刚设好的状态清掉 —— 表现就是
+     * 「请求成功了却不显示，要再进一次才有」。现在改成显示时按栈顶校正。
+     */
+    fun ensureNmPage(s: Screen.NmSongs) {
+        val g = nmPage
+        if (g != null && g.nmId == s.id && g.nmKind == s.kind) return
+        NmLog.note("校正详情页：${s.kind}/${s.id}（原来是 ${g?.nmKind}/${g?.nmId}）")
+        openNmGroup(
+            Group(s.title, "", s.cover, emptyList(),
+                artist = s.artist, source = SRC_NETEASE, nmId = s.id, nmKind = s.kind),
+            push = false,
+        )
+    }
+
+    /** [push] = false 时只更新内容，不往栈里加页面（返回上层时用） */
+    private fun openNmGroup(g: Group, push: Boolean) {
+        if (push) stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover, g.artist))
         nmPage = g
         nmPageSongs = emptyList()
         nmPageAlbums = emptyList()
@@ -794,6 +817,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         val kind = g.nmKind
         val id = g.nmId
+        val ck = "$kind/$id"
+        // 命中缓存：直接用，不再发请求（返回上层时尤其有用）
+        val hit = nmPageCache[ck]
+        if (hit != null) {
+            nmPageSongs = hit.first
+            nmPageAlbums = hit.second
+            nmPageLoading = false
+            nmPageAlbumsLoading = false
+            nmPageSongOffset = if (kind == "artist") hit.first.size.coerceAtLeast(NM_PAGE_SIZE) else 0
+            nmPageAlbumOffset = hit.second.size.coerceAtLeast(NM_PAGE_SIZE)
+            nmPageSongsHasMore = kind == "artist" && hit.first.size >= NM_PAGE_SIZE
+            nmPageAlbumsHasMore = hit.second.size >= NM_PAGE_SIZE
+            return
+        }
         viewModelScope.launch {
             val l = withContext(Dispatchers.IO) {
                 runCatching { Netease.songsOf(kind, id, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
@@ -803,6 +840,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             nmPageSongOffset = NM_PAGE_SIZE
             nmPageSongsHasMore = kind == "artist" && l.size >= NM_PAGE_SIZE
             nmPageLoading = false
+            if (kind != "artist") nmPageCache[ck] = l to emptyList()
             // 歌手：并行取头像与专辑列表
             if (kind == "artist") {
                 launch {
@@ -820,6 +858,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     nmPageAlbumOffset = NM_PAGE_SIZE
                     nmPageAlbumsHasMore = al.size >= NM_PAGE_SIZE
                     nmPageAlbumsLoading = false
+                    nmPageCache[ck] = nmPageSongs to al
                 }
             }
         }

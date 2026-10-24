@@ -209,10 +209,12 @@ private fun PageLoadingMore(text: String) {
 @Composable
 fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
     val go = LocalGo.current
-    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { vm.clearNmPage() } }
     val isArtist = s.kind == "artist"
     val cover = vm.nmPageCover ?: s.cover
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    // 显示时确保数据与栈顶页面对应：从歌手页点进专辑 / 返回上层时都要校正，
+    // 否则会出现「请求成功但不显示，要再进一次才有」
+    LaunchedEffect(s.kind, s.id) { vm.ensureNmPage(s) }
     Column(Modifier.fillMaxSize()) {
         TopBar(vm)
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {

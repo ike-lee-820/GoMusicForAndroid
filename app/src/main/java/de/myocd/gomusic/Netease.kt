@@ -121,7 +121,9 @@ object Netease {
         val url = sb.toString()
         NmLog.req(url)
         var last: Exception? = null
-        repeat(2) { i ->
+        // 失败自动重试：网络抖动 / 服务端偶发错误时多试几次，间隔递增
+        val delays = longArrayOf(400, 900, 1600)
+        for (i in 0..delays.size) {
             try {
                 val req = Request.Builder().url(url).header("Connection", "close").build()
                 Api.client.newCall(req).execute().use { r ->
@@ -131,12 +133,14 @@ object Netease {
                         throw IOException("HTTP ${r.code} ${if (t.isBlank()) "(空响应)" else ""}")
                     }
                     val el = runCatching { json.parseToJsonElement(t) }.getOrNull()
-                    return if (el is JsonObject) el else JsonObject(emptyMap())
+                    if (el is JsonObject) return el
+                    throw IOException("响应不是 JSON 对象")
                 }
             } catch (e: Exception) {
                 last = e
+                NmLog.note("请求第 ${i + 1} 次失败：$path -> ${e.message}")
                 NmLog.err(url, e)
-                if (i == 0) runCatching { Thread.sleep(400) }
+                if (i < delays.size) runCatching { Thread.sleep(delays[i]) }
             }
         }
         NmLog.note("请求最终失败：$path -> ${last?.message}")

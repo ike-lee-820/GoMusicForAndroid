@@ -538,13 +538,25 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmJob = viewModelScope.launch {
             try {
                 delay(400)
-                // 三个搜索并行发，不用串行等三倍时间
-                val songsDeferred = async(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
-                val albumsDeferred = async(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
-                val artistsDeferred = async(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
-                val s = songsDeferred.await().distinctBy { it.ssid }
-                val a = albumsDeferred.await().distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
-                val ar = artistsDeferred.await().distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                // 只搜当前标签需要的那一类：三个类型各发一次请求（还要各自补详情）
+                // 是搜索慢的主因，这里按 tab 只发一路。
+                val kind = when (tab) {
+                    TAB_ALBUMS -> 1
+                    TAB_ARTISTS -> 2
+                    else -> 0
+                }
+                NmLog.note("按标签搜索 kind=$kind kw=$kw")
+                var s: List<Song> = emptyList()
+                var a: List<Group> = emptyList()
+                var ar: List<Group> = emptyList()
+                when (kind) {
+                    1 -> a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
+                        .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                    2 -> ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
+                        .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                    else -> s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
+                        .distinctBy { it.ssid }
+                }
                 // 分类型记日志：便于确认到底是哪一路没返回
                 NmLog.note("分类型结果：歌曲=" + s.size + " 专辑=" + a.size + " 歌手=" + ar.size + "（kw=$kw）")
                 // 关键词或代号变了说明已经切走，丢弃这批结果
@@ -552,15 +564,31 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 keepNetease(s)
                 // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
                 val c = counts
-                nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
-                nmAlbums = a
-                nmArtists = ar
+                when (kind) {
+                    1 -> {
+                        nmAlbums = a
+                        nmSongs = emptyList()
+                        nmArtists = emptyList()
+                    }
+                    2 -> {
+                        nmArtists = ar
+                        nmSongs = emptyList()
+                        nmAlbums = emptyList()
+                    }
+                    else -> {
+                        nmSongs = s.sortedByDescending { c[it.ssid] ?: 0 }
+                        nmAlbums = emptyList()
+                        nmArtists = emptyList()
+                    }
+                }
                 nmOffset = NM_PAGE_SIZE
                 nmAlbumOffset = NM_PAGE_SIZE
                 nmArtistOffset = NM_PAGE_SIZE
-                nmHasMore = s.size >= NM_PAGE_SIZE
-                nmAlbumsHasMore = a.size >= NM_PAGE_SIZE
-                nmArtistsHasMore = ar.size >= NM_PAGE_SIZE
+                when (kind) {
+                    1 -> nmAlbumsHasMore = a.size >= NM_PAGE_SIZE
+                    2 -> nmArtistsHasMore = ar.size >= NM_PAGE_SIZE
+                    else -> nmHasMore = s.size >= NM_PAGE_SIZE
+                }
                 NmLog.note("搜索完成：歌曲 " + s.size + " / 专辑 " + a.size + " / 歌手 " + ar.size)
                 if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
                     NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
@@ -608,23 +636,40 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 用独立协程：不占用搜索的 nmJob，避免翻页被新搜索取消
         viewModelScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) {
-                    when (kind) {
-                        1 -> Triple(
-                            emptyList<Song>(),
-                            Netease.searchAlbums(kw, NM_PAGE_SIZE, off),
-                            emptyList<Group>(),
-                        )
-                        2 -> Triple(
-                            emptyList<Song>(),
-                            emptyList<Group>(),
-                            Netease.searchArtists(kw, NM_PAGE_SIZE, off),
-                        )
-                        else -> Triple(
-                            Netease.searchSongs(kw, NM_PAGE_SIZE, off),
-                            emptyList<Group>(),
-                            emptyList<Group>(),
-                        )
+                when (kind) {
+                    1 -> {
+                        val add = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
+                            .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                        if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                        val seen = nmAlbums.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
+                        val real = add.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
+                        nmAlbums = nmAlbums + real
+                        nmAlbumOffset = off + NM_PAGE_SIZE
+                        nmAlbumsHasMore = real.isNotEmpty()
+                        NmLog.note("专辑翻页完成 offset=$off 新增 " + real.size)
+                    }
+                    2 -> {
+                        val add = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
+                            .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+                        if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                        val seen = nmArtists.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
+                        val real = add.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
+                        nmArtists = nmArtists + real
+                        nmArtistOffset = off + NM_PAGE_SIZE
+                        nmArtistsHasMore = real.isNotEmpty()
+                        NmLog.note("歌手翻页完成 offset=$off 新增 " + real.size)
+                    }
+                    else -> {
+                        val add = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
+                            .distinctBy { it.ssid }
+                        if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
+                        keepNetease(add)
+                        val seen = nmSongs.map { it.ssid }.toHashSet()
+                        val real = add.filter { it.ssid !in seen }
+                        nmSongs = nmSongs + real
+                        nmOffset = off + NM_PAGE_SIZE
+                        nmHasMore = real.isNotEmpty()
+                        NmLog.note("歌曲翻页完成 offset=$off 新增 " + real.size)
                     }
                 }
                 // 翻页期间换关键词就丢弃
@@ -632,32 +677,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val s = result.first.distinctBy { it.ssid }
                 val a = result.second.distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
                 val ar = result.third.distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
-                keepNetease(s)
-                when (kind) {
-                    1 -> {
-                        val seen = nmAlbums.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
-                        val add = a.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
-                        nmAlbums = nmAlbums + add
-                        nmAlbumOffset = off + NM_PAGE_SIZE
-                        nmAlbumsHasMore = add.isNotEmpty()
-                    }
-                    2 -> {
-                        val seen = nmArtists.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
-                        val add = ar.filter { (if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title) !in seen }
-                        nmArtists = nmArtists + add
-                        nmArtistOffset = off + NM_PAGE_SIZE
-                        nmArtistsHasMore = add.isNotEmpty()
-                    }
-                    else -> {
-                        // 去重后再追加，避免翻页拿到重复项导致 LazyList key 冲突
-                        val seen = nmSongs.map { it.ssid }.toHashSet()
-                        val add = s.filter { it.ssid !in seen }
-                        nmSongs = nmSongs + add
-                        nmOffset = off + NM_PAGE_SIZE
-                        nmHasMore = add.isNotEmpty()
-                        NmLog.note("翻页完成 offset=$off 新增 " + add.size + " 首")
-                    }
-                }
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadMoreNetease($kw,$off)", e)
@@ -911,9 +930,29 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** ssid -> Song 索引，随 songs 变化重建一次，避免每个列表项都重建整张表 */
     private val songMap: Map<String, Song> by derivedStateOf { songs.associateBy { it.ssid } }
 
+    /**
+     * ssid -> Song。
+     *
+     * 歌单里可能混着本站与网易云的歌，只查本地 songs 的话
+     * 网易云歌曲会查不到 —— 表现就是「加了歌单却看不见」。
+     */
     fun songsByIds(ids: List<String>): List<Song> {
         val m = songMap
-        return ids.mapNotNull { m[it] }
+        val nm = nmSongs.associateBy { it.ssid }
+        val known = nmKnown.toMap()
+        val sn = snapshots
+        val dl = downloads.associateBy { it.ssid }
+        return ids.mapNotNull { id ->
+            m[id] ?: nm[id] ?: known[id] ?: sn[id] ?: dl[id]?.let {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+        }
+    }
+
+    /** 把一批歌曲记进快照，保证加进歌单后随时能查到 */
+    fun keepForPlaylist(l: List<Song>) {
+        if (l.isEmpty()) return
+        rememberSongs(l)
     }
 
     // ================= 播放 =================
@@ -1189,16 +1228,36 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun pick(ssids: List<String>, name: String, cover: String? = null) {
         if (ssids.isEmpty()) return
-        pickReq = PickRequest(ssids.distinct(), name, cover)
+        val ids = ssids.distinct()
+        // 把要加的歌（含网易云）记进快照，保证歌单里随时能查到
+        keepForPlaylist(songsByIds(ids))
+        pickReq = PickRequest(ids, name, cover)
     }
 
     fun createPlaylist(name: String, ssids: List<String> = emptyList(), cover: String? = null): Playlist {
-        val p = Playlist(UUID.randomUUID().toString(), name.trim(), ssids.distinct(), cover)
+        val ids = ssids.distinct()
+        keepForPlaylist(songsByIds(ids))
+        val p = Playlist(UUID.randomUUID().toString(), name.trim(), ids, cover)
         savePl(playlists + p)
         return p
     }
 
+    /**
+     * 网易云专辑 / 歌手页：整页歌曲新建一个歌单。
+     * 名字用专辑 / 歌手名，封面用它自己的封面。
+     */
+    fun createFromNmPage(name: String, cover: String?) {
+        val list = nmPageSongs
+        if (list.isEmpty()) {
+            toast("还没有歌曲")
+            return
+        }
+        val p = createPlaylist(name, list.map { it.ssid }, cover)
+        toast("已新建歌单「${p.name}」，共 ${p.songs.size} 首")
+    }
+
     fun addToPlaylist(id: String, ssids: List<String>) {
+        keepForPlaylist(songsByIds(ssids))
         savePl(playlists.map { p ->
             if (p.id == id) p.copy(songs = (p.songs + ssids).distinct()) else p
         })

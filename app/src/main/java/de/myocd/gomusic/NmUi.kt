@@ -196,6 +196,16 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
                 }
             }
             Spacer(Modifier.height(8.dp))
+            // 歌单操作：整页新建歌单，或选已有歌单加入
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton("新建歌单并添加", enabled = vm.nmPageSongs.isNotEmpty()) {
+                    vm.createFromNmPage(s.title, s.cover)
+                }
+                GoButton("添加至歌单", enabled = vm.nmPageSongs.isNotEmpty()) {
+                    vm.pick(vm.nmPageSongs.map { it.ssid }, s.title, s.cover)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
         if (vm.nmPageLoading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

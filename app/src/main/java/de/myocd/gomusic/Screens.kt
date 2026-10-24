@@ -155,6 +155,18 @@ import coil.compose.AsyncImage
 
 private const val PI_F = 3.14159265f
 
+/**
+ * 圆弧歌词的圆心半径 = 可视高度 × 这个倍数。
+ * 越大圆心越远、弧越平缓，相邻行的间距越均匀（不会被弧压扁）。
+ */
+private const val ARC_RADIUS_FACTOR = 20.0f
+
+/**
+ * 相邻两行的纵向间距（dp）。
+ * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
+ */
+private const val ARC_ROW_SPACING_DP = 120f
+
 fun shareText(ctx: Context, text: String) {
     val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
     ctx.startActivity(Intent.createChooser(i, null))
@@ -1755,8 +1767,8 @@ fun WheelLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 一句只占一行：折行会把行撑高，间距看着又被吃掉
-                    maxLines = 1,
+                    // 过长的句子直接换行显示，不截断
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1887,8 +1899,8 @@ fun CircleLyrics(
                     lineHeight = if (isCur) 22.sp else 18.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 一句只占一行：折行会把行撑高，间距看着又被吃掉
-                    maxLines = 1,
+                    // 过长的句子直接换行显示，不截断
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1914,7 +1926,7 @@ fun ArcLyrics(
     modifier: Modifier = Modifier,
     loading: Boolean = false,
     curColor: Color = Color.White,
-    radiusFactor: Float = 3.0f,
+    radiusFactor: Float = ARC_RADIUS_FACTOR,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
@@ -1934,8 +1946,8 @@ fun ArcLyrics(
         return
     }
     val scope = rememberCoroutineScope()
-    // 当前句上下各显示 2 行。行数越少，每行分到的间距越大
-    val span = 2
+    val density = LocalDensity.current
+    val rowPxDrag = with(density) { ARC_ROW_SPACING_DP.dp.toPx() }.coerceAtLeast(1f)
     // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
     val base by animateFloatAsState(
         targetValue = idx.coerceAtLeast(0).toFloat(),
@@ -1965,7 +1977,7 @@ fun ArcLyrics(
                     onVerticalDrag = { _, dragAmount ->
                         manual = true
                         manualAt = System.currentTimeMillis()
-                        val rowPx = (size.height / (span * 2 + 1f)).coerceAtLeast(1f)
+                        val rowPx = rowPxDrag
                         // 最多只能滑出可视范围一点点，避免甩得太远
                         val lim = (lines.lastIndex.toFloat() + 0.6f)
                         scope.launch {
@@ -1979,14 +1991,15 @@ fun ArcLyrics(
         contentAlignment = Alignment.Center,
     ) {
         val r = maxHeight * radiusFactor
-        // 相邻两行的纵向间距：把可视高度按 (2*span+1) 均分，
-        // 这样整段弧正好落在屏幕内，间距也取到最大
-        val rowSpan = maxHeight.value / (span * 2 + 1)
+        // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 11 行）
+        val rowSpan = ARC_ROW_SPACING_DP
+        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 11)
+        val span = rows / 2
         // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
         val stepRad = rowSpan / r.value.coerceAtLeast(1f)
         val rPx = r.value
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        val lineW = maxWidth * 0.72f
+        val lineW = maxWidth * 0.8f
         val from = (cur - span).toInt().coerceAtLeast(0)
         val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
         for (i in from..to) {
@@ -2020,8 +2033,8 @@ fun ArcLyrics(
                     lineHeight = if (isCur) 30.sp else 26.sp,
                     fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
-                    // 一句只占一行：折行会把行撑高，间距看着又被吃掉
-                    maxLines = 1,
+                    // 过长的句子直接换行显示，不截断
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

@@ -1395,7 +1395,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 简繁转换模式：0 简体 / 1 繁体 / 2 仅搜索统一 / 3 不转换 */
     var zhConvert by mutableIntStateOf(prefs.zhConvert)
-    /** 全局字体：0 系统 / 1 思源宋体 / 2 思源黑体 */
+    /** 全局字体：0 系统 / 1 思源宋体 */
     var fontKind by mutableIntStateOf(prefs.fontKind); private set
     /** 可变字体的字重（wght），250~900，默认 450 */
     var fontWght by mutableIntStateOf(prefs.fontWght); private set
@@ -1407,7 +1407,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.zhConvert = m
     }
 
-    /** 切换全局字体（0 系统 / 1 思源宋体 / 2 思源黑体） */
+    /** 切换全局字体（0 系统 / 1 思源宋体） */
     fun chooseFontKind(k: Int) {
         fontKind = k
         prefs.fontKind = k

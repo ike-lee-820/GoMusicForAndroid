@@ -106,7 +106,7 @@ class Prefs(ctx: Context) {
 
     /**
      * 全局字体：
-     * 0 系统字体（默认）/ 1 思源宋体 / 2 思源黑体
+     * 0 系统字体（默认）/ 1 思源宋体
      */
     var fontKind: Int
         get() = sp.getInt("font_kind", 0)
@@ -114,7 +114,7 @@ class Prefs(ctx: Context) {
 
     /**
      * 可变字体的字重（wght 轴）。
-     * 思源宋体 / 思源黑体的轴范围是 250~900，这里默认 450。
+     * 思源宋体的 wght 轴范围是 250~900，这里默认 450。
      */
     var fontWght: Int
         get() = sp.getInt("font_wght", 450).coerceIn(250, 900)

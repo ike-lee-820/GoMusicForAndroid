@@ -156,16 +156,26 @@ import coil.compose.AsyncImage
 private const val PI_F = 3.14159265f
 
 /**
- * 圆弧歌词的圆心半径 = 可视高度 × 这个倍数。
- * 越大圆心越远、弧越平缓，相邻行的间距越均匀（不会被弧压扁）。
- */
-private const val ARC_RADIUS_FACTOR = 20.0f
-
-/**
- * 相邻两行的纵向间距（dp）。
+ * 相邻两行的纵向间距（dp）——这就是「行距」。
  * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
  */
-private const val ARC_ROW_SPACING_DP = 120f
+private const val ARC_ROW_SPACING_DP = 200f
+
+/**
+ * 最外侧那行的最大倾斜角（度）。
+ *
+ * 圆心半径不再拍脑袋给倍数，而是由这个角度反推：
+ *   r = 可见行数 × 行距 ÷ 最大倾斜角
+ * 这样不管行距、屏幕怎么变，弧的弯曲程度始终稳定在能看清的一档，
+ * 也不会因为半径过大把弧压成一条直线。
+ */
+private const val ARC_MAX_TILT_DEG = 20f
+
+/**
+ * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
+ * 这里放大一点让滑动跟手（1.0 = 手指移动多少、歌词就移动多少）。
+ */
+private const val ARC_DRAG_SENSITIVITY = 1.5f
 
 fun shareText(ctx: Context, text: String) {
     val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
@@ -1911,7 +1921,7 @@ fun CircleLyrics(
 /**
  * 圆弧歌词：歌词排在一个真正的圆上。
  *
- * 圆心在左侧（水平方向）半径 [radiusFactor] × 高度处，歌词沿圆右侧的弧排列，
+ * 圆心在左侧，歌词沿圆右侧的弧排列，
  * 每行的位置（沿弧的横纵偏移）与倾斜角（沿半径方向）都由同一个圆心角算出，
  * 所以行与行之间的相对关系是真实的圆周几何，不是各自硬歪一个角度。
  *
@@ -1926,7 +1936,6 @@ fun ArcLyrics(
     modifier: Modifier = Modifier,
     loading: Boolean = false,
     curColor: Color = Color.White,
-    radiusFactor: Float = ARC_RADIUS_FACTOR,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
@@ -1947,7 +1956,7 @@ fun ArcLyrics(
     }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val rowPxDrag = with(density) { ARC_ROW_SPACING_DP.dp.toPx() }.coerceAtLeast(1f)
+    val rowPxDrag = with(density) { (ARC_ROW_SPACING_DP / ARC_DRAG_SENSITIVITY).dp.toPx() }.coerceAtLeast(1f)
     // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
     val base by animateFloatAsState(
         targetValue = idx.coerceAtLeast(0).toFloat(),
@@ -1990,14 +1999,18 @@ fun ArcLyrics(
             },
         contentAlignment = Alignment.Center,
     ) {
-        val r = maxHeight * radiusFactor
-        // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 11 行）
+        // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 7 行）
         val rowSpan = ARC_ROW_SPACING_DP
-        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 11)
-        val span = rows / 2
+        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 7)
+        val span = (rows / 2).coerceAtLeast(1)
+        // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
+        val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
+        val rDp = (span * rowSpan / tiltRad).coerceAtLeast(maxHeight.value * 0.5f)
         // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
-        val stepRad = rowSpan / r.value.coerceAtLeast(1f)
-        val rPx = r.value
+        val stepRad = rowSpan / rDp
+        // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，
+        // 在高密度屏上实际半径只有设计的 1/density，弧会比预期弯得多
+        val rPx = with(density) { rDp.dp.toPx() }
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
         val lineW = maxWidth * 0.8f
         val from = (cur - span).toInt().coerceAtLeast(0)

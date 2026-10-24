@@ -55,6 +55,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -422,7 +423,7 @@ fun SongRow(
             )
         }
         if (onQueue != null) {
-            IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "加入播放列表", onClick = onQueue)
+            IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "加入播放列表", onClick = onQueue)
         }
         IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", onClick = onAdd)
     }

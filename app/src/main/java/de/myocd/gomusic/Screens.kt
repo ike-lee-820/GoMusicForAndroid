@@ -77,6 +77,8 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.QrCode
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -1136,9 +1138,9 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         GoButton("导出歌单", icon = Icons.Outlined.Share) { exporting = true }
-                        GoButton("输入还原字符", icon = Icons.Outlined.Input) { importByText = true }
-                        GoButton("导入还原文件", icon = Icons.Outlined.FileOpen) { importFile.launch("*/*") }
-                        GoButton("扫码导入", icon = Icons.Outlined.QrCodeScanner) { importImage.launch("image/*") }
+                        GoButton("输入还原字符", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { importByText = true }
+                        GoButton("导入还原文件", icon = Icons.Outlined.Folder) { importFile.launch("*/*") }
+                        GoButton("扫码导入", icon = Icons.Outlined.QrCode) { importImage.launch("image/*") }
                     }
                 }
             }
@@ -1195,7 +1197,7 @@ fun ExportSheet(vm: MainViewModel, id: String, name: String, onDismiss: () -> Un
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            Txt("导出「$name」", 16, FontWeight.SemiBold)
+            Txt("导出「$name」", 16, weight = FontWeight.SemiBold)
             VS(4)
             Txt("用另一台设备扫二维码、输入还原字符或读取还原文件即可导入", 12, color = go.muted)
             VS(14)
@@ -1249,7 +1251,8 @@ fun ExportSheet(vm: MainViewModel, id: String, name: String, onDismiss: () -> Un
 
 /** 把还原字符存到 Download/gomusic/playlist/ 下 */
 private fun saveShareFile(ctx: android.content.Context, name: String, text: String, vm: MainViewModel) {
-    val safe = name.replace(Regex("[\\/:*?"<>|]"), "_").ifBlank { "playlist" }
+    val bad = charArrayOf('\\', '/', ':', '*', '?', '"', '<', '>', '|')
+    val safe = name.map { if (it in bad) '_' else it }.joinToString("").ifBlank { "playlist" }
     val dir = java.io.File(
         android.os.Environment.getExternalStoragePublicDirectory(
             android.os.Environment.DIRECTORY_DOWNLOADS,

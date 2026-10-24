@@ -598,6 +598,15 @@ object Netease {
         }.distinctBy { it.nmId }
     }
 
+    /** 专辑详情：拿歌手名，让专辑页副标题显示真实歌手 */
+    fun albumArtist(id: Long): String? {
+        val root = get("/album", "id" to id.toString())
+        val d = root.obj("album") ?: return null
+        d.obj("artist")?.str("name")?.takeIf { it.isNotBlank() }?.let { return it }
+        val arr = (d["artists"] as? JsonElement)?.jsonArray ?: return null
+        return arr.firstNotNullOfOrNull { (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() } }
+    }
+
     /** 歌手详情：拿歌手自己的头像，避免误用专辑封面 */
     fun artistDetail(id: Long): Group? {
         val root = get("/artist/detail", "id" to id.toString())

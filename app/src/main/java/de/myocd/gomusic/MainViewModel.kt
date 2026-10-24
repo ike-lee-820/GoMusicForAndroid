@@ -810,11 +810,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmPageAlbumsHasMore = false
         // 歌手页不沿用歌曲封面：先留空，拿到歌手详情后填真实头像
         nmPageCover = if (g.nmKind == "artist") null else g.cover
-        nmPageSubtitle = if (g.nmKind == "album") {
-            g.artist.ifBlank { "网易云专辑" }
-        } else {
-            "网易云歌手"
-        }
+        // 专辑页副标题显示歌手名；列表没带歌手时稍后用 /album 详情补
+        nmPageSubtitle = if (g.nmKind == "album") g.artist else ""
         val kind = g.nmKind
         val id = g.nmId
         val ck = "$kind/$id"
@@ -840,7 +837,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             nmPageSongOffset = NM_PAGE_SIZE
             nmPageSongsHasMore = kind == "artist" && l.size >= NM_PAGE_SIZE
             nmPageLoading = false
-            if (kind != "artist") nmPageCache[ck] = l to emptyList()
+            if (kind != "artist") {
+                nmPageCache[ck] = l to emptyList()
+                // 专辑页副标题显示歌手名；列表里没带歌手时，单独取一次详情
+                if (nmPageSubtitle.isBlank()) {
+                    launch {
+                        val a = withContext(Dispatchers.IO) {
+                            runCatching { Netease.albumArtist(id) }.getOrNull()
+                        }
+                        if (!a.isNullOrBlank()) nmPageSubtitle = a
+                    }
+                }
+            }
             // 歌手：并行取头像与专辑列表
             if (kind == "artist") {
                 launch {

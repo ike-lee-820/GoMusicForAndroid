@@ -208,7 +208,6 @@ private const val ARC_RADIUS_BOOST_WIDE = 0.7f
 private const val ARC_MIN_SPAN_WIDE = 4
 
 /**
-/**
  * 横屏歌词整体上移的距离（dp）。
  *
  * 歌词容器是垂直居中的，但内容区带 statusBars / navigationBars 留白，
@@ -217,6 +216,7 @@ private const val ARC_MIN_SPAN_WIDE = 4
  */
 private const val ARC_LYRIC_LIFT_WIDE = 14f
 
+/**
  * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
  * 这里放大一点让滑动跟手（1.0 = 手指移动多少、歌词就移动多少）。
  */

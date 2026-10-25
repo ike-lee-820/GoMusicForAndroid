@@ -40,6 +40,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 private const val MODE_LIST_LOOP = 0
@@ -365,6 +366,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var lyric by mutableStateOf<List<LrcLine>>(emptyList()); private set
     /** 歌词是否正在加载：UI 据此显示「正在加载」，而不是过早显示「暂无歌词」 */
     var lyricLoading by mutableStateOf(false); private set
+
+    /**
+     * 取歌词的超时（毫秒）。
+     *
+     * 之前没有超时：接口慢或重试退避时会一直卡在「正在加载歌词…」，
+     * 明明这首歌没有歌词，界面却长时间不显示「暂无歌词」。
+     * 超时就按「拿不到」处理，直接显示「暂无歌词」。
+     */
+    private val lyricTimeoutMs = 8_000L
     /** 当前歌词属于哪首歌：切音质会重新 replaceMediaItem，但歌词不用重取 */
     private var lyricSsid: String? = null
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
@@ -1639,13 +1649,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         rememberSongs(listOf(d))
                     }
                 }
-                var t = ""
-                if (nid != null) {
-                    t = withContext(Dispatchers.IO) {
-                        runCatching { Netease.lyric(nid) }.getOrDefault("")
+                // 加超时：接口慢 / 重试退避时不再一直卡在「正在加载歌词…」，
+                // 超时就按「没有歌词」处理，界面显示「暂无歌词」
+                var t = withTimeoutOrNull(lyricTimeoutMs) {
+                    var x = ""
+                    if (nid != null) {
+                        x = withContext(Dispatchers.IO) {
+                            runCatching { Netease.lyric(nid) }.getOrDefault("")
+                        }
                     }
-                }
-                if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
+                    if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
+                    x
+                } ?: ""
                 if (curSsid == id) {
                     lyric = lyricLines(t)
                     lyricLoading = false
@@ -1660,7 +1675,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             // 离线只能播已下载的音质，菜单里就不列没下载的
             qualities = downloadedQualities(id)
             viewModelScope.launch {
-                val t = withContext(Dispatchers.IO) { localLyrics(id) }
+                val t = withTimeoutOrNull(lyricTimeoutMs) {
+                    withContext(Dispatchers.IO) { localLyrics(id) }
+                } ?: ""
                 if (curSsid == id) {
                     lyric = lyricLines(t)
                     lyricLoading = false
@@ -1680,8 +1697,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     d.audio.keys.sortedBy { Api.rank(it) }
                 }
                 var t = d.lyrics
-                if (t.isBlank()) t = withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
-                if (t.isBlank()) t = withContext(Dispatchers.IO) { localLyrics(id) }
+                val more = withTimeoutOrNull(lyricTimeoutMs) {
+                    var x = if (t.isBlank()) {
+                        withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
+                    } else t
+                    if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
+                    x
+                }
+                if (more != null) t = more
                 if (curSsid == id) {
                     lyric = lyricLines(t)
                     lyricLoading = false

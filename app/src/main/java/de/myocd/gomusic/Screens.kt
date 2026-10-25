@@ -133,6 +133,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -1739,7 +1740,7 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
         // MV：只有这首歌有 MV（mvId > 0）时才显示
         if (s.mvId > 0L) {
             HS(6)
-            IconBtn(Icons.Outlined.VideoLibrary, "播放 MV", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+            IconBtn(Icons.Outlined.Movie, "播放 MV", size = 24.dp, minHit = 34.dp, tint = Color.White) {
                 vm.playMv()
             }
         }
@@ -1879,7 +1880,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 }
                 // MV：只有这首歌有 MV（mvId > 0）时才显示
                 if (s.mvId > 0L) {
-                    IconBtn(Icons.Outlined.VideoLibrary, "播放 MV") { vm.playMv() }
+                    IconBtn(Icons.Outlined.Movie, "播放 MV") { vm.playMv() }
                 }
                 QualityMenu(vm)
                 SpeedMenu(vm)

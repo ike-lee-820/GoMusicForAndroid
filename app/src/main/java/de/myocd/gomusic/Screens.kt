@@ -1616,7 +1616,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
     val ctx = LocalContext.current
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val coverSize = minOf(maxWidth * 0.86f, 360.dp)
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontically) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
             Cover(
                 s.coverUrl,
                 Modifier.size(coverSize).clickable {
@@ -1628,7 +1628,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
             VS(16)
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontically,
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
             ) {
                 Txt(
                     s.artist, 14, color = Color.White.copy(alpha = 0.72f), maxLines = 1,

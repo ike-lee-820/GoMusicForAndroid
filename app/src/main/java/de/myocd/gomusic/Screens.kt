@@ -160,6 +160,10 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.composed
+import android.view.SurfaceView
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
 
 private const val PI_F = 3.14159265f
 
@@ -282,6 +286,7 @@ fun MainScreen(vm: MainViewModel) {
                                     is Screen.Artist -> ArtistPage(vm, s)
                                     is Screen.PlaylistPage -> PlaylistPage(vm, s)
                                     is Screen.NmSongs -> NmSongsPage(vm, s)
+                                    is Screen.Video -> VideoScreen(vm, s)
                                 }
                             }
                         } else {
@@ -1731,6 +1736,13 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
             Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
             size = 24.dp, minHit = 34.dp, tint = Color.White,
         ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
+        // MV：只有这首歌有 MV（mvId > 0）时才显示
+        if (s.mvId > 0L) {
+            HS(6)
+            IconBtn(Icons.Outlined.VideoLibrary, "播放 MV", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+                vm.playMv()
+            }
+        }
         HS(6)
         QualityMenu(vm, Color.White)
         HS(6)
@@ -1864,6 +1876,10 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 IconBtn(Icons.Outlined.Download, "下载") { vm.download(listOf(s)) }
                 IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") {
                     vm.pick(listOf(s.ssid), s.title, s.coverUrl)
+                }
+                // MV：只有这首歌有 MV（mvId > 0）时才显示
+                if (s.mvId > 0L) {
+                    IconBtn(Icons.Outlined.VideoLibrary, "播放 MV") { vm.playMv() }
                 }
                 QualityMenu(vm)
                 SpeedMenu(vm)
@@ -2441,6 +2457,51 @@ BoxWithConstraints(
                 }
             },
         )
+    }
+}
+
+/**
+ * MV 整屏播放页。
+ *
+ * 用独立的 ExoPlayer 播视频：和后台音频播放互不干扰。
+ * 没有引入 media3-ui，画面用 SurfaceView 承接（player.setVideoSurfaceView），
+ * 点击画面切换播放 / 暂停，左上角关闭返回。
+ */
+@Composable
+fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
+    val ctx = LocalContext.current
+    val player = remember(v.url) {
+        ExoPlayer.Builder(ctx).build().apply {
+            setMediaItem(MediaItem.fromUri(v.url))
+            prepare()
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(
+            factory = { c -> SurfaceView(c).also { sv -> player.setVideoSurfaceView(sv) } },
+            modifier = Modifier.fillMaxSize(),
+        )
+        // 点画面切换播放 / 暂停（在视频之上、标题栏之下）
+        Box(Modifier.fillMaxSize().noRippleClickable {
+            if (player.isPlaying) player.pause() else player.play()
+        })
+        // 顶部：关闭 + 标题
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(48.dp)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconBtn(Icons.Outlined.Close, "关闭", size = 44.dp, tint = Color.White) {
+                if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex)
+            }
+            HS(8)
+            Txt(v.title, 15, color = Color.White, maxLines = 1, weight = FontWeight.Medium)
+        }
     }
 }
 

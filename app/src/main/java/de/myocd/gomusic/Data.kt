@@ -40,6 +40,14 @@ data class Song(
     val nmAlbumId: Long = 0,
     /** 网易云歌手 id（点歌手时直接开网易云歌手页） */
     val nmArtistId: Long = 0,
+    /**
+     * MV id（0 = 没有 MV）。
+     *
+     * 网易云歌曲的 mv 字段就是 MV 的 id；为 0 表示这首歌没有 MV，
+     * 播放器功能栏据此决定是否显示 MV 按钮。
+     * 本站曲库没有 MV 数据源，默认 0。
+     */
+    val mvId: Long = 0,
 )
 
 @Serializable

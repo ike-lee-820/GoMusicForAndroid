@@ -234,6 +234,8 @@ object Netease {
             nmId = id,
             nmAlbumId = idOf(al),
             nmArtistId = idOf(ar),
+            // mv 字段就是 MV 的 id，0 表示没有 MV
+            mvId = idOf(o, "mv"),
         )
     }
 
@@ -939,6 +941,21 @@ object Netease {
                 nmKind = "playlist",
             )
         }.distinctBy { it.nmId }
+    }
+
+    /**
+     * MV 播放地址（/mv/url?id=）。
+     *
+     * 返回的可能是不同分辨率的地址，这里直接取接口给的 url；
+     * 取不到（需要付费 / 已下架 / 未登录）就返回 null，界面提示。
+     */
+    fun mvUrl(mvId: Long): String? {
+        if (mvId <= 0L) return null
+        val r = get("/mv/url", "id" to mvId.toString())
+        val u = r.obj("data")?.str("url") ?: r.str("url")
+        val ok = u?.takeIf { it.startsWith("http") }
+        NmLog.note("取 MV 地址 mv=$mvId -> ${if (ok == null) "无" else "有"}")
+        return ok
     }
 
     /** 用 cookie 换取账号昵称；失败返回 null 表示登录态失效 */

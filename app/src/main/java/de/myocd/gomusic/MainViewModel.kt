@@ -60,6 +60,8 @@ sealed interface Screen {
         /** 专辑所属歌手（专辑页要显示歌手名） */
         val artist: String = "",
     ) : Screen
+    /** MV 播放：整屏视频页 */
+    data class Video(val title: String, val url: String) : Screen
 }
 
 data class Group(
@@ -1947,6 +1949,36 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun removeFromPl(id: String, ssid: String) =
         savePl(playlists.map { p -> if (p.id == id) p.copy(songs = p.songs - ssid) else p })
+
+    // ================= MV =================
+
+    /** 正在取 MV 地址（功能栏按钮据此转圈） */
+    var mvLoading by mutableStateOf(false); private set
+
+    /**
+     * 播放当前歌曲的 MV。
+     *
+     * 先暂停音频：视频自带声音，两个一起放会混在一起。
+     * 取到地址后压入 [Screen.Video]，由 VideoScreen 播放。
+     */
+    fun playMv() {
+        val s = currentSong
+        if (s == null) { toast("暂无歌曲"); return }
+        val id = s.mvId
+        if (id <= 0L) { toast("这首歌没有 MV"); return }
+        if (mvLoading) return
+        mvLoading = true
+        // 视频自带声音，先把音频停掉，否则两个声音会混在一起
+        runCatching { controller?.pause() }
+        viewModelScope.launch(Dispatchers.IO) {
+            val url = runCatching { Netease.mvUrl(id) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                mvLoading = false
+                if (url.isNullOrBlank()) toast("没有取到 MV 地址")
+                else stack.add(Screen.Video(s.title, url))
+            }
+        }
+    }
 
     // ================= 下载 / 提示 / 链接 =================
     fun isDownloaded(ssid: String): Boolean = ssid in downloadedIds

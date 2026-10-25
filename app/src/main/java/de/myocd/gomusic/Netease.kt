@@ -473,19 +473,30 @@ object Netease {
         }
     }
 
-    fun audioUrl(id: Long, quality: String, level: String? = null): String? {
+    fun audioUrl(id: Long, quality: String, level: String? = null): String? =
+        audioWithLevel(id, quality, level)?.first
+
+    /**
+     * 取地址并带回**实际拿到的档位**。
+     *
+     * 下载必须用这个：请求 lossless 时歌曲可能只有 320k，
+     * resolveAudioUrl 会一路降档，但返回的只有地址 ——
+     * 如果仍按请求的档位记录，下载记录里的音质就是假的
+     * （存着「无损」，实际是 320k，离线播放与文件命名都会错）。
+     */
+    fun audioWithLevel(id: Long, quality: String, level: String? = null): Pair<String, String>? {
         // 命中缓存直接返回，不再走那一长串串行试档位
         val k = cacheKey(id, quality, level)
         urlCache[k]?.let { (u, t) ->
             if (System.currentTimeMillis() - t < URL_TTL_MS) {
                 NmLog.note("音源命中缓存 id=$id")
-                return u
+                return u to (level?.takeIf { it.isNotBlank() } ?: quality)
             }
             urlCache.remove(k)
         }
-        val url = resolveAudioUrl(id, quality, level)
-        if (url != null) urlCache[k] = url to System.currentTimeMillis()
-        return url
+        val hit = resolveAudioUrl(id, quality, level)
+        if (hit != null) urlCache[k] = hit.first to System.currentTimeMillis()
+        return hit
     }
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
@@ -555,7 +566,11 @@ object Netease {
         }
     }
 
-    private fun resolveAudioUrl(id: Long, quality: String, level: String?): String? {
+    /**
+     * 解析播放地址，返回「地址 + 实际档位」。
+     * 档位一路降档时以实际拿到的那一档为准（见 [audioWithLevel]）。
+     */
+    private fun resolveAudioUrl(id: Long, quality: String, level: String?): Pair<String, String>? {
         NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（并发探测）")
         // 候选档位：指定的档位优先，然后按音质设置降档。
         // 不再追加全部 NM_LEVELS：那会多出十来个几乎用不上的档位，
@@ -566,7 +581,7 @@ object Netease {
         for (lv in cands) {
             hits.firstOrNull { it.lv == lv }?.let {
                 NmLog.note("拿到地址（$lv）：${it.url}")
-                return it.url
+                return it.url to lv
             }
         }
         // v1 拿不到时走 /song/url/match 解灰匹配（歌曲变灰时 v1 的地址会是空）
@@ -575,7 +590,8 @@ object Netease {
             val u = ((r?.get("data") as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
             if (!u.isNullOrBlank()) {
                 NmLog.note("match 解灰拿到地址：$u")
-                return u
+                // 解灰接口不返回档位，按请求的档位记（能拿到就说明这一档可用）
+                return u to (level?.takeIf { it.isNotBlank() } ?: quality)
             }
         }
         // 兜底：拿游客 cookie 再试一次（未登录/登录态失效时网易会返回 301 / 400 需验证）
@@ -587,7 +603,7 @@ object Netease {
             try {
                 probeLevels(id, levels(quality)).firstOrNull()?.let {
                     NmLog.note("游客 cookie 拿到地址（${it.lv}）：${it.url}")
-                    return it.url
+                    return it.url to it.lv
                 }
             } finally {
                 cookie = saved
@@ -879,6 +895,50 @@ object Netease {
         )
         if (r.code() != 200) return null
         return r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+    }
+
+    /** 当前登录用户的 uid；取不到返回 0（未登录 / 登录态失效） */
+    fun uid(): Long {
+        if (cookie.isBlank()) return 0L
+        val r = get("/user/account")
+        if (r.code() != 200) return 0L
+        val p = r.obj("profile")
+        val v = (p?.get("userId") as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+            ?: (r.obj("account")?.get("id") as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+            ?: (r["userId"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+        NmLog.note("取 uid -> $v")
+        return v ?: 0L
+    }
+
+    /**
+     * 我的网易云歌单（/user/playlist?uid=）。
+     *
+     * 只保留「我创建的」：前面那些是「喜欢的音乐」和收藏的歌单，
+     * 收藏的歌单不属于我，混进来会和本地歌单对不上。
+     * 判断依据是 creator.userId == uid。
+     */
+    fun userPlaylists(uid: Long): List<Group> {
+        if (uid <= 0L) return emptyList()
+        val root = get("/user/playlist", "uid" to uid.toString(), "limit" to "1000", "offset" to "0")
+        val arr = resultArray(root, "playlist")
+        NmLog.note("我的歌单返回 ${arr.size} 个")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            val creatorId = (o.obj("creator")?.get("userId") as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+            // creator 取不到时不筛（接口偶尔不给），至少不会全丢
+            if (creatorId != null && creatorId != uid) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = "网易云歌单 · ${o.str("trackCount")?.let { "$it 首" } ?: ""}",
+                cover = pic(o.str("coverImgUrl", "picUrl", "cover")),
+                songs = emptyList(),
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "playlist",
+            )
+        }.distinctBy { it.nmId }
     }
 
     /** 用 cookie 换取账号昵称；失败返回 null 表示登录态失效 */

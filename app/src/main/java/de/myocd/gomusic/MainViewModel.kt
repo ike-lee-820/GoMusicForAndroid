@@ -1783,6 +1783,75 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toast("已新建歌单「${p.name}」，共 ${p.songs.size} 首")
     }
 
+    // ================= 同步网易云歌单 =================
+
+    /** 同步状态：true 表示正在同步，界面上给个转圈 */
+    var nmSyncing by mutableStateOf(false); private set
+
+    /**
+     * 把「我的网易云歌单」同步到本地歌单。
+     *
+     * 按 nmId 匹配：本地已有对应歌单就更新歌曲与名字，没有才新建。
+     * 不做删除 —— 网易云那边删掉的歌单，本地保留（万一只是接口没返回，
+     * 直接删掉用户的本地歌单代价太大）。
+     */
+    fun syncNmPlaylists() {
+        if (!nmOn) { toast("请先开启「接入网易云曲库」"); return }
+        if (prefs.nmCookie.isBlank()) { toast("请先登录网易云"); return }
+        if (nmSyncing) return
+        nmSyncing = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var uid = prefs.nmUid
+                if (uid <= 0L) {
+                    uid = runCatching { Netease.uid() }.getOrDefault(0L)
+                    if (uid > 0L) prefs.nmUid = uid
+                }
+                if (uid <= 0L) {
+                    withContext(Dispatchers.Main) { toast("取不到网易云 uid，请重新登录后再同步") }
+                    return@launch
+                }
+                val mine = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
+                if (mine.isEmpty()) {
+                    withContext(Dispatchers.Main) { toast("没有取到网易云歌单（可能未登录或没有自建歌单）") }
+                    return@launch
+                }
+                var added = 0
+                var updated = 0
+                var cur = playlists.toMutableList()
+                val all = ArrayList<Song>()
+                for (g in mine) {
+                    val songs = runCatching { Netease.songsOf("playlist", g.nmId, 1000) }
+                        .getOrDefault(emptyList())
+                    if (songs.isEmpty()) continue
+                    all.addAll(songs)
+                    val ids = songs.map { it.ssid }
+                    val at = cur.indexOfFirst { it.nmId == g.nmId }
+                    if (at >= 0) {
+                        cur[at] = cur[at].copy(name = g.title, songs = ids, cover = g.cover ?: cur[at].cover)
+                        updated++
+                    } else {
+                        cur.add(Playlist(UUID.randomUUID().toString(), g.title, ids, g.cover, g.nmId))
+                        added++
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    // 记进快照：歌单里存的是 ssid，不记住的话打开歌单是空的。
+                    // 统一放主线程做 —— snapshots 是界面状态，IO 线程改不安全
+                    rememberSongs(all)
+                    savePl(cur)
+                    nmSyncing = false
+                    toast("同步完成：新增 $added 个，更新 $updated 个")
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    nmSyncing = false
+                    toast("同步失败：${e.message ?: "未知错误"}")
+                }
+            }
+        }
+    }
+
     fun addToPlaylist(id: String, ssids: List<String>) {
         keepForPlaylist(songsByIds(ssids))
         savePl(playlists.map { p ->
@@ -2028,6 +2097,48 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 toast("已删除下载")
             }
         }
+    }
+
+    /**
+     * 下载整个歌单。
+     *
+     * 音质按来源分开处理：歌单里可能混着本站歌曲和网易云歌曲，
+     * 网易云的档位（exhigh / lossless …）和本站的 quality 键不是一套，
+     * [downloadQuality] 会分别取，[download] 再按音质分组下载。
+     * 已经下过当前音质的自动跳过。
+     */
+    fun downloadPlaylist(pl: Playlist) {
+        val list = songsByIds(pl.songs)
+        if (list.isEmpty()) { toast("歌单里没有歌曲"); return }
+        val pending = list.filter { !isDownloadedWithQuality(it.ssid, downloadQuality(it)) }
+        if (pending.isEmpty()) {
+            toast("这个音质已全部下载过，换音质可在播放页切换后再下载")
+            return
+        }
+        download(list)
+    }
+
+    /**
+     * 整个歌单按指定音质批量下载。
+     *
+     * 音质不能一刀切：歌单里可能同时有本站歌曲和网易云歌曲，
+     * 两套音质键不同（lossless/high/normal 与 standard/exhigh/lossless…），
+     * 所以按来源分开下 —— 网易云那部分用选的档位，
+     * 本站那部分只在选的是本站键时才用，否则沿用当前音质设置。
+     */
+    fun downloadAllWithQuality(songs: List<Song>, q: String) {
+        if (songs.isEmpty()) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        val nm = songs.filter { it.source == SRC_NETEASE }
+        val local = songs.filter { it.source != SRC_NETEASE }
+        val localKey = if (q in listOf("lossless", "high", "normal", "low")) q else quality
+        val nmTodo = nm.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, q) }
+        val localTodo = local.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, localKey) }
+        val total = nmTodo.size + localTodo.size
+        if (total == 0) { toast("这个音质已下载过"); return }
+        downloading = downloading + nmTodo.map { it.ssid } + localTodo.map { it.ssid }
+        if (nmTodo.isNotEmpty()) runDownload(nmTodo, q)
+        if (localTodo.isNotEmpty()) runDownload(localTodo, localKey)
     }
 
     /** 按指定音质下载（重新下载时用） */

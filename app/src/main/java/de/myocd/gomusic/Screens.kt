@@ -1048,6 +1048,8 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                     exportPicked = emptySet()
                     exporting = true
                 }
+                Spacer(Modifier.width(8.dp))
+                GoButton("同步网易云", icon = Icons.Outlined.Sync) { vm.syncNmPlaylists() }
             }
         }
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
@@ -1213,6 +1215,41 @@ fun ConfirmDialog(text: String, onDismiss: () -> Unit, onOk: () -> Unit) {
     )
 }
 
+/**
+ * 音质选择：批量下载前先选档位。
+ *
+ * 选项由调用方按歌单内容拼好（网易云档位 / 本站音质键），
+ * 选中后回传音质键；取消或关闭回传 null。
+ */
+@Composable
+fun QualityPickDialog(
+    title: String,
+    options: List<Pair<String, String>>,
+    onPick: (String?) -> Unit,
+) {
+    val go = LocalGo.current
+    AlertDialog(
+        onDismissRequest = { onPick(null) },
+        containerColor = go.surface,
+        title = { Txt(title, 16, weight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                if (options.isEmpty()) {
+                    Txt("没有可选音质", 13, color = go.muted)
+                } else {
+                    options.forEach { (key, label) ->
+                        TextButton(onClick = { onPick(key) }) {
+                            Text(label, color = go.on)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = { onPick(null) }) { Text("取消", color = go.muted) } },
+    )
+}
+
 // =====================================================================
 // 二级页面
 // =====================================================================
@@ -1360,6 +1397,8 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
     val p = vm.playlists.firstOrNull { it.id == s.id }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+    // 下载全部：先选音质。歌单里可能混着本站与网易云歌曲，两套音质键不同
+    var pickingQuality by remember { mutableStateOf(false) }
     if (p == null) {
         LaunchedEffect(Unit) { if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex) }
         return
@@ -1377,9 +1416,21 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                     Txt(p.name, 20, weight = FontWeight.Bold)
                     Txt("${songs.size} 首", 12, color = go.muted)
                     VS(12)
-                    GoButton("播放全部", icon = Icons.Outlined.PlayArrow, primary = true, enabled = songs.isNotEmpty()) {
-                        vm.playSongs(songs, 0)
+                    Row(Modifier.fillMaxWidth()) {
+                        GoButton("播放全部", icon = Icons.Outlined.PlayArrow, primary = true, enabled = songs.isNotEmpty()) {
+                            vm.playSongs(songs, 0)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        GoButton(
+                            "下载全部", icon = Icons.Outlined.Download,
+                            enabled = songs.isNotEmpty() && !vm.nmSyncing,
+                        ) { pickingQuality = true }
                     }
+                    Txt(
+                        "下载会用当前选中的音质；网易云歌曲若没有该档位会自动降到可用的最高档，" +
+                            "下载记录里记的是实际拿到的档位",
+                        11, color = go.muted,
+                    )
 
                 }
             }
@@ -1407,6 +1458,23 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                     IconBtn(Icons.Outlined.Close, "从歌单移除") { vm.removeFromPl(p.id, song.ssid) }
                 }
             }
+        }
+    }
+    if (pickingQuality) {
+        // 选项按歌单内容拼：网易云歌曲用网易云档位，本站歌曲用本站音质键
+        val hasNm = songs.any { it.source == SRC_NETEASE }
+        val hasLocal = songs.any { it.source != SRC_NETEASE }
+        val opts = buildList {
+            if (hasNm) NM_LEVELS.take(5).forEach { add(it to nmLevelLabel(it)) }
+            if (hasLocal) {
+                add("lossless" to "无损")
+                add("high" to "高品质")
+                add("normal" to "标准")
+            }
+        }.distinctBy { it.first }
+        QualityPickDialog("下载全部（${songs.size} 首）", opts) { q ->
+            pickingQuality = false
+            if (q != null) vm.downloadAllWithQuality(songs, q)
         }
     }
     if (renaming) NameDialog("重命名歌单", p.name, { renaming = false }) { vm.renamePlaylist(p.id, it); renaming = false }

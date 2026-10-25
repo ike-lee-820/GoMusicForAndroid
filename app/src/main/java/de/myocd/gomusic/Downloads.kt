@@ -100,8 +100,16 @@ object LocalLib {
             // 离线也能补信息：用列表里已有的封面
             SongDetail(song.ssid, "", Api.abs(song.coverUrl), emptyMap())
         }
+        // 网易云：取地址并带回**实际拿到的档位**。
+        // 请求 lossless 而歌曲只有 320k 时会一路降档，仍按请求的档位记录的话，
+        // 下载记录里的音质就是假的（存着「无损」实际是 320k），
+        // 离线播放、文件命名、再次判断「是否已下载」都会跟着错。
+        var nmReal = quality
         val url = if (isNm) {
-            Netease.audioUrl(nmId!!, quality) ?: throw java.io.IOException("网易云没有可用音源")
+            val hit = Netease.audioWithLevel(nmId!!, quality)
+                ?: throw java.io.IOException("网易云没有可用音源")
+            nmReal = hit.second
+            hit.first
         } else if (d.audio.isEmpty()) {
             throw java.io.IOException("没有可用音频")
         } else {
@@ -110,8 +118,8 @@ object LocalLib {
         }
         // 同一首歌下多个音质时，文件名带上音质，避免后下的把先下的覆盖掉
         val hasOther = qualitiesOf(ctx, song.ssid).isNotEmpty()
-        val base = if (hasOther && quality.isNotBlank()) {
-            safe("${song.artist} - ${song.title} [$quality]")
+        val base = if (hasOther && nmReal.isNotBlank()) {
+            safe("${song.artist} - ${song.title} [$nmReal]")
         } else {
             safe("${song.artist} - ${song.title}")
         }
@@ -148,7 +156,7 @@ object LocalLib {
             title = song.title,
             artist = song.artist,
             album = song.album,
-            quality = quality,
+            quality = nmReal,
             audio = audioRef,
             cover = coverRef,
             lyric = lyricRef,
@@ -160,7 +168,7 @@ object LocalLib {
             appendLine("歌手：${song.artist}")
             appendLine("专辑：${song.album}")
             appendLine("ssid：${song.ssid}")
-            appendLine("音质：$quality")
+            appendLine("音质：$nmReal")
             appendLine("音频地址：$url")
             appendLine("封面：${song.coverUrl ?: ""}")
             appendLine("歌词：${if (lyricRef.isEmpty()) "无" else "$base.lrc"}")

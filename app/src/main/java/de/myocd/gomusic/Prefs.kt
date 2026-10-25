@@ -21,6 +21,12 @@ data class Playlist(
     val name: String,
     val songs: List<String> = emptyList(),
     val cover: String? = null,
+    /**
+     * 关联的网易云歌单 id（0 = 本地自建）。
+     * 有了它，同步时才能认出「这个本地歌单对应网易云的哪一张」，
+     * 否则每次同步都会新建一份重名的歌单。
+     */
+    val nmId: Long = 0L,
 )
 
 /** 对应网页端 localStorage：play_counts / user_playlists / play_mode / quality / theme_color */
@@ -123,6 +129,11 @@ class Prefs(ctx: Context) {
     var nmAccount: String
         get() = sp.getString("nm_account", "") ?: ""
         set(v) { sp.edit().putString("nm_account", v).apply() }
+
+    /** 网易云 uid：同步「我的歌单」要用（/user/playlist 需要 uid） */
+    var nmUid: Long
+        get() = sp.getLong("nm_uid", 0L)
+        set(v) { sp.edit().putLong("nm_uid", v).apply() }
 
     /** 播放历史（最近在前），同时记录本站与网易云，最多 [MAX_HISTORY] 条 */
     var history: List<String>

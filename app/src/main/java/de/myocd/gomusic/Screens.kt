@@ -1500,9 +1500,8 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
         // 进度条占弹性宽度，但保底 80dp，窄屏也不会被挤没
         SimpleSeekBar(
             vm.positionMs, vm.durationMs,
-            { vm.seekTo(it) },
             Modifier.width(160.dp),
-        )
+        ) { vm.seekTo(it) }
         HS(8)
         Txt(
             "${fmt(vm.positionMs)} / ${fmt(vm.durationMs)}", 11,
@@ -1566,8 +1565,11 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
 fun SimpleSeekBar(
     position: Long,
     duration: Long,
-    onSeek: (Long) -> Unit,
+    // modifier 必须放在 onSeek 之前：尾随 lambda 会匹配最后一个参数，
+    // 若 onSeek 在前、modifier 在后，SimpleSeekBar(a, b) { ... } 里的
+    // lambda 会被当成 modifier，编译报类型不符 + 缺少 onSeek
     modifier: Modifier = Modifier,
+    onSeek: (Long) -> Unit,
 ) {
     var drag by remember { mutableStateOf<Float?>(null) }
     var w by remember { mutableIntStateOf(1) }

@@ -903,9 +903,9 @@ object Netease {
         val r = get("/user/account")
         if (r.code() != 200) return 0L
         val p = r.obj("profile")
-        val v = (p?.get("userId") as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
-            ?: (r.obj("account")?.get("id") as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
-            ?: (r["userId"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+        val v = (p?.get("userId") as? JsonPrimitive)?.content?.toLongOrNull()
+            ?: (r.obj("account")?.get("id") as? JsonPrimitive)?.content?.toLongOrNull()
+            ?: (r["userId"] as? JsonPrimitive)?.content?.toLongOrNull()
         NmLog.note("取 uid -> $v")
         return v ?: 0L
     }
@@ -926,7 +926,7 @@ object Netease {
             val id = idOf(o)
             val name = o.str("name").orEmpty()
             if (id <= 0L || name.isBlank()) return@mapNotNull null
-            val creatorId = (o.obj("creator")?.get("userId") as? JsonPrimitive)?.contentOrNull?.toLongOrNull()
+            val creatorId = (o.obj("creator")?.get("userId") as? JsonPrimitive)?.content?.toLongOrNull()
             // creator 取不到时不筛（接口偶尔不给），至少不会全丢
             if (creatorId != null && creatorId != uid) return@mapNotNull null
             Group(

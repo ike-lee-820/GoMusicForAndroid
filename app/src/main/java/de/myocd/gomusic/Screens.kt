@@ -1569,8 +1569,12 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     .fillMaxHeight()
                     // 整体上移，让当前这一句落在屏幕中线上：
                     // 内容区带 statusBars / navigationBars 留白，容器中心会比
-                    // 屏幕中线偏下一点，这里把差值补回来（[ARC_LYRIC_LIFT_WIDE]）
-                    .offset(y = -ARC_LYRIC_LIFT_WIDE.dp),
+                    // 屏幕中线偏下一点。底部留白的二分之一就是上移量，
+                    // 所以这里取 [ARC_LYRIC_LIFT_WIDE] 的两倍。
+                    //
+                    // 不用 Modifier.offset：Box 作用域里还有 BoxScope.offset，
+                    // 两者会构成重载歧义，编译过不去。
+                    .padding(bottom = (ARC_LYRIC_LIFT_WIDE * 2).dp),
             ) {
                 ArcLyrics(
                     vm.lyric, vm.lyricIndex,

@@ -155,6 +155,8 @@ import coil.compose.AsyncImage
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.composed
 
 private const val PI_F = 3.14159265f
 
@@ -209,6 +211,18 @@ private const val ARC_MIN_SPAN_WIDE = 4
  * 这里放大一点让滑动跟手（1.0 = 手指移动多少、歌词就移动多少）。
  */
 private const val ARC_DRAG_SENSITIVITY = 2.5f
+
+/**
+ * 完全透明的点击拦截：吃掉点击但不做任何事、也不显示水波纹。
+ * 用来隔开上下两层，避免点上层时穿透到下层（比如点操作栏跳到歌词）。
+ */
+fun Modifier.noRippleClickable(onClick: () -> Unit): Modifier = composed {
+    clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null,
+        onClick = onClick,
+    )
+}
 
 fun shareText(ctx: Context, text: String) {
     val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
@@ -1422,8 +1436,14 @@ fun FullPlayer(vm: MainViewModel) {
                 if (wide && s != null) {
                     // 折叠区：向左展开、向右收起。
                     // 不用 AnimatedVisibility：Row 作用域里的那个重载已废弃，
-                    // 直接按状态显示 / 隐藏，行为一样且不受影响
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    // 直接按状态显示 / 隐藏，行为一样且不受影响。
+                    // 容器自己也吃掉点击：收起时这块是空的，点上去会穿透到歌词
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
+                        contentAlignment = Alignment.Center,
+                    ) {
                         if (ctrlOpen) WideTopControls(vm, s)
                     }
                     // 箭头：收起时朝下（v），展开时朝左（<）
@@ -1434,6 +1454,17 @@ fun FullPlayer(vm: MainViewModel) {
                         size = 34.dp,
                     ) { ctrlOpen = !ctrlOpen }
                 }
+            }
+            // 操作栏展开时，在「操作栏下方 / 歌词上方」插一层完全透明的拦截层。
+            // 点操作栏的按钮或按钮之间的空隙时，事件会被这一层吃掉，
+            // 不再穿透到下面的歌词（之前点操作栏会跳歌词就是这么来的）。
+            if (wide && s != null && ctrlOpen) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
+                )
             }
             if (s != null) {
                 if (wide) {
@@ -1528,7 +1559,11 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
     // 横向可滚动：按钮多的时候宁可滚动，也不要把每个按钮挤成窄条
     // （之前固定排布，宽度不够时按钮被压缩，就变得很难点中）
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            // 按钮之间的空隙也吃掉点击：不然点空隙会穿透到下面的歌词
+            .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 进度条占弹性宽度，但保底 80dp，窄屏也不会被挤没
@@ -2205,15 +2240,22 @@ private fun ArcContent(
             val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
             val fade = 1f - (t * t * (3f - 2f * t))
             val isCur = i == idx
-            // 命中框放在**不旋转**的这一层。
-            // 之前旋转挂在外层、clickable 挂在里面的文字上，命中框跟着一起转 ——
-            // 旋转 20~30° 后矩形的纵向跨度远大于行距，相邻行的命中框互相重叠，
-            // 点一行会跳到另一行，操作栏旁边的空白也会被判成点中歌词。
-            // 现在这一层只负责定位与点击，宽度贴合文字，行与行按行距排开。
+            // 两层结构：外面这层只管定位与点击，里面那层才跟着文字转。
+            //
+            // 上一版把旋转只给了文字、宽度限制也压在文字上 —— 于是「框」是正的、
+            // 文字是斜的，两者不平行，旋转后需要的横向空间还被 widthIn 卡住，
+            // 看着就是歌词被切掉一角、显示不完全。
+            //
+            // 现在：里面那层的边框与文字用同一个 rotationZ（始终平行），
+            // 并用 wrapContentWidth(unbounded = true) 让文字按自身需要的宽度测量，
+            // 旋转后完整显示、不被压窄也不裁切；外面这层不旋转，
+            // 高度固定为一个行距，所以行与行永远按行距排开、命中框不会重叠。
             Box(
                 Modifier
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
-                    .widthIn(max = lineW)
+                    // 命中框高度固定为一个行距：无论这句折了几行，
+                    // 行与行都按行距排开，不会互相重叠跳错行
+                    .height(rowSpacingDp.dp)
                     .clickable(enabled = lines[i].timeMs >= 0 && fade > 0.12f) {
                         // 点了就立刻回到跟播：清掉手动偏移，
                         // 位置交给播放进度重新算，避免停在手动位置上跳错行
@@ -2223,32 +2265,40 @@ private fun ArcContent(
                         onSeek(lines[i].timeMs)
                     }
                     .graphicsLayer { alpha = fade },
+                // 左对齐：各行左端落在弧上
                 contentAlignment = Alignment.CenterStart,
             ) {
-                Text(
-                    zhText(lines[i].text),
+                Box(
                     Modifier
-                        // 只旋转文字本体：视觉上贴合切线，但不影响上面的命中框
+                        // 不设边界、不裁切：文字按自身宽度测量后整体旋转，
+                        // 旋转只是绘制变换，超出的部分照常画出来
+                        .wrapContentWidth(unbounded = true)
                         .graphicsLayer {
+                            // 与下面文字同一个角度，框和文字始终平行
                             rotationZ = th * 180f / PI_F
-                            // 绕左端转，左边缘才落在弧上，各行左端对齐
+                            // 绕左端转，各行左端才落在弧上、保持左对齐
                             transformOrigin = TransformOrigin(0f, 0.5f)
-                        }
-                        .widthIn(max = lineW)
-                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                    // 当前句用主题色
-                    color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
-                    fontSize = if (isCur) curSp.sp else otherSp.sp,
-                    lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
-                    // 稍粗：当前句用 ExtraBold，其余行也比常规粗一档
-                    fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
-                    // 左侧对齐
-                    textAlign = TextAlign.Start,
-                    // 最多两行：长句折行后行高会超过行距，
-                    // 相邻两行的命中框就会上下重叠，点上一行可能跳到下一行
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                        },
+                ) {
+                    Text(
+                        zhText(lines[i].text),
+                        Modifier
+                            .widthIn(max = lineW)
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                        // 当前句用主题色
+                        color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
+                        fontSize = if (isCur) curSp.sp else otherSp.sp,
+                        lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
+                        // 稍粗：当前句用 ExtraBold，其余行也比常规粗一档
+                        fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
+                        // 左侧对齐
+                        textAlign = TextAlign.Start,
+                        // 折行上限 3 行：过长的歌词换行显示，不再截断成省略号。
+                        // 命中框高度已固定为一个行距，多折几行也不会让行与行重叠
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

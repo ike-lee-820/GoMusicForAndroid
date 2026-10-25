@@ -624,6 +624,13 @@ object Netease {
         NmLog.note("取 $kind 的歌曲 id=$id offset=$offset")
         val root = if (kind == "album") {
             get("/album", "id" to id.toString())
+        } else if (kind == "playlist") {
+            // 榜单 / 歌单：tracks 里就是歌曲
+            val r = get("/playlist/detail", "id" to id.toString())
+            val arr = (r.obj("playlist")?.get("tracks") as? JsonElement)?.jsonArray
+                ?: resultArray(r, "tracks")
+            if (arr.isEmpty()) NmLog.note("歌单 $id 无歌曲 code=${r.code()}")
+            return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
         } else {
             get(
                 "/artist/songs", "id" to id.toString(),
@@ -662,6 +669,27 @@ object Netease {
                 source = SRC_NETEASE,
                 nmId = aid,
                 nmKind = "album",
+            )
+        }.distinctBy { it.nmId }
+    }
+
+    /** 榜单 /toplist：id + 名称 + 封面，点进去是该榜单的歌曲 */
+    fun topList(): List<Group> {
+        val root = get("/toplist")
+        val arr = resultArray(root, "list")
+        NmLog.note("榜单返回 ${arr.size} 个")
+        return arr.mapNotNull { o ->
+            val id = idOf(o)
+            val name = o.str("name").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            Group(
+                title = name,
+                subtitle = o.str("updateFrequency") ?: "",
+                cover = pic(o.str("coverImgUrl", "picUrl", "cover")),
+                songs = emptyList(),
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "playlist",
             )
         }.distinctBy { it.nmId }
     }

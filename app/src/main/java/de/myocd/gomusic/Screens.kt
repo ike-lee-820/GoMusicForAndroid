@@ -1687,7 +1687,8 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 Column(
                     Modifier.fillMaxWidth().height(84.dp).clickable { vm.showLyrics = true },
                     horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    // Column 用 verticalArrangement，没有 verticalAlignment 这个参数
+                    verticalArrangement = Arrangement.Center,
                 ) {
                     if (lines.isEmpty()) {
                         Txt("暂无歌词", 14, color = go.muted)

@@ -1195,7 +1195,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val dH = async(Dispatchers.IO) { Netease.hotSearch() }
                 val dA = async(Dispatchers.IO) { Netease.topArtists(30, 0) }
                 val dAl = async(Dispatchers.IO) { Netease.newestAlbums(30) }
-                val dT = async(Dispatchers.IO) { runCatching { Netease.topList() }.getOrDefault(emptyList()) }
+                // 显式写空列表类型：runCatching + getOrDefault(emptyList()) 推不出元素类型
+                val dT = async(Dispatchers.IO) {
+                    runCatching { Netease.topList() }.getOrDefault(emptyList<Group>())
+                }
                 val r = dR.await()
                 val n = dN.await()
                 val h = dH.await()

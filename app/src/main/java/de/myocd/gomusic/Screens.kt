@@ -183,11 +183,20 @@ private const val ARC_RADIUS_BOOST = 1.3f
  * 横屏专用：行距比竖屏小，一屏能看到的歌词行数更多。
  * 控制区移到顶部后歌词区变宽了，行距缩小也不会显得挤。
  */
-private const val ARC_ROW_SPACING_DP_WIDE = 52f
+private const val ARC_ROW_SPACING_DP_WIDE = 78f
 
 /** 横屏歌词字号：当前句 / 其他行，比竖屏大一号 */
 private const val ARC_CUR_SP_WIDE = 23f
 private const val ARC_OTHER_SP_WIDE = 18f
+
+/**
+ * 横屏专用圆心倍数：比竖屏大得多。
+ * 圆心越远弧越平缓，歌词在横向上铺得更开，上下不会挤成一团。
+ */
+private const val ARC_RADIUS_BOOST_WIDE = 3.2f
+
+/** 横屏至少显示的行数（当前句上下各这么多），保证一屏能看到足够歌词 */
+private const val ARC_MIN_SPAN_WIDE = 4
 
 /**
  * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
@@ -1465,6 +1474,8 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     rowSpacingDp = ARC_ROW_SPACING_DP_WIDE,
                     curSp = ARC_CUR_SP_WIDE,
                     otherSp = ARC_OTHER_SP_WIDE,
+                    radiusBoost = ARC_RADIUS_BOOST_WIDE,
+                    minSpan = ARC_MIN_SPAN_WIDE,
                 ) { vm.seekTo(it) }
             }
         }
@@ -2003,6 +2014,8 @@ fun ArcLyrics(
     rowSpacingDp: Float = ARC_ROW_SPACING_DP,
     curSp: Float = 19f,
     otherSp: Float = 15f,
+    radiusBoost: Float = ARC_RADIUS_BOOST,
+    minSpan: Int = 1,
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
@@ -2024,7 +2037,8 @@ fun ArcLyrics(
     ArcContent(
         lines = lines, idx = idx, modifier = modifier,
         curColor = curColor, rowSpacingDp = rowSpacingDp,
-        curSp = curSp, otherSp = otherSp, onSeek = onSeek,
+        curSp = curSp, otherSp = otherSp,
+        radiusBoost = radiusBoost, minSpan = minSpan, onSeek = onSeek,
     )
 }
 
@@ -2037,6 +2051,8 @@ private fun ArcContent(
     rowSpacingDp: Float = ARC_ROW_SPACING_DP,
     curSp: Float = 19f,
     otherSp: Float = 15f,
+    radiusBoost: Float = ARC_RADIUS_BOOST,
+    minSpan: Int = 1,
     onSeek: (Long) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -2087,11 +2103,13 @@ private fun ArcContent(
     ) {
         // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 15 行）
         val rowSpan = rowSpacingDp
-        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(3, 15)
-        val span = (rows / 2).coerceAtLeast(1)
+        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(minSpan * 2 + 1, 25)
+        // 上下各显示 span 行；保底 minSpan，行距加大后也不会只剩一两行
+        val span = (rows / 2).coerceAtLeast(minSpan)
         // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
         val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
-        val rDp = (span * rowSpan / tiltRad * ARC_RADIUS_BOOST).coerceAtLeast(maxHeight.value * 0.5f)
+        // 圆心再按倍数拉远：越远弧越平缓，歌词横向铺得更开
+        val rDp = (span * rowSpan / tiltRad * radiusBoost).coerceAtLeast(maxHeight.value * 0.5f)
         // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
         val stepRad = rowSpan / rDp
         // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，

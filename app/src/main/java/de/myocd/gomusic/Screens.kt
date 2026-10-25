@@ -2267,7 +2267,9 @@ private fun ArcContent(
         // 在高密度屏上实际半径只有设计的 1/density，弧会比预期弯得多
         val rPx = with(density) { rDp.dp.toPx() }
         val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        val lineW = maxWidth * 1.0f
+        // 行宽留一点余量：文字旋转后包围盒会变宽，
+        // 顶满整行的话两端容易超出歌词区被屏幕切掉
+        val lineW = maxWidth * 0.9f
         // 多渲染一行作缓冲：让最外侧的行在透明度已经衰减到 0 之后
         // 才被移出渲染范围，进出就不会「啪」地出现或消失
         val edge = span + 1
@@ -2276,10 +2278,12 @@ private fun ArcContent(
         for (i in from..to) {
             val d = i - cur
             val th = d * stepRad
-            // 左对齐：每行的左端都放在 x = 0 这一条竖线上，只保留纵向的弧形位移。
-            // 之前按圆弧给每行算横向偏移（越靠外越往左），左端就参差不齐，
-            // 看着「没有左对齐」；现在横向偏移一律为 0，弯曲感由旋转本身体现。
-            val x = 0f
+            // 沿弧排列：横向与纵向位移都由半径 r 决定（弧长 s = r·θ 对应的弦向偏移），
+            // 每行真正落在半径 r 的圆弧上。
+            //
+            // 上一版为了「左端对齐」把横向位移改成 0，结果行只沿竖直方向排开、
+            // 文字却在转 —— 排列是直线、字是斜的，两者对不上，所以看着很假。
+            val x = -rPx * (1 - cos(th)) + shift
             val y = rPx * sin(th)
             // 边缘平滑淡出：用 smoothstep，最外侧处的值与斜率都是 0，
             // 行在边缘进出时不会有突跳（原来是线性再加 0.25 下限，
@@ -2317,24 +2321,23 @@ private fun ArcContent(
             ) {
                 Box(
                     Modifier
-                        // 每行的框都是同一个宽度：左端落在同一条竖线上（左对齐）
-                        .width(lineW)
-                        // 关键：高度不设上限。外层为了不让命中框重叠固定了一个行距高，
-                        // 这个高度会当成约束传给文字 —— 折行到 3 行时文字自己就被
-                        // 「量」成了一行多高，看着就是歌词被切掉。unbounded 让文字
-                        // 按自身需要的高度测量，超出的部分照常画出来。
+                        // 宽高都不设上限：外层为了不让命中框重叠固定了一个行距高，
+                        // 这个高度会作为约束传给文字 —— 折行时文字自己被「量」成
+                        // 一行多高，超出的部分就不画了，这就是歌词被切割的原因。
+                        // unbounded 让宽高都按文字自身需要的尺寸测量，超出的照常画
+                        .wrapContentWidth(unbounded = true)
                         .wrapContentHeight(unbounded = true)
                         .graphicsLayer {
-                            // 与下面文字同一个角度，框和文字始终平行
+                            // 框与文字用同一个角度：外框跟着一起转，两者的边始终平行
                             rotationZ = th * 180f / PI_F
-                            // 绕左端转：各行左端都钉在同一条竖线上
+                            // 绕左端转，左端仍落在圆弧上
                             transformOrigin = TransformOrigin(0f, 0.5f)
                         },
                 ) {
                     Text(
                         zhText(lines[i].text),
                         Modifier
-                            .fillMaxWidth()
+                            .widthIn(max = lineW)
                             .padding(horizontal = 6.dp, vertical = 3.dp),
                         // 当前句用主题色
                         color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
@@ -2344,10 +2347,10 @@ private fun ArcContent(
                         fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
                         // 左侧对齐
                         textAlign = TextAlign.Start,
-                        // 折行上限 3 行：过长的歌词换行显示，不再截断成省略号。
-                        // 命中框高度已固定为一个行距，多折几行也不会让行与行重叠
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
+                        // 完整换行显示，不截断、不加省略号（省略号看着就像被切了）。
+                        // 命中框高度固定为一个行距，折行再多也不会让行与行重叠
+                        maxLines = Int.MAX_VALUE,
+                        overflow = TextOverflow.Clip,
                     )
                 }
             }

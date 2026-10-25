@@ -154,6 +154,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
+import androidx.compose.foundation.horizontalScroll
 
 private const val PI_F = 3.14159265f
 
@@ -1388,7 +1389,7 @@ fun FullPlayer(vm: MainViewModel) {
                     // 折叠区：向左展开、向右收起。
                     // 不用 AnimatedVisibility：Row 作用域里的那个重载已废弃，
                     // 直接按状态显示 / 隐藏，行为一样且不受影响
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         if (ctrlOpen) WideTopControls(vm, s)
                     }
                     // 箭头：收起时朝下（v），展开时朝左（<）
@@ -1490,35 +1491,41 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
 @Composable
 fun WideTopControls(vm: MainViewModel, s: Song) {
     val ctx = LocalContext.current
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    // 横向可滚动：按钮多的时候宁可滚动，也不要把每个按钮挤成窄条
+    // （之前固定排布，宽度不够时按钮被压缩，就变得很难点中）
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         // 进度条占弹性宽度，但保底 80dp，窄屏也不会被挤没
         SimpleSeekBar(
             vm.positionMs, vm.durationMs,
             { vm.seekTo(it) },
-            Modifier.weight(1f).widthIn(min = 80.dp),
+            Modifier.width(160.dp),
         )
-        HS(6)
+        HS(8)
         Txt(
             "${fmt(vm.positionMs)} / ${fmt(vm.durationMs)}", 11,
             color = Color.White.copy(alpha = 0.65f),
         )
-        HS(8)
+        HS(10)
         // 上一首 / 播放 / 下一首
-        IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 30.dp, tint = Color.White) { vm.prev() }
-        HS(2)
+        IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.prev() }
+        HS(6)
         IconBtn(
             if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
             if (vm.isPlaying) "暂停" else "播放",
-            size = 38.dp, tint = Color.Black, bg = Color.White,
+            size = 34.dp, minHit = 34.dp, tint = Color.Black, bg = Color.White,
         ) { vm.togglePlay() }
-        HS(2)
-        IconBtn(Icons.Outlined.SkipNext, "下一首", size = 30.dp, tint = Color.White) { vm.next() }
-        HS(8)
+        HS(6)
+        IconBtn(Icons.Outlined.SkipNext, "下一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.next() }
+        HS(10)
         // 播放列表 / 播放方式
-        IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 26.dp, tint = Color.White) {
-            vm.showQueue = true
-        }
-        HS(2)
+        IconBtn(
+            Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表",
+            size = 24.dp, minHit = 34.dp, tint = Color.White,
+        ) { vm.showQueue = true }
+        HS(6)
         IconBtn(
             when (vm.playMode) {
                 0 -> Icons.Outlined.Repeat
@@ -1526,204 +1533,26 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 else -> Icons.Outlined.RepeatOne
             },
             listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
-            size = 26.dp, tint = Color.White,
+            size = 24.dp, minHit = 34.dp, tint = Color.White,
         ) { vm.cycleMode() }
-        HS(8)
+        HS(10)
         // 分享 / 下载 / 加入歌单 / 音质 / 倍速
-        IconBtn(Icons.Outlined.Share, "分享", size = 26.dp, tint = Color.White) {
+        IconBtn(Icons.Outlined.Share, "分享", size = 24.dp, minHit = 34.dp, tint = Color.White) {
             shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
         }
-        HS(2)
-        IconBtn(Icons.Outlined.Download, "下载", size = 26.dp, tint = Color.White) { vm.download(listOf(s)) }
-        HS(2)
-        IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", size = 26.dp, tint = Color.White) {
-            vm.pick(listOf(s.ssid), s.title, s.coverUrl)
+        HS(6)
+        IconBtn(Icons.Outlined.Download, "下载", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+            vm.download(listOf(s))
         }
-        HS(2)
+        HS(6)
+        IconBtn(
+            Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
+            size = 24.dp, minHit = 34.dp, tint = Color.White,
+        ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
+        HS(6)
         QualityMenu(vm, Color.White)
-        HS(2)
+        HS(6)
         SpeedMenu(vm, Color.White)
-    }
-}
-
-/** 简洁版单色进度条：细轨道 + 白色进度，可拖动 */
-@Composable
-/**
- * 简洁版单色进度条：细轨道 + 白色进度，可点可拖。
- *
- * 触摸区比轨道本身高不少（32dp），并且加了圆点滑块，
- * 手指容易按准；不拖动时圆点淡出，保持原本的简洁感。
- */
-fun SimpleSeekBar(
-    position: Long,
-    duration: Long,
-    onSeek: (Long) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var drag by remember { mutableStateOf<Float?>(null) }
-    var w by remember { mutableIntStateOf(1) }
-    val frac = drag ?: if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-    Box(
-        modifier.fillMaxWidth().height(32.dp)
-            .onSizeChanged { w = it.width.coerceAtLeast(1) }
-            .pointerInput(duration) {
-                // 单击也能跳：不用非得按住拖
-                detectTapGestures { o ->
-                    if (duration > 0) onSeek(((o.x / w).coerceIn(0f, 1f) * duration).toLong())
-                }
-            }
-            .pointerInput(duration) {
-                detectDragGestures(
-                    onDragStart = { o -> drag = (o.x / w).coerceIn(0f, 1f) },
-                    onDrag = { change, _ -> drag = (change.position.x / w).coerceIn(0f, 1f) },
-                    onDragEnd = {
-                        drag?.let { f -> if (duration > 0) onSeek((f * duration).toLong()) }
-                        drag = null
-                    },
-                    onDragCancel = { drag = null },
-                )
-            },
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.22f), CircleShape))
-        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(3.dp).background(Color.White, CircleShape))
-        // 拖动时显示圆点，方便对准
-        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
-            Box(
-                Modifier.size(if (drag != null) 12.dp else 8.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = if (drag != null) 1f else 0.75f)),
-            )
-        }
-    }
-}
-
-@Composable
-fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
-    val go = LocalGo.current
-    val ctx = LocalContext.current
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val coverSize = minOf(maxWidth * 0.86f, 360.dp)
-        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Cover(
-                s.coverUrl,
-                Modifier.size(coverSize).clickable {
-                    vm.showPlayer = false
-                    vm.openNmSongAlbum(s)
-                },
-                20.dp,
-            )
-            VS(20)
-            MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
-            VS(4)
-            Txt(
-                s.artist, 14, color = go.muted, maxLines = 1,
-                modifier = Modifier.clickable {
-                    vm.showPlayer = false
-                    vm.openNmSongArtist(s)
-                }.padding(horizontal = 12.dp, vertical = 6.dp),
-            )
-            VS(2)
-            // 专辑名
-            Txt(s.album.ifBlank { "未知专辑" }, 13, color = go.muted, maxLines = 1)
-
-            if (snippet) {
-                VS(8)
-                val idx = vm.lyricIndex
-                val lines = vm.lyric
-                Column(
-                    Modifier.fillMaxWidth().height(84.dp).clickable { vm.showLyrics = true },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    if (lines.isEmpty()) {
-                        if (vm.lyricLoading) Txt("正在加载歌词…", 14, color = go.muted)
-                        else Txt("暂无歌词", 14, color = go.muted)
-                    } else {
-                        val i = idx.coerceAtLeast(0)
-                        listOf(i - 1, i, i + 1).forEach { k ->
-                            val t = lines.getOrNull(k)?.text ?: ""
-                            Txt(
-                                t, if (k == i) 17 else 14,
-                                weight = if (k == i) FontWeight.SemiBold else FontWeight.Normal,
-                                color = if (k == i && idx >= 0) go.primary else go.muted,
-                                maxLines = 1, align = TextAlign.Center,
-                            )
-                        }
-                    }
-                }
-            }
-
-            VS(8)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                IconBtn(Icons.Outlined.Share, "分享") { shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}") }
-                IconBtn(Icons.Outlined.Download, "下载") { vm.download(listOf(s)) }
-                IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
-                QualityMenu(vm)
-                SpeedMenu(vm)
-            }
-            VS(8)
-            SeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
-            VS(8)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconBtn(
-                    when (vm.playMode) { 0 -> Icons.Outlined.Repeat; 1 -> Icons.Outlined.Shuffle; else -> Icons.Outlined.RepeatOne },
-                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode], size = 44.dp,
-                ) { vm.cycleMode() }
-                IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 44.dp) { vm.prev() }
-                IconBtn(
-                    if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                    if (vm.isPlaying) "暂停" else "播放", size = 56.dp, tint = OnPrimary, bg = go.primary,
-                ) { vm.togglePlay() }
-                IconBtn(Icons.Outlined.SkipNext, "下一首", size = 44.dp) { vm.next() }
-                IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表", size = 44.dp) { vm.showQueue = true }
-            }
-            VS(16)
-        }
-    }
-}
-
-@Composable
-fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
-    val go = LocalGo.current
-    var open by remember { mutableStateOf(false) }
-    val opts = vm.qualities.ifEmpty { listOf(vm.quality) }
-    // 网易云歌曲用网易云自己的档位名，标签与选中态都要按档位判断
-    val isNm = opts.firstOrNull() in NM_LEVELS
-    val curKey = if (isNm) vm.nmLevel else vm.quality
-    Box {
-        IconBtn(Icons.Outlined.HighQuality, "音质", tint = tint) { open = true }
-        DropdownMenu(open, { open = false }, Modifier.background(go.surface)) {
-            opts.forEach { k ->
-                val label = if (k in NM_LEVELS) nmLevelLabel(k) else qualityLabel(k)
-                DropdownMenuItem(
-                    text = { Text(label, color = if (k == curKey) go.primary else go.on) },
-                    onClick = { vm.updateQuality(k); open = false },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun SpeedMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
-    val go = LocalGo.current
-    var open by remember { mutableStateOf(false) }
-    val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
-    Box {
-        IconBtn(Icons.Outlined.Speed, "倍速", tint = tint) { open = true }
-        DropdownMenu(open, { open = false }, Modifier.background(go.surface)) {
-            speeds.forEach { v ->
-                DropdownMenuItem(
-                    text = { Text("${v}×", color = if (v == vm.speed) go.primary else go.on) },
-                    onClick = { vm.updateSpeed(v); open = false },
-                )
-            }
-        }
     }
 }
 
@@ -2146,7 +1975,8 @@ private fun ArcContent(
                         alpha = fade
                         transformOrigin = TransformOrigin(0.5f, 0.5f)
                     },
-                contentAlignment = Alignment.Center,
+                // 左对齐：行框固定宽度保证左边缘对齐，文字从左开始排
+                contentAlignment = Alignment.CenterStart,
             ) {
                 Text(
                     zhText(lines[i].text),
@@ -2161,7 +1991,9 @@ private fun ArcContent(
                             manualAt = 0L
                             onSeek(lines[i].timeMs)
                         }
-                        .fillMaxWidth()
+                        // 宽度贴合文字本身：不再 fillMaxWidth，
+                        // 否则文字右侧的空白也会响应点击（点空白处也跳转）
+                        .widthIn(max = lineW)
                         .graphicsLayer {
                             // 圆心角即切线角：不加截断，文字方向才始终贴合圆。
                             // 放在最内层，只影响绘制，不影响上面的命中框尺寸

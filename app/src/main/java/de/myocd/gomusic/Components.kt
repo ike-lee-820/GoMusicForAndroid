@@ -215,7 +215,8 @@ fun MarqueeText(
         )
     } else modifier
     Text(
-        text,
+        // 歌名也要按简繁设置转换，之前直接用原文所以不生效
+        zhText(text),
         m,
         color = color,
         fontSize = size.sp,
@@ -293,9 +294,11 @@ fun IconBtn(
     size: Dp = 36.dp,
     tint: Color = LocalGo.current.on,
     bg: Color = Color.Transparent,
+    /** 触摸区最小边长。按钮密集时可以调小，避免相邻按钮的触摸区互相挤压 */
+    minHit: Dp = 40.dp,
     onClick: () -> Unit,
 ) {
-    val hit = if (size < 40.dp) 40.dp else size
+    val hit = if (size < minHit) minHit else size
     Box(
         modifier.size(hit).clickScale(true, onClick),
         contentAlignment = Alignment.Center,

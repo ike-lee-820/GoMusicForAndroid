@@ -175,10 +175,13 @@ private const val ARC_ROW_SPACING_DP = 63f
 private const val ARC_MAX_TILT_DEG = 20f
 
 /**
- * 圆心再拉远的倍数：1.0 = 按倾角刚好算出的半径，越大圆心越远、弧越平缓。
- * 想让歌词摆得更开、更接近平铺，就调大它。
+ * 圆心远近的倍数：1.0 = 按倾角刚好算出的半径（最外侧行倾角 = [ARC_MAX_TILT_DEG]）。
+ *
+ * 注意方向：**越大圆心越远，弧越平**。之前这里是 1.3，弧被压得接近直线，
+ * 看着就像圆心跑到了很远的地方。取 0.8 把圆心拉回来，
+ * 最外侧行倾角约 25°，弧看得出来。
  */
-private const val ARC_RADIUS_BOOST = 1.3f
+private const val ARC_RADIUS_BOOST = 0.8f
 
 /**
  * 横屏专用：行距比竖屏小，一屏能看到的歌词行数更多。
@@ -191,10 +194,12 @@ private const val ARC_CUR_SP_WIDE = 23f
 private const val ARC_OTHER_SP_WIDE = 18f
 
 /**
- * 横屏专用圆心倍数：比竖屏大得多。
- * 圆心越远弧越平缓，歌词在横向上铺得更开，上下不会挤成一团。
+ * 横屏专用圆心倍数。
+ *
+ * 之前是 3.2 —— 圆心越远弧越平，3.2 倍把弧压成了几乎一条直线，
+ * 这就是「圆心过远」的由来。取 0.7 把圆心拉回来，弧的弯曲看得出来。
  */
-private const val ARC_RADIUS_BOOST_WIDE = 3.2f
+private const val ARC_RADIUS_BOOST_WIDE = 0.7f
 
 /** 横屏至少显示的行数（当前句上下各这么多），保证一屏能看到足够歌词 */
 private const val ARC_MIN_SPAN_WIDE = 4
@@ -475,6 +480,7 @@ fun HomeTab(vm: MainViewModel) {
     val hots = vm.homeHotWords
     val artists = vm.homeTopArtists
     val albums = vm.homeNewAlbums
+    val tops = vm.homeTops
     val his = vm.historySongs
     // 离线：没有推荐位，直接列出已下载
     if (vm.offline) {
@@ -518,7 +524,7 @@ fun HomeTab(vm: MainViewModel) {
                     Txt("接入网易云可显示每日推荐等栏目", 14, weight = FontWeight.SemiBold)
                     VS(4)
                     Txt(
-                        "在「设置」里开启「接入网易云曲库」并登录后，这里会显示每日推荐、新歌速递、热门歌手、最新专辑与热搜",
+                        "在「设置」里开启「接入网易云曲库」并登录后，这里会显示每日推荐、新歌速递、榜单、热门歌手、最新专辑与热搜",
                         12, color = go.muted,
                     )
                     VS(10)
@@ -550,6 +556,14 @@ fun HomeTab(vm: MainViewModel) {
         }
         if (news.isNotEmpty()) {
             item { NewSongSection(vm, news) }
+        }
+        if (tops.isNotEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth()) {
+                    HomeHeader("榜单")
+                    HomeTopRow(vm, tops.take(12))
+                }
+            }
         }
         if (artists.isNotEmpty()) {
             item {
@@ -602,6 +616,26 @@ private fun HomeAlbumRow(vm: MainViewModel, list: List<Group>) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(list, key = { "nm${it.nmId}" }) { g ->
+            Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
+                VS(6)
+                Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
+                Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
+            }
+        }
+    }
+    VS(14)
+}
+
+/** 横向榜单卡片行 */
+@Composable
+private fun HomeTopRow(vm: MainViewModel, list: List<Group>) {
+    val go = LocalGo.current
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(list, key = { "top${it.nmId}" }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
                 Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
                 VS(6)
@@ -1609,7 +1643,14 @@ fun SimpleSeekBar(
     }
 }
 
-/** 竖屏播放器的主体：封面 → 歌手 → 歌名 → 专辑名 → 进度条 → 控制按钮 */
+/**
+ * 竖屏播放器的主体：封面 → 歌名 → 歌手 → 歌词预览 → 功能键 → 进度条 → 控制按钮。
+ *
+ * 这一版按原始排版恢复：之前补回代码时凭记忆重写，把顺序改成了
+ * 歌手→歌名→专辑名、播放按钮改成了白底、歌词预览区也丢了，看着和原来不一样。
+ * 保留的有意改动：进度条用 SimpleSeekBar（圆点滑块 + 单击跳转），
+ * 封面与歌手点击走网易云的 openNmSong* （比原来的 stack.add 更准）。
+ */
 @Composable
 fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
     val go = LocalGo.current
@@ -1623,89 +1664,90 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     vm.showPlayer = false
                     vm.openNmSongAlbum(s)
                 },
-                16.dp,
+                20.dp,
             )
-            VS(16)
-            Column(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-            ) {
-                Txt(
-                    s.artist, 14, color = Color.White.copy(alpha = 0.72f), maxLines = 1,
-                    modifier = Modifier.clickable {
-                        vm.showPlayer = false
-                        vm.openNmSongArtist(s)
-                    }.padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-                VS(4)
-                // 歌名用 MarqueeText，过长时横向滚动
-                MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
-                VS(4)
-                Txt(s.album.ifBlank { "未知专辑" }, 13, color = go.muted, maxLines = 1)
-            }
-            VS(14)
-            SimpleSeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
-            Row(Modifier.fillMaxWidth()) {
-                Txt(fmt(vm.positionMs), 12, color = Color.White.copy(alpha = 0.6f))
-                Spacer(Modifier.weight(1f))
-                Txt(fmt(vm.durationMs), 12, color = Color.White.copy(alpha = 0.6f))
-            }
-            VS(10)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 38.dp, tint = Color.White) { vm.prev() }
-                HS(8)
-                IconBtn(
-                    if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                    if (vm.isPlaying) "暂停" else "播放",
-                    size = 52.dp, tint = Color.Black, bg = Color.White,
-                ) { vm.togglePlay() }
-                HS(8)
-                IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { vm.next() }
-            }
-            VS(10)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 32.dp, tint = Color.White) {
-                    vm.showQueue = true
+            VS(20)
+            // 歌名
+            MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
+            VS(4)
+            // 歌手：点进去看歌手
+            Txt(
+                s.artist, 14, color = go.muted, maxLines = 1,
+                modifier = Modifier.clickable {
+                    vm.showPlayer = false
+                    vm.openNmSongArtist(s)
+                }.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+
+            // 歌词预览：三行，点一下打开整份歌词
+            if (snippet) {
+                VS(8)
+                val idx = vm.lyricIndex
+                val lines = vm.lyric
+                Column(
+                    Modifier.fillMaxWidth().height(84.dp).clickable { vm.showLyrics = true },
+                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    if (lines.isEmpty()) {
+                        Txt("暂无歌词", 14, color = go.muted)
+                    } else {
+                        val i = idx.coerceAtLeast(0)
+                        listOf(i - 1, i, i + 1).forEach { k ->
+                            val t = lines.getOrNull(k)?.text ?: ""
+                            Txt(
+                                zhText(t), if (k == i) 17 else 14,
+                                weight = if (k == i) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (k == i && idx >= 0) go.primary else go.muted,
+                                maxLines = 1, align = TextAlign.Center,
+                            )
+                        }
+                    }
                 }
-                HS(8)
+            }
+
+            VS(8)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                IconBtn(Icons.Outlined.Share, "分享") {
+                    shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
+                }
+                IconBtn(Icons.Outlined.Download, "下载") { vm.download(listOf(s)) }
+                IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") {
+                    vm.pick(listOf(s.ssid), s.title, s.coverUrl)
+                }
+                QualityMenu(vm)
+                SpeedMenu(vm)
+            }
+            VS(8)
+            SimpleSeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Txt(fmt(vm.positionMs), 12, color = go.muted, tnum = true)
+                Txt(fmt(vm.durationMs), 12, color = go.muted, tnum = true)
+            }
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
                 IconBtn(
                     when (vm.playMode) {
                         0 -> Icons.Outlined.Repeat
                         1 -> Icons.Outlined.Shuffle
                         else -> Icons.Outlined.RepeatOne
                     },
-                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
-                    size = 32.dp, tint = Color.White,
+                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode], size = 44.dp,
                 ) { vm.cycleMode() }
+                IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 44.dp) { vm.prev() }
+                IconBtn(
+                    if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                    if (vm.isPlaying) "暂停" else "播放",
+                    size = 56.dp, tint = OnPrimary, bg = go.primary,
+                ) { vm.togglePlay() }
+                IconBtn(Icons.Outlined.SkipNext, "下一首", size = 44.dp) { vm.next() }
+                IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表", size = 44.dp) { vm.showQueue = true }
             }
-            VS(10)
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconBtn(Icons.Outlined.Share, "分享", size = 30.dp, tint = Color.White) {
-                    shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
-                }
-                HS(4)
-                IconBtn(Icons.Outlined.Download, "下载", size = 30.dp, tint = Color.White) { vm.download(listOf(s)) }
-                HS(4)
-                IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", size = 30.dp, tint = Color.White) {
-                    vm.pick(listOf(s.ssid), s.title, s.coverUrl)
-                }
-                HS(4)
-                QualityMenu(vm, Color.White)
-                HS(4)
-                SpeedMenu(vm, Color.White)
-            }
+            VS(16)
         }
     }
 }
@@ -2162,44 +2204,36 @@ private fun ArcContent(
             val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
             val fade = 1f - (t * t * (3f - 2f * t))
             val isCur = i == idx
-            // 点击区域收紧到文字实际占用的宽度：两侧留白不响应点击
+            // 命中框放在**不旋转**的这一层。
+            // 之前旋转挂在外层、clickable 挂在里面的文字上，命中框跟着一起转 ——
+            // 旋转 20~30° 后矩形的纵向跨度远大于行距，相邻行的命中框互相重叠，
+            // 点一行会跳到另一行，操作栏旁边的空白也会被判成点中歌词。
+            // 现在这一层只负责定位与点击，宽度贴合文字，行与行按行距排开。
             Box(
                 Modifier
-                    // 固定宽度，让每一行的左边缘对齐；
-                    // 外框跟着文字一起转（rotationZ 相同），不会被斜切
-                    .width(lineW)
                     .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
-                    .graphicsLayer {
-                        // 外框跟着文字一起转，两者的边始终平行，不会被斜切
-                        rotationZ = th * 180f / PI_F
-                        alpha = fade
-                        transformOrigin = TransformOrigin(0.5f, 0.5f)
-                    },
-                // 左对齐：行框固定宽度保证左边缘对齐，文字从左开始排
+                    .widthIn(max = lineW)
+                    .clickable(enabled = lines[i].timeMs >= 0 && fade > 0.12f) {
+                        // 点了就立刻回到跟播：清掉手动偏移，
+                        // 位置交给播放进度重新算，避免停在手动位置上跳错行
+                        dragOff = 0f
+                        scope.launch { animOff.snapTo(0f) }
+                        manualAt = 0L
+                        onSeek(lines[i].timeMs)
+                    }
+                    .graphicsLayer { alpha = fade },
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Text(
                     zhText(lines[i].text),
                     Modifier
-                        // clickable 在最外层：命中框是未旋转的紧凑矩形，
-                        // 行与行之间按行距排开，不会互相重叠跳错行
-                        .clickable(enabled = lines[i].timeMs >= 0 && fade > 0.12f) {
-                            // 点了就立刻回到跟播：清掉手动偏移，
-                            // 位置交给播放进度重新算，避免停在手动位置上跳错行
-                            dragOff = 0f
-                            scope.launch { animOff.snapTo(0f) }
-                            manualAt = 0L
-                            onSeek(lines[i].timeMs)
-                        }
-                        // 宽度贴合文字本身：不再 fillMaxWidth，
-                        // 否则文字右侧的空白也会响应点击（点空白处也跳转）
-                        .widthIn(max = lineW)
+                        // 只旋转文字本体：视觉上贴合切线，但不影响上面的命中框
                         .graphicsLayer {
-                            // 圆心角即切线角：不加截断，文字方向才始终贴合圆。
-                            // 放在最内层，只影响绘制，不影响上面的命中框尺寸
-                            rotationZ = 0f
-                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                            rotationZ = th * 180f / PI_F
+                            // 绕左端转，左边缘才落在弧上，各行左端对齐
+                            transformOrigin = TransformOrigin(0f, 0.5f)
                         }
+                        .widthIn(max = lineW)
                         .padding(horizontal = 6.dp, vertical = 3.dp),
                     // 当前句用主题色
                     color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
@@ -2209,8 +2243,9 @@ private fun ArcContent(
                     fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
                     // 左侧对齐
                     textAlign = TextAlign.Start,
-                    // 不裁剪：超过宽度就换行
-                    maxLines = Int.MAX_VALUE,
+                    // 最多两行：长句折行后行高会超过行距，
+                    // 相邻两行的命中框就会上下重叠，点上一行可能跳到下一行
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }

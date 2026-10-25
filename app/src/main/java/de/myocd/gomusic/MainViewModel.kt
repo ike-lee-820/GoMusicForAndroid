@@ -849,8 +849,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             nmPageLoading = false
             if (kind != "artist") {
                 nmPageCache[ck] = l to emptyList()
-                // 专辑页副标题显示歌手名；列表里没带歌手时，单独取一次详情
-                if (nmPageSubtitle.isBlank()) {
+                // 专辑页副标题显示歌手名；列表里没带歌手时，单独取一次详情。
+                // 榜单（playlist）的副标题是更新频率，不需要补，也不该去调 /album
+                if (kind == "album" && nmPageSubtitle.isBlank()) {
                     launch {
                         val a = withContext(Dispatchers.IO) {
                             runCatching { Netease.albumArtist(id) }.getOrNull()
@@ -1150,6 +1151,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var homeTopArtists by mutableStateOf<List<Group>>(emptyList()); private set
     /** 最新专辑（新碟上架） */
     var homeNewAlbums by mutableStateOf<List<Group>>(emptyList()); private set
+    /** 榜单（/toplist） */
+    var homeTops by mutableStateOf<List<Group>>(emptyList()); private set
     /** 离线模式下首页要展示的已下载歌曲 */
     val homeDownloaded: List<Song> get() = LocalLib.songs(downloads)
     /** 热搜词 */
@@ -1180,6 +1183,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             homeHotWords = emptyList()
             homeTopArtists = emptyList()
             homeNewAlbums = emptyList()
+            homeTops = emptyList()
             homeLoading = false
             return
         }
@@ -1191,21 +1195,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val dH = async(Dispatchers.IO) { Netease.hotSearch() }
                 val dA = async(Dispatchers.IO) { Netease.topArtists(30, 0) }
                 val dAl = async(Dispatchers.IO) { Netease.newestAlbums(30) }
+                val dT = async(Dispatchers.IO) { runCatching { Netease.topList() }.getOrDefault(emptyList()) }
                 val r = dR.await()
                 val n = dN.await()
                 val h = dH.await()
                 val artists = dA.await()
                 val albums = dAl.await()
+                val tops = dT.await()
                 keepNetease(r + n)
                 homeRecommend = r
                 homeNewSongs = n
                 homeHotWords = h
                 homeTopArtists = artists
                 homeNewAlbums = albums
+                homeTops = tops
                 homeLoaded = true
                 NmLog.note(
                     "首页加载完成：推荐 ${r.size} / 新歌 ${n.size} / 热搜 ${h.size}" +
-                        " / 热门歌手 ${artists.size} / 最新专辑 ${albums.size}"
+                        " / 榜单 ${tops.size} / 热门歌手 ${artists.size} / 最新专辑 ${albums.size}"
                 )
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e

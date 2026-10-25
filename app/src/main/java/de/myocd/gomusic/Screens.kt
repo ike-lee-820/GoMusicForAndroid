@@ -208,6 +208,15 @@ private const val ARC_RADIUS_BOOST_WIDE = 0.7f
 private const val ARC_MIN_SPAN_WIDE = 4
 
 /**
+/**
+ * 横屏歌词整体上移的距离（dp）。
+ *
+ * 歌词容器是垂直居中的，但内容区带 statusBars / navigationBars 留白，
+ * 容器中心会比屏幕中线偏下，当前句看着就不在中线上。
+ * 这里把差值补回来，让当前句对齐屏幕中线；觉得偏高偏低就调这个数。
+ */
+private const val ARC_LYRIC_LIFT_WIDE = 14f
+
  * 拖动灵敏度。行距越大，滑过一整行需要的手指距离就越长，
  * 这里放大一点让滑动跟手（1.0 = 手指移动多少、歌词就移动多少）。
  */
@@ -1427,51 +1436,73 @@ fun FullPlayer(vm: MainViewModel) {
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
         // 控制条默认收起，点最右侧箭头展开 / 收起
         var ctrlOpen by remember { mutableStateOf(false) }
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
-                // 横屏左上角用「×」，竖屏保持向下箭头；都是关闭播放器
-                IconBtn(
-                    if (wide) Icons.Outlined.Close else Icons.Outlined.KeyboardArrowDown,
-                    "关闭", size = 44.dp,
-                ) { vm.showPlayer = false }
-                if (wide && s != null) {
-                    // 折叠区：向左展开、向右收起。
-                    // 不用 AnimatedVisibility：Row 作用域里的那个重载已废弃，
-                    // 直接按状态显示 / 隐藏，行为一样且不受影响。
-                    // 容器自己也吃掉点击：收起时这块是空的，点上去会穿透到歌词
-                    Box(
-                        Modifier
-                            .weight(1f)
-                            .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (ctrlOpen) WideTopControls(vm, s)
-                    }
-                    // 箭头：收起时朝下（v），展开时朝左（<）
-                    IconBtn(
-                        if (ctrlOpen) Icons.AutoMirrored.Outlined.KeyboardArrowLeft
-                        else Icons.Outlined.KeyboardArrowDown,
-                        if (ctrlOpen) "收起控制条" else "展开控制条",
-                        size = 34.dp,
-                    ) { ctrlOpen = !ctrlOpen }
-                }
-            }
-            // 操作栏展开时，在「操作栏下方 / 歌词上方」插一层完全透明的拦截层。
-            // 点操作栏的按钮或按钮之间的空隙时，事件会被这一层吃掉，
-            // 不再穿透到下面的歌词（之前点操作栏会跳歌词就是这么来的）。
-            if (wide && s != null && ctrlOpen) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
-                )
-            }
+        // ---------- 内容区：始终占满整屏 ----------
+        // 操作栏不再参与这一层的布局（见下面的浮层），所以展开 / 收起
+        // 都不会改变专辑与歌词可用的高度 —— 之前操作栏和拦截层都在 Column 里，
+        // 展开时把内容区压掉 100 多 dp，专辑被缩小、歌词中心也被推到偏下。
+        Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 16.dp)) {
             if (s != null) {
                 if (wide) {
-                    WidePlayerPane(vm, s, Modifier.weight(1f))
+                    WidePlayerPane(vm, s, Modifier.fillMaxSize())
                 } else {
-                    Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) { PlayerBody(vm, s, true) }
+                    // 竖屏顶部留出一个操作栏的高度，避免内容被浮层挡住
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(top = 48.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) { PlayerBody(vm, s, true) }
+                }
+            }
+        }
+        // ---------- 操作栏：独立浮层，浮在内容之上、不占布局空间 ----------
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp),
+        ) {
+            Column {
+                Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // 横屏左上角用「×」，竖屏保持向下箭头；都是关闭播放器
+                    IconBtn(
+                        if (wide) Icons.Outlined.Close else Icons.Outlined.KeyboardArrowDown,
+                        "关闭", size = 44.dp,
+                    ) { vm.showPlayer = false }
+                    if (wide && s != null) {
+                        // 折叠区：向左展开、向右收起。
+                        // 不用 AnimatedVisibility：Row 作用域里的那个重载已废弃，
+                        // 直接按状态显示 / 隐藏，行为一样且不受影响。
+                        // 容器自己也吃掉点击：收起时这块是空的，点上去会穿透到歌词
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (ctrlOpen) WideTopControls(vm, s)
+                        }
+                        // 箭头：收起时朝下（v），展开时朝左（<）
+                        IconBtn(
+                            if (ctrlOpen) Icons.AutoMirrored.Outlined.KeyboardArrowLeft
+                            else Icons.Outlined.KeyboardArrowDown,
+                            if (ctrlOpen) "收起控制条" else "展开控制条",
+                            size = 34.dp,
+                        ) { ctrlOpen = !ctrlOpen }
+                    }
+                }
+                // 操作栏展开时，在「操作栏下方 / 歌词上方」插一层完全透明的拦截层。
+                // 点操作栏的按钮或按钮之间的空隙时，事件会被这一层吃掉，
+                // 不再穿透到下面的歌词（之前点操作栏会跳歌词就是这么来的）。
+                // 同样是浮层的一部分，不占内容区的高度
+                if (wide && s != null && ctrlOpen) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
+                    )
                 }
             }
         }
@@ -1532,7 +1563,15 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
             }
             Spacer(Modifier.width(gap))
             // ---------- 右：歌词区（左移到专辑旁，字号更大、可见行数更多） ----------
-            Box(Modifier.width(lyricW).fillMaxHeight()) {
+            Box(
+                Modifier
+                    .width(lyricW)
+                    .fillMaxHeight()
+                    // 整体上移，让当前这一句落在屏幕中线上：
+                    // 内容区带 statusBars / navigationBars 留白，容器中心会比
+                    // 屏幕中线偏下一点，这里把差值补回来（[ARC_LYRIC_LIFT_WIDE]）
+                    .offset(y = -ARC_LYRIC_LIFT_WIDE.dp),
+            ) {
                 ArcLyrics(
                     vm.lyric, vm.lyricIndex,
                     Modifier.fillMaxSize(), vm.lyricLoading,

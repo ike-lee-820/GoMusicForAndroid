@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.roundToInt
+import kotlin.math.asin
 
 import android.content.Context
 import android.content.Intent
@@ -131,6 +132,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -1980,35 +1982,35 @@ fun WheelLyrics(
                 val depth = cos(theta).coerceAtLeast(0f)
                 val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
                 val isCur = abs(d) < 0.5f
-                Text(
-                    zhText(lines[i].text),
-                    Modifier
-                        .graphicsLayer {
-                            translationY = y
-                            rotationX = d * angleDeg
-                            scaleX = 0.88f + 0.12f * depth
-                            scaleY = 0.88f + 0.12f * depth
-                            alpha = 0.16f + 0.84f * fade
-                            transformOrigin = TransformOrigin(0.5f, 0.5f)
-                        }
-                        .clickable(enabled = lines[i].timeMs >= 0) {
-                            manualUntil = System.currentTimeMillis() + 6000
-                            onSeek(lines[i].timeMs)
-                        }
-                        .padding(horizontal = 28.dp, vertical = 3.dp),
-                    color = Color.White,
-                    fontSize = if (isCur) 19.sp else 16.sp,
-                    lineHeight = if (isCur) 30.sp else 26.sp,
-                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
-                    // 左侧对齐
-                    textAlign = TextAlign.Start,
-                    // 不裁剪：超过宽度就换行
-                    maxLines = Int.MAX_VALUE,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                zhText(lines[i].text),
+                Modifier
+                    .graphicsLayer {
+                        translationY = y
+                        rotationX = d * angleDeg
+                        scaleX = 0.88f + 0.12f * depth
+                        scaleY = 0.88f + 0.12f * depth
+                        alpha = 0.16f + 0.84f * fade
+                        transformOrigin = TransformOrigin(0.5f, 0.5f)
+                    }
+                    .clickable(enabled = lines[i].timeMs >= 0) {
+                        manualUntil = System.currentTimeMillis() + 6000
+                        onSeek(lines[i].timeMs)
+                    }
+                    .padding(horizontal = 28.dp, vertical = 3.dp),
+                color = Color.White,
+                fontSize = if (isCur) 19.sp else 16.sp,
+                lineHeight = if (isCur) 30.sp else 26.sp,
+                fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                // 左侧对齐
+                textAlign = TextAlign.Start,
+                // 不裁剪：超过宽度就换行
+                maxLines = Int.MAX_VALUE,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+}
 }
 
 /**
@@ -2021,127 +2023,127 @@ fun WheelLyrics(
  */
 @Composable
 fun CircleLyrics(
-    lines: List<LrcLine>,
-    idx: Int,
-    radius: Dp,
-    modifier: Modifier = Modifier,
-    loading: Boolean = false,
-    onSeek: (Long) -> Unit,
+lines: List<LrcLine>,
+idx: Int,
+radius: Dp,
+modifier: Modifier = Modifier,
+loading: Boolean = false,
+onSeek: (Long) -> Unit,
 ) {
-    if (lines.isEmpty()) {
-        // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (loading) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        color = Color.White.copy(alpha = 0.8f),
-                        modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
-                    )
-                    HS(8)
-                    Txt("正在加载歌词…", 13, color = Color.White.copy(alpha = 0.7f))
-                }
-            } else {
-                Txt("暂无歌词", 13, color = Color.White.copy(alpha = 0.55f))
-            }
-        }
-        return
-    }
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-    val rPx = with(density) { radius.toPx() }
-    // 相邻两行之间夹的角度；弧长用来把手指拖动距离换算成行偏移
-    val stepDeg = 13f
-    val stepRad = stepDeg * 0.017453292f
-    val arcPx = (rPx * stepRad).coerceAtLeast(1f)
-    val offset = remember { Animatable(0f) }
-    var dragging by remember { mutableStateOf(false) }
-    // 手动操作后的冷却时间：这段时间内不自动跟随播放进度
-    var manualUntil by remember { mutableLongStateOf(0L) }
-    val last = lines.lastIndex.coerceAtLeast(0).toFloat()
-
-    LaunchedEffect(idx, lines.size) {
-        if (idx >= 0 && !dragging && System.currentTimeMillis() > manualUntil) {
-            offset.animateTo(idx.toFloat().coerceIn(0f, last), spring(stiffness = Spring.StiffnessLow))
-        }
-    }
-
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        val lineW = maxWidth * 0.62f
-        Box(
-            Modifier.fillMaxSize()
-                .pointerInput(lines) {
-                    detectVerticalDragGestures(
-                        onDragStart = {
-                            dragging = true
-                            manualUntil = Long.MAX_VALUE
-                            scope.launch { offset.stop() }
-                        },
-                        onDragEnd = {
-                            dragging = false
-                            // 松手后对齐到最近的一行，冷却 4 秒再恢复跟播
-                            manualUntil = System.currentTimeMillis() + 4000
-                            scope.launch {
-                                offset.animateTo(
-                                    offset.value.roundToInt().toFloat().coerceIn(0f, last),
-                                    spring(stiffness = Spring.StiffnessLow),
-                                )
-                            }
-                        },
-                        onDragCancel = {
-                            dragging = false
-                            manualUntil = System.currentTimeMillis() + 4000
-                        },
-                        onVerticalDrag = { _, dragAmount ->
-                            // 手指向上（dragAmount 为负）时看后面的行
-                            val d = -dragAmount / arcPx
-                            scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, last)) }
-                        },
-                    )
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            val cur = offset.value
-            val span = 8
-            val from = (cur - span).toInt().coerceAtLeast(0)
-            val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
-            for (i in from..to) {
-                val d = i - cur
-                val theta = d * stepDeg
-                val rad = theta * 0.017453292f
-                // 圆周坐标：当前行在正上方（角度 0 -> x=0, y=-r）
-                val x = rPx * sin(rad)
-                val y = -rPx * cos(rad)
-                val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
-                val isCur = abs(d) < 0.5f
-                Text(
-                    zhText(lines[i].text),
-                    Modifier
-                        .width(lineW)
-                        .graphicsLayer {
-                            translationX = x
-                            translationY = y
-                            rotationZ = theta
-                            alpha = 0.18f + 0.82f * fade
-                            transformOrigin = TransformOrigin(0.5f, 0.5f)
-                        }
-                        .clickable(enabled = lines[i].timeMs >= 0) {
-                            manualUntil = System.currentTimeMillis() + 6000
-                            onSeek(lines[i].timeMs)
-                        }
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                    color = Color.White,
-                    fontSize = if (isCur) 16.sp else 13.sp,
-                    lineHeight = if (isCur) 22.sp else 18.sp,
-                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
-                    // 左侧对齐
-                    textAlign = TextAlign.Start,
-                    // 不裁剪：超过宽度就换行
-                    maxLines = Int.MAX_VALUE,
-                    overflow = TextOverflow.Ellipsis,
+if (lines.isEmpty()) {
+    // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        if (loading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    color = Color.White.copy(alpha = 0.8f),
+                    modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
                 )
+                HS(8)
+                Txt("正在加载歌词…", 13, color = Color.White.copy(alpha = 0.7f))
             }
+        } else {
+            Txt("暂无歌词", 13, color = Color.White.copy(alpha = 0.55f))
         }
     }
+    return
+}
+val scope = rememberCoroutineScope()
+val density = LocalDensity.current
+val rPx = with(density) { radius.toPx() }
+// 相邻两行之间夹的角度；弧长用来把手指拖动距离换算成行偏移
+val stepDeg = 13f
+val stepRad = stepDeg * 0.017453292f
+val arcPx = (rPx * stepRad).coerceAtLeast(1f)
+val offset = remember { Animatable(0f) }
+var dragging by remember { mutableStateOf(false) }
+// 手动操作后的冷却时间：这段时间内不自动跟随播放进度
+var manualUntil by remember { mutableLongStateOf(0L) }
+val last = lines.lastIndex.coerceAtLeast(0).toFloat()
+
+LaunchedEffect(idx, lines.size) {
+    if (idx >= 0 && !dragging && System.currentTimeMillis() > manualUntil) {
+        offset.animateTo(idx.toFloat().coerceIn(0f, last), spring(stiffness = Spring.StiffnessLow))
+    }
+}
+
+BoxWithConstraints(modifier.fillMaxSize()) {
+    val lineW = maxWidth * 0.62f
+    Box(
+        Modifier.fillMaxSize()
+            .pointerInput(lines) {
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        dragging = true
+                        manualUntil = Long.MAX_VALUE
+                        scope.launch { offset.stop() }
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        // 松手后对齐到最近的一行，冷却 4 秒再恢复跟播
+                        manualUntil = System.currentTimeMillis() + 4000
+                        scope.launch {
+                            offset.animateTo(
+                                offset.value.roundToInt().toFloat().coerceIn(0f, last),
+                                spring(stiffness = Spring.StiffnessLow),
+                            )
+                        }
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        manualUntil = System.currentTimeMillis() + 4000
+                    },
+                    onVerticalDrag = { _, dragAmount ->
+                        // 手指向上（dragAmount 为负）时看后面的行
+                        val d = -dragAmount / arcPx
+                        scope.launch { offset.snapTo((offset.value + d).coerceIn(0f, last)) }
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        val cur = offset.value
+        val span = 8
+        val from = (cur - span).toInt().coerceAtLeast(0)
+        val to = (cur + span).toInt().coerceAtMost(lines.lastIndex)
+        for (i in from..to) {
+            val d = i - cur
+            val theta = d * stepDeg
+            val rad = theta * 0.017453292f
+            // 圆周坐标：当前行在正上方（角度 0 -> x=0, y=-r）
+            val x = rPx * sin(rad)
+            val y = -rPx * cos(rad)
+            val fade = (1f - abs(d) / (span + 1f)).coerceIn(0f, 1f)
+            val isCur = abs(d) < 0.5f
+            Text(
+                zhText(lines[i].text),
+                Modifier
+                    .width(lineW)
+                    .graphicsLayer {
+                        translationX = x
+                        translationY = y
+                        rotationZ = theta
+                        alpha = 0.18f + 0.82f * fade
+                        transformOrigin = TransformOrigin(0.5f, 0.5f)
+                    }
+                    .clickable(enabled = lines[i].timeMs >= 0) {
+                        manualUntil = System.currentTimeMillis() + 6000
+                        onSeek(lines[i].timeMs)
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                color = Color.White,
+                fontSize = if (isCur) 16.sp else 13.sp,
+                lineHeight = if (isCur) 22.sp else 18.sp,
+                fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
+                // 左侧对齐
+                textAlign = TextAlign.Start,
+                // 不裁剪：超过宽度就换行
+                maxLines = Int.MAX_VALUE,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
 }
 
 /**
@@ -2157,204 +2159,220 @@ fun CircleLyrics(
  */
 @Composable
 fun ArcLyrics(
-    lines: List<LrcLine>,
-    idx: Int,
-    modifier: Modifier = Modifier,
-    loading: Boolean = false,
-    curColor: Color = Color.White,
-    rowSpacingDp: Float = ARC_ROW_SPACING_DP,
-    curSp: Float = 19f,
-    otherSp: Float = 15f,
-    radiusBoost: Float = ARC_RADIUS_BOOST,
-    minSpan: Int = 1,
-    onSeek: (Long) -> Unit,
+lines: List<LrcLine>,
+idx: Int,
+modifier: Modifier = Modifier,
+loading: Boolean = false,
+curColor: Color = Color.White,
+rowSpacingDp: Float = ARC_ROW_SPACING_DP,
+curSp: Float = 19f,
+otherSp: Float = 15f,
+radiusBoost: Float = ARC_RADIUS_BOOST,
+minSpan: Int = 1,
+onSeek: (Long) -> Unit,
 ) {
-    if (lines.isEmpty()) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (loading) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
-                    )
-                    HS(8)
-                    Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
-                }
-            } else {
-                Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+if (lines.isEmpty()) {
+    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        if (loading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    color = curColor, modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
+                )
+                HS(8)
+                Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
             }
+        } else {
+            Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
         }
-        return
     }
-    ArcContent(
-        lines = lines, idx = idx, modifier = modifier,
-        curColor = curColor, rowSpacingDp = rowSpacingDp,
-        curSp = curSp, otherSp = otherSp,
-        radiusBoost = radiusBoost, minSpan = minSpan, onSeek = onSeek,
-    )
+    return
+}
+ArcContent(
+    lines = lines, idx = idx, modifier = modifier,
+    curColor = curColor, rowSpacingDp = rowSpacingDp,
+    curSp = curSp, otherSp = otherSp,
+    radiusBoost = radiusBoost, minSpan = minSpan, onSeek = onSeek,
+)
 }
 
 @Composable
 private fun ArcContent(
-    lines: List<LrcLine>,
-    idx: Int,
-    modifier: Modifier,
-    curColor: Color,
-    rowSpacingDp: Float = ARC_ROW_SPACING_DP,
-    curSp: Float = 19f,
-    otherSp: Float = 15f,
-    radiusBoost: Float = ARC_RADIUS_BOOST,
-    minSpan: Int = 1,
-    onSeek: (Long) -> Unit,
+lines: List<LrcLine>,
+idx: Int,
+modifier: Modifier,
+curColor: Color,
+rowSpacingDp: Float = ARC_ROW_SPACING_DP,
+curSp: Float = 19f,
+otherSp: Float = 15f,
+radiusBoost: Float = ARC_RADIUS_BOOST,
+minSpan: Int = 1,
+onSeek: (Long) -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-    val rowPxDrag = with(density) { (ARC_ROW_SPACING_DP / ARC_DRAG_SENSITIVITY).dp.toPx() }.coerceAtLeast(1f)
-    // 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
-    val base by animateFloatAsState(
-        targetValue = idx.coerceAtLeast(0).toFloat(),
-        animationSpec = tween(400),
-        label = "arcBase",
-    )
-    // 手动滑动偏移：直接改状态（不用协程 snapTo），每个拖动事件立即生效，滑动才跟手
-    var dragOff by remember { mutableFloatStateOf(0f) }
-    // 停手后回位用的动画偏移
-    val animOff = remember { Animatable(0f) }
-    var manualAt by remember { mutableLongStateOf(0L) }
-    // 位置在这里统一裁剪，边界只依赖歌词行数，不会在拖动中跳变
-    val cur = (base + animOff.value + dragOff)
-        .coerceIn(-0.6f, lines.lastIndex.toFloat() + 0.6f)
-    // 每滑一次就更新 manualAt，这个协程会重启并重新计时 3 秒
-    LaunchedEffect(manualAt) {
-        if (manualAt == 0L) return@LaunchedEffect
-        delay(3000)
-        // 把手动偏移交给动画，再平滑回到跟播位置
-        animOff.snapTo(animOff.value + dragOff)
-        dragOff = 0f
-        animOff.animateTo(0f, tween(500))
-    }
+val scope = rememberCoroutineScope()
+val density = LocalDensity.current
+val rowPxDrag = with(density) { (ARC_ROW_SPACING_DP / ARC_DRAG_SENSITIVITY).dp.toPx() }.coerceAtLeast(1f)
+// 按句定位：当前句索引变了多少，圆盘就转多少，不做匀速旋转
+val base by animateFloatAsState(
+    targetValue = idx.coerceAtLeast(0).toFloat(),
+    animationSpec = tween(400),
+    label = "arcBase",
+)
+// 手动滑动偏移：直接改状态（不用协程 snapTo），每个拖动事件立即生效，滑动才跟手
+var dragOff by remember { mutableFloatStateOf(0f) }
+// 停手后回位用的动画偏移
+val animOff = remember { Animatable(0f) }
+var manualAt by remember { mutableLongStateOf(0L) }
+// 位置在这里统一裁剪，边界只依赖歌词行数，不会在拖动中跳变
+val cur = (base + animOff.value + dragOff)
+    .coerceIn(-0.6f, lines.lastIndex.toFloat() + 0.6f)
+// 每滑一次就更新 manualAt，这个协程会重启并重新计时 3 秒
+LaunchedEffect(manualAt) {
+    if (manualAt == 0L) return@LaunchedEffect
+    delay(3000)
+    // 把手动偏移交给动画，再平滑回到跟播位置
+    animOff.snapTo(animOff.value + dragOff)
+    dragOff = 0f
+    animOff.animateTo(0f, tween(500))
+}
 
-    BoxWithConstraints(
-        modifier.fillMaxSize()
-            .pointerInput(lines) {
-                detectVerticalDragGestures(
-                    onDragStart = { manualAt = System.currentTimeMillis() },
-                    onDragEnd = { manualAt = System.currentTimeMillis() },
-                    onDragCancel = { manualAt = System.currentTimeMillis() },
-                    onVerticalDrag = { _, dragAmount ->
-                        // 拖动过程只累加，不做裁剪：
-                        // 之前按 base 算上下限，而播放时 base 一直在动，
-                        // 边界随之跳变会把 dragOff 反复夹回去，看着就不跟手。
-                        // 裁剪改到渲染时统一做
-                        dragOff -= dragAmount / rowPxDrag
-                        manualAt = System.currentTimeMillis()
-                    },
-                )
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 15 行）
-        val rowSpan = rowSpacingDp
-        val rows = (maxHeight.value / rowSpan).toInt().coerceIn(minSpan * 2 + 1, 25)
-        // 上下各显示 span 行；保底 minSpan，行距加大后也不会只剩一两行
-        val span = (rows / 2).coerceAtLeast(minSpan)
-        // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
-        val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
-        // 圆心再按倍数拉远：越远弧越平缓，歌词横向铺得更开
-        val rDp = (span * rowSpan / tiltRad * radiusBoost).coerceAtLeast(maxHeight.value * 0.5f)
-        // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
-        val stepRad = rowSpan / rDp
-        // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，
-        // 在高密度屏上实际半径只有设计的 1/density，弧会比预期弯得多
-        val rPx = with(density) { rDp.dp.toPx() }
-        val shift = (rPx * (1 - cos(span * stepRad))) / 2
-        // 行宽留一点余量：文字旋转后包围盒会变宽，
-        // 顶满整行的话两端容易超出歌词区被屏幕切掉
-        val lineW = maxWidth * 0.9f
-        // 多渲染一行作缓冲：让最外侧的行在透明度已经衰减到 0 之后
-        // 才被移出渲染范围，进出就不会「啪」地出现或消失
-        val edge = span + 1
-        val from = (cur - edge).toInt().coerceAtLeast(0)
-        val to = (cur + edge).toInt().coerceAtMost(lines.lastIndex)
-        for (i in from..to) {
-            val d = i - cur
-            val th = d * stepRad
-            // 沿弧排列：横向与纵向位移都由半径 r 决定（弧长 s = r·θ 对应的弦向偏移），
-            // 每行真正落在半径 r 的圆弧上。
-            //
-            // 上一版为了「左端对齐」把横向位移改成 0，结果行只沿竖直方向排开、
-            // 文字却在转 —— 排列是直线、字是斜的，两者对不上，所以看着很假。
-            val x = -rPx * (1 - cos(th)) + shift
-            val y = rPx * sin(th)
-            // 边缘平滑淡出：用 smoothstep，最外侧处的值与斜率都是 0，
-            // 行在边缘进出时不会有突跳（原来是线性再加 0.25 下限，
-            // 一行从「不渲染」直接跳到 0.25，所以看着很生硬）
-            val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
-            val fade = 1f - (t * t * (3f - 2f * t))
-            val isCur = i == idx
-            // 两层结构：外面这层只管定位与点击，里面那层才跟着文字转。
-            //
-            // 上一版把旋转只给了文字、宽度限制也压在文字上 —— 于是「框」是正的、
-            // 文字是斜的，两者不平行，旋转后需要的横向空间还被 widthIn 卡住，
-            // 看着就是歌词被切掉一角、显示不完全。
-            //
-            // 现在：里面那层的边框与文字用同一个 rotationZ（始终平行），
-            // 并用 wrapContentWidth(unbounded = true) 让文字按自身需要的宽度测量，
-            // 旋转后完整显示、不被压窄也不裁切；外面这层不旋转，
-            // 高度固定为一个行距，所以行与行永远按行距排开、命中框不会重叠。
-            Box(
+BoxWithConstraints(
+    modifier.fillMaxSize()
+        .pointerInput(lines) {
+            detectVerticalDragGestures(
+                onDragStart = { manualAt = System.currentTimeMillis() },
+                onDragEnd = { manualAt = System.currentTimeMillis() },
+                onDragCancel = { manualAt = System.currentTimeMillis() },
+                onVerticalDrag = { _, dragAmount ->
+                    // 拖动过程只累加，不做裁剪：
+                    // 之前按 base 算上下限，而播放时 base 一直在动，
+                    // 边界随之跳变会把 dragOff 反复夹回去，看着就不跟手。
+                    // 裁剪改到渲染时统一做
+                    dragOff -= dragAmount / rowPxDrag
+                    manualAt = System.currentTimeMillis()
+                },
+            )
+        },
+    contentAlignment = Alignment.Center,
+) {
+    // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 15 行）
+    val rowSpan = rowSpacingDp
+    val rows = (maxHeight.value / rowSpan).toInt().coerceIn(minSpan * 2 + 1, 25)
+    // 上下各显示 span 行；保底 minSpan，行距加大后也不会只剩一两行
+    val span = (rows / 2).coerceAtLeast(minSpan)
+    // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
+    val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
+    // 圆心再按倍数拉远：越远弧越平缓，歌词横向铺得更开
+    val rDp = (span * rowSpan / tiltRad * radiusBoost).coerceAtLeast(maxHeight.value * 0.5f)
+    // 圆心角由间距 / 半径推出（弧长 s = r·θ），几何自洽
+    val stepRad = rowSpan / rDp
+    // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，
+    // 在高密度屏上实际半径只有设计的 1/density，弧会比预期弯得多
+    val rPx = with(density) { rDp.dp.toPx() }
+    val shift = (rPx * (1 - cos(span * stepRad))) / 2
+    // 行宽留一点余量：文字旋转后包围盒会变宽，
+    // 顶满整行的话两端容易超出歌词区被屏幕切掉
+    val lineW = maxWidth * 0.9f
+    // 多渲染一行作缓冲：让最外侧的行在透明度已经衰减到 0 之后
+    // 才被移出渲染范围，进出就不会「啪」地出现或消失
+    val edge = span + 1
+    val from = (cur - edge).toInt().coerceAtLeast(0)
+    val to = (cur + edge).toInt().coerceAtMost(lines.lastIndex)
+    for (i in from..to) {
+        val d = i - cur
+        val th = d * stepRad
+        // 沿弧排列：横向与纵向位移都由半径 r 决定（弧长 s = r·θ 对应的弦向偏移），
+        // 每行真正落在半径 r 的圆弧上。
+        //
+        // 上一版为了「左端对齐」把横向位移改成 0，结果行只沿竖直方向排开、
+        // 文字却在转 —— 排列是直线、字是斜的，两者对不上，所以看着很假。
+        val x = -rPx * (1 - cos(th)) + shift
+        val y = rPx * sin(th)
+        // 边缘平滑淡出：用 smoothstep，最外侧处的值与斜率都是 0，
+        // 行在边缘进出时不会有突跳（原来是线性再加 0.25 下限，
+        // 一行从「不渲染」直接跳到 0.25，所以看着很生硬）
+        val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
+        val fade = 1f - (t * t * (3f - 2f * t))
+        val isCur = i == idx
+        // 单层结构：承载框和文字是同一个 Box，共用同一个 rotationZ，
+        // 所以外框必然跟着文字一起转、两者完全重合（不再是「框正字斜」）。
+        //
+        // 宽高都不设上限（unbounded）：一旦给了固定高度，这个约束会传给文字，
+        // 折行时文字被「量」成一行多高、超出部分不画 —— 这才是歌词被切割的原因。
+        //
+        // 这一层不挂 clickable：旋转后的矩形纵向跨度远大于行距，
+        // 行与行命中框会重叠、点一行跳到另一行。点击改由整块歌词区
+        // 统一做几何命中（按纵坐标反解出行号，见下面的点击层）。
+        Box(
+            Modifier
+                .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+                .wrapContentWidth(unbounded = true)
+                .wrapContentHeight(unbounded = true)
+                .graphicsLayer {
+                    // 框与文字同一个角度：外框跟着一起转
+                    rotationZ = th * 180f / PI_F
+                    // 绕左端转，左端落在圆弧上
+                    transformOrigin = TransformOrigin(0f, 0.5f)
+                    alpha = fade
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                zhText(lines[i].text),
                 Modifier
-                    .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
-                    // 命中框高度固定为一个行距：无论这句折了几行，
-                    // 行与行都按行距排开，不会互相重叠跳错行
-                    .height(rowSpacingDp.dp)
-                    .clickable(enabled = lines[i].timeMs >= 0 && fade > 0.12f) {
-                        // 点了就立刻回到跟播：清掉手动偏移，
-                        // 位置交给播放进度重新算，避免停在手动位置上跳错行
-                        dragOff = 0f
-                        scope.launch { animOff.snapTo(0f) }
-                        manualAt = 0L
-                        onSeek(lines[i].timeMs)
-                    }
-                    .graphicsLayer { alpha = fade },
-                // 左对齐：各行左端落在弧上
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                Box(
-                    Modifier
-                        // 宽高都不设上限：外层为了不让命中框重叠固定了一个行距高，
-                        // 这个高度会作为约束传给文字 —— 折行时文字自己被「量」成
-                        // 一行多高，超出的部分就不画了，这就是歌词被切割的原因。
-                        // unbounded 让宽高都按文字自身需要的尺寸测量，超出的照常画
-                        .wrapContentWidth(unbounded = true)
-                        .wrapContentHeight(unbounded = true)
-                        .graphicsLayer {
-                            // 框与文字用同一个角度：外框跟着一起转，两者的边始终平行
-                            rotationZ = th * 180f / PI_F
-                            // 绕左端转，左端仍落在圆弧上
-                            transformOrigin = TransformOrigin(0f, 0.5f)
-                        },
-                ) {
-                    Text(
-                        zhText(lines[i].text),
-                        Modifier
-                            .widthIn(max = lineW)
-                            .padding(horizontal = 6.dp, vertical = 3.dp),
-                        // 当前句用主题色
-                        color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
-                        fontSize = if (isCur) curSp.sp else otherSp.sp,
-                        lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
-                        // 稍粗：当前句用 ExtraBold，其余行也比常规粗一档
-                        fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
-                        // 左侧对齐
-                        textAlign = TextAlign.Start,
-                        // 完整换行显示，不截断、不加省略号（省略号看着就像被切了）。
-                        // 命中框高度固定为一个行距，折行再多也不会让行与行重叠
-                        maxLines = Int.MAX_VALUE,
-                        overflow = TextOverflow.Clip,
-                    )
-                }
-            }
+                    .widthIn(max = lineW)
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                // 当前句用主题色
+                color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
+                fontSize = if (isCur) curSp.sp else otherSp.sp,
+                lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
+                // 稍粗：当前句用 ExtraBold，其余行也比常规粗一档
+                fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
+                // 左侧对齐
+                textAlign = TextAlign.Start,
+                // 完整换行显示，不截断、不加省略号（省略号看着也像被切了）
+                maxLines = Int.MAX_VALUE,
+                overflow = TextOverflow.Clip,
+            )
         }
+        }
+
+        // ---------- 点击层 ----------
+        // 歌词行本身不带 clickable：旋转后的矩形纵向跨度远大于行距，
+        // 行与行的命中框会重叠、点一行会跳到另一行。
+        // 改由整块歌词区统一接管点击：把点击的纵坐标反解回行号。
+        //   y = r·sin(θ) → θ = asin(y / r) → 行号 = 当前行 + θ / 每行弧度
+        // 这样点哪一行就是哪一行，既不会跳错行，也不会有点不到的空隙。
+        // pointerInput 只在 lines 变化时重启，lambda 里直接捕获 cur / rPx 会拿到
+        // 旧值（播放中 cur 一直在变）。用 rememberUpdatedState 取最新值。
+        val curNow by rememberUpdatedState(cur)
+        val rPxNow by rememberUpdatedState(rPx)
+        val stepNow by rememberUpdatedState(stepRad)
+        val spanNow by rememberUpdatedState(span)
+        val maxHNow by rememberUpdatedState(maxHeight)
+        Box(
+            Modifier.fillMaxSize().pointerInput(lines) {
+                detectTapGestures { off ->
+                    if (lines.isEmpty()) return@detectTapGestures
+                    val hPx = with(density) { maxHNow.toPx() }
+                    val rel = off.y - hPx / 2
+                    val th = asin((rel / rPxNow).coerceIn(-1f, 1f))
+                    val d = th / stepNow
+                    val hitK = (curNow + d).roundToInt().coerceIn(0, lines.lastIndex)
+                    // 淡出到几乎看不见的行不接受点击
+                    val tt = (abs(hitK - curNow) / spanNow.toFloat()).coerceIn(0f, 1f)
+                    val f = 1f - (tt * tt * (3f - 2f * tt))
+                    if (f <= 0.12f) return@detectTapGestures
+                    val line = lines[hitK]
+                    if (line.timeMs < 0) return@detectTapGestures
+                    // 点了就立刻回到跟播：清掉手动偏移，
+                    // 位置交给播放进度重新算，避免停在手动位置上跳错行
+                    dragOff = 0f
+                    scope.launch { animOff.snapTo(0f) }
+                    manualAt = 0L
+                    onSeek(line.timeMs)
+                }
+            },
+        )
     }
 }
 

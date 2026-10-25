@@ -153,8 +153,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 
 private const val PI_F = 3.14159265f
@@ -1378,13 +1376,11 @@ fun FullPlayer(vm: MainViewModel) {
                     "关闭", size = 44.dp,
                 ) { vm.showPlayer = false }
                 if (wide && s != null) {
-                    // 折叠区：向左展开、向右收起
+                    // 折叠区：向左展开、向右收起。
+                    // 不用 AnimatedVisibility：Row 作用域里的那个重载已废弃，
+                    // 直接按状态显示 / 隐藏，行为一样且不受影响
                     Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                        AnimatedVisibility(
-                            visible = ctrlOpen,
-                            enter = expandHorizontally(expandFrom = Alignment.End) + fadeIn(),
-                            exit = shrinkHorizontally(shrinkTowards = Alignment.End) + fadeOut(),
-                        ) { WideTopControls(vm, s) }
+                        if (ctrlOpen) WideTopControls(vm, s)
                     }
                     // 箭头：收起时朝下（v），展开时朝左（<）
                     IconBtn(

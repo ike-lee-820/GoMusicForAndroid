@@ -2232,7 +2232,10 @@ private fun ArcContent(
         for (i in from..to) {
             val d = i - cur
             val th = d * stepRad
-            val x = -rPx * (1 - cos(th)) + shift
+            // 左对齐：每行的左端都放在 x = 0 这一条竖线上，只保留纵向的弧形位移。
+            // 之前按圆弧给每行算横向偏移（越靠外越往左），左端就参差不齐，
+            // 看着「没有左对齐」；现在横向偏移一律为 0，弯曲感由旋转本身体现。
+            val x = 0f
             val y = rPx * sin(th)
             // 边缘平滑淡出：用 smoothstep，最外侧处的值与斜率都是 0，
             // 行在边缘进出时不会有突跳（原来是线性再加 0.25 下限，
@@ -2270,20 +2273,24 @@ private fun ArcContent(
             ) {
                 Box(
                     Modifier
-                        // 不设边界、不裁切：文字按自身宽度测量后整体旋转，
-                        // 旋转只是绘制变换，超出的部分照常画出来
-                        .wrapContentWidth(unbounded = true)
+                        // 每行的框都是同一个宽度：左端落在同一条竖线上（左对齐）
+                        .width(lineW)
+                        // 关键：高度不设上限。外层为了不让命中框重叠固定了一个行距高，
+                        // 这个高度会当成约束传给文字 —— 折行到 3 行时文字自己就被
+                        // 「量」成了一行多高，看着就是歌词被切掉。unbounded 让文字
+                        // 按自身需要的高度测量，超出的部分照常画出来。
+                        .wrapContentHeight(unbounded = true)
                         .graphicsLayer {
                             // 与下面文字同一个角度，框和文字始终平行
                             rotationZ = th * 180f / PI_F
-                            // 绕左端转，各行左端才落在弧上、保持左对齐
+                            // 绕左端转：各行左端都钉在同一条竖线上
                             transformOrigin = TransformOrigin(0f, 0.5f)
                         },
                 ) {
                     Text(
                         zhText(lines[i].text),
                         Modifier
-                            .widthIn(max = lineW)
+                            .fillMaxWidth()
                             .padding(horizontal = 6.dp, vertical = 3.dp),
                         // 当前句用主题色
                         color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),

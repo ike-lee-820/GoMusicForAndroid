@@ -1556,6 +1556,204 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
     }
 }
 
+/**
+ * 简洁版单色进度条：细轨道 + 白色进度，可点可拖。
+ *
+ * 触摸区比轨道本身高不少（32dp），并且加了圆点滑块，
+ * 手指容易按准；不拖动时圆点淡出，保持原本的简洁感。
+ */
+@Composable
+fun SimpleSeekBar(
+    position: Long,
+    duration: Long,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var drag by remember { mutableStateOf<Float?>(null) }
+    var w by remember { mutableIntStateOf(1) }
+    val frac = drag ?: if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    Box(
+        modifier.fillMaxWidth().height(32.dp)
+            .onSizeChanged { w = it.width.coerceAtLeast(1) }
+            .pointerInput(duration) {
+                // 单击也能跳：不用非得按住拖
+                detectTapGestures { o ->
+                    if (duration > 0) onSeek(((o.x / w).coerceIn(0f, 1f) * duration).toLong())
+                }
+            }
+            .pointerInput(duration) {
+                detectDragGestures(
+                    onDragStart = { o -> drag = (o.x / w).coerceIn(0f, 1f) },
+                    onDrag = { change, _ -> drag = (change.position.x / w).coerceIn(0f, 1f) },
+                    onDragEnd = {
+                        drag?.let { f -> if (duration > 0) onSeek((f * duration).toLong()) }
+                        drag = null
+                    },
+                    onDragCancel = { drag = null },
+                )
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.22f), CircleShape))
+        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(3.dp).background(Color.White, CircleShape))
+        // 拖动时显示圆点，方便对准
+        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
+            Box(
+                Modifier.size(if (drag != null) 12.dp else 8.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = if (drag != null) 1f else 0.75f)),
+            )
+        }
+    }
+}
+
+/** 竖屏播放器的主体：封面 → 歌手 → 歌名 → 专辑名 → 进度条 → 控制按钮 */
+@Composable
+fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
+    val go = LocalGo.current
+    val ctx = LocalContext.current
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val coverSize = minOf(maxWidth * 0.86f, 360.dp)
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontically) {
+            Cover(
+                s.coverUrl,
+                Modifier.size(coverSize).clickable {
+                    vm.showPlayer = false
+                    vm.openNmSongAlbum(s)
+                },
+                16.dp,
+            )
+            VS(16)
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontically,
+            ) {
+                Txt(
+                    s.artist, 14, color = Color.White.copy(alpha = 0.72f), maxLines = 1,
+                    modifier = Modifier.clickable {
+                        vm.showPlayer = false
+                        vm.openNmSongArtist(s)
+                    }.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+                VS(4)
+                // 歌名用 MarqueeText，过长时横向滚动
+                MarqueeText(s.title, 22, FontWeight.Bold, Modifier.fillMaxWidth(), align = TextAlign.Center)
+                VS(4)
+                Txt(s.album.ifBlank { "未知专辑" }, 13, color = go.muted, maxLines = 1)
+            }
+            VS(14)
+            SimpleSeekBar(vm.positionMs, vm.durationMs) { vm.seekTo(it) }
+            Row(Modifier.fillMaxWidth()) {
+                Txt(fmt(vm.positionMs), 12, color = Color.White.copy(alpha = 0.6f))
+                Spacer(Modifier.weight(1f))
+                Txt(fmt(vm.durationMs), 12, color = Color.White.copy(alpha = 0.6f))
+            }
+            VS(10)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 38.dp, tint = Color.White) { vm.prev() }
+                HS(8)
+                IconBtn(
+                    if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                    if (vm.isPlaying) "暂停" else "播放",
+                    size = 52.dp, tint = Color.Black, bg = Color.White,
+                ) { vm.togglePlay() }
+                HS(8)
+                IconBtn(Icons.Outlined.SkipNext, "下一首", size = 38.dp, tint = Color.White) { vm.next() }
+            }
+            VS(10)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconBtn(Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表", size = 32.dp, tint = Color.White) {
+                    vm.showQueue = true
+                }
+                HS(8)
+                IconBtn(
+                    when (vm.playMode) {
+                        0 -> Icons.Outlined.Repeat
+                        1 -> Icons.Outlined.Shuffle
+                        else -> Icons.Outlined.RepeatOne
+                    },
+                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
+                    size = 32.dp, tint = Color.White,
+                ) { vm.cycleMode() }
+            }
+            VS(10)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconBtn(Icons.Outlined.Share, "分享", size = 30.dp, tint = Color.White) {
+                    shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
+                }
+                HS(4)
+                IconBtn(Icons.Outlined.Download, "下载", size = 30.dp, tint = Color.White) { vm.download(listOf(s)) }
+                HS(4)
+                IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单", size = 30.dp, tint = Color.White) {
+                    vm.pick(listOf(s.ssid), s.title, s.coverUrl)
+                }
+                HS(4)
+                QualityMenu(vm, Color.White)
+                HS(4)
+                SpeedMenu(vm, Color.White)
+            }
+        }
+    }
+}
+
+// =====================================================================
+// 音质 / 倍速菜单
+// =====================================================================
+
+/** 音质菜单。[tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区） */
+@Composable
+fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
+    var open by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
+    Box {
+        IconBtn(Icons.Outlined.HighQuality, "音质", size = 30.dp, tint = tint) { open = true }
+        DropdownMenu(open, { open = false }) {
+            NM_LEVELS.forEach { lv ->
+                DropdownMenuItem(
+                    { Txt(nmLevelLabel(lv), 14) },
+                    {
+                        vm.setQuality(lv)
+                        open = false
+                        toast(ctx, "已切换到${nmLevelLabel(lv)}")
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** 倍速菜单 */
+@Composable
+fun SpeedMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconBtn(Icons.Outlined.Speed, "倍速", size = 30.dp, tint = tint) { open = true }
+        DropdownMenu(open, { open = false }) {
+            listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
+                DropdownMenuItem(
+                    { Txt(if (sp == 1f) "正常" else "${sp}x", 14) },
+                    {
+                        vm.setSpeed(sp)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
+
 // =====================================================================
 // 歌词
 // =====================================================================

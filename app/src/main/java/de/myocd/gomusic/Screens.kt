@@ -1737,11 +1737,16 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
             Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
             size = 24.dp, minHit = 34.dp, tint = Color.White,
         ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
-        // MV：只有这首歌有 MV（mvId > 0）时才显示
+        // MV：只有这首歌有 MV（mvId > 0）时才显示。
+        // 这里用文字按钮而不是图标：图标扩展里 VideoLibrary / Movie 都取不到
+        // （编译报 Unresolved reference），文字「MV」反而更直白
         if (s.mvId > 0L) {
             HS(6)
-            IconBtn(Icons.Outlined.Movie, "播放 MV", size = 24.dp, minHit = 34.dp, tint = Color.White) {
-                vm.playMv()
+            Box(
+                Modifier.size(34.dp).clickScale(true) { vm.playMv() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Txt("MV", 12, color = Color.White, weight = FontWeight.Bold)
             }
         }
         HS(6)
@@ -1878,9 +1883,14 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") {
                     vm.pick(listOf(s.ssid), s.title, s.coverUrl)
                 }
-                // MV：只有这首歌有 MV（mvId > 0）时才显示
+                // MV：只有这首歌有 MV（mvId > 0）时才显示（图标取不到，用文字按钮）
                 if (s.mvId > 0L) {
-                    IconBtn(Icons.Outlined.Movie, "播放 MV") { vm.playMv() }
+                    Box(
+                        Modifier.size(36.dp).clickScale(true) { vm.playMv() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Txt("MV", 13, color = go.on, weight = FontWeight.Bold)
+                    }
                 }
                 QualityMenu(vm)
                 SpeedMenu(vm)

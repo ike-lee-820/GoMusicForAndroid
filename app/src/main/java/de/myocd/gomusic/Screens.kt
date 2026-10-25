@@ -1724,9 +1724,9 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
                 DropdownMenuItem(
                     { Txt(nmLevelLabel(lv), 14) },
                     {
-                        vm.setQuality(lv)
+                        vm.updateQuality(lv)
                         open = false
-                        toast(ctx, "已切换到${nmLevelLabel(lv)}")
+                        vm.toast("已切换到${nmLevelLabel(lv)}")
                     },
                 )
             }
@@ -1745,7 +1745,7 @@ fun SpeedMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
                 DropdownMenuItem(
                     { Txt(if (sp == 1f) "正常" else "${sp}x", 14) },
                     {
-                        vm.setSpeed(sp)
+                        vm.updateSpeed(sp)
                         open = false
                     },
                 )

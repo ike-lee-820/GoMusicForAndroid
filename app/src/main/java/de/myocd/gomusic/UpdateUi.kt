@@ -81,9 +81,12 @@ fun UpdateScreen(vm: MainViewModel) {
                 val (done, total) = prog
                 val pct = if (total > 0) (done * 100f / total) else 0f
                 Txt(
-                    "正在下载… ${"%.1f".format(done / 1024f / 1024f)}" +
-                        if (total > 0) " / ${"%.1f".format(total / 1024f / 1024f)} MB" else " MB",
-                    13, color = go.muted,
+                    buildString {
+                        append("正在下载… ${"%.1f".format(done / 1024f / 1024f)}")
+                        append(if (total > 0) " / ${"%.1f".format(total / 1024f / 1024f)} MB" else " MB")
+                        if (total > 0) append("  ${pct.toInt()}%")
+                    },
+                    13, color = go.muted, tnum = true,
                 )
                 Spacer(Modifier.height(10.dp))
                 if (total > 0) {

@@ -1048,8 +1048,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         updateProgress = 0L to 0L
         viewModelScope.launch {
             val f = withContext(Dispatchers.IO) {
+                // 下载回调是「每读完一个 64KB 块」触发一次。
+                // 之前每个块都 viewModelScope.launch 一个协程去写状态 ——
+                // 一个 30MB 的安装包会瞬间堆出几百个协程，全部挤到主线程，
+                // 界面被拖住、看着就像有几十个下载在同时跑。
+                // 现在直接写状态（Compose 的 State 是线程安全的），
+                // 并节流到 200ms 一次；最后一块必定写入，保证进度收尾到 100%。
+                var lastEmit = 0L
                 Updater.downloadApk(info, dir) { done, total ->
-                    viewModelScope.launch { updateProgress = done to total }
+                    val now = System.currentTimeMillis()
+                    if (done < total && now - lastEmit < 200) return@downloadApk
+                    lastEmit = now
+                    updateProgress = done to total
                 }
             }
             if (f == null) {

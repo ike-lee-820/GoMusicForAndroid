@@ -281,6 +281,9 @@ object Netease {
                     artist = d.artist.takeIf { it.isNotBlank() } ?: s.artist,
                     album = d.album.takeIf { it.isNotBlank() } ?: s.album,
                     coverUrl = d.coverUrl ?: s.coverUrl,
+                    // 搜索结果里的 mv 字段有时是 0，详情里能拿到真的。
+                    // 补上才能「第一次放这首歌 MV 按钮就在」
+                    mvId = s.mvId.takeIf { it > 0L } ?: d.mvId,
                 )
             }
         }
@@ -955,6 +958,44 @@ object Netease {
         val u = r.obj("data")?.str("url") ?: r.str("url")
         val ok = u?.takeIf { it.startsWith("http") }
         NmLog.note("取 MV 地址 mv=$mvId -> ${if (ok == null) "无" else "有"}")
+        return ok
+    }
+
+    /**
+     * 往网易云歌单加歌（/playlist/tracks?op=add）。
+     *
+     * 只接受网易云歌曲 id：本站曲库的歌在网易云那边不存在，
+     * 传过去会被忽略或报错，调用方已经先过滤过。
+     */
+    fun playlistAdd(pid: Long, trackIds: List<Long>): Boolean {
+        if (pid <= 0L || trackIds.isEmpty()) return false
+        val r = get(
+            "/playlist/tracks",
+            "op" to "add", "pid" to pid.toString(), "tracks" to trackIds.joinToString(","),
+        )
+        val ok = r.code() == 200
+        NmLog.note("歌单加歌 pid=$pid ids=${trackIds.size} -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 从网易云歌单删歌（/playlist/tracks?op=del） */
+    fun playlistDel(pid: Long, trackIds: List<Long>): Boolean {
+        if (pid <= 0L || trackIds.isEmpty()) return false
+        val r = get(
+            "/playlist/tracks",
+            "op" to "del", "pid" to pid.toString(), "tracks" to trackIds.joinToString(","),
+        )
+        val ok = r.code() == 200
+        NmLog.note("歌单删歌 pid=$pid ids=${trackIds.size} -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 改网易云歌单名（/playlist/update） */
+    fun playlistRename(pid: Long, name: String): Boolean {
+        if (pid <= 0L || name.isBlank()) return false
+        val r = get("/playlist/update", "id" to pid.toString(), "name" to name)
+        val ok = r.code() == 200
+        NmLog.note("歌单改名 pid=$pid -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
         return ok
     }
 

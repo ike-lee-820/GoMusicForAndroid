@@ -1855,10 +1855,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun addToPlaylist(id: String, ssids: List<String>) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
         keepForPlaylist(songsByIds(ssids))
-        savePl(playlists.map { p ->
-            if (p.id == id) p.copy(songs = (p.songs + ssids).distinct()) else p
+        savePl(playlists.map { q ->
+            if (q.id == id) q.copy(songs = (q.songs + ssids).distinct()) else q
         })
+        syncNmAdd(p, ssids)
         toast("已加入歌单")
     }
 
@@ -1931,8 +1933,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return "$base($i)"
     }
 
-    fun renamePlaylist(id: String, name: String) =
-        savePl(playlists.map { if (it.id == id) it.copy(name = name.trim()) else it })
+    fun renamePlaylist(id: String, name: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        val n = name.trim()
+        savePl(playlists.map { if (it.id == id) it.copy(name = n) else it })
+        // 网易云歌单：改名回写云端
+        if (p.nmId > 0L && prefs.nmCookie.isNotBlank()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val ok = runCatching { Netease.playlistRename(p.nmId, n) }.getOrDefault(false)
+                withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单改名未成功（本地已改）") }
+            }
+        }
+    }
 
     fun deletePlaylist(id: String) = savePl(playlists.filter { it.id != id })
 
@@ -1947,8 +1959,41 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         })
     }
 
-    fun removeFromPl(id: String, ssid: String) =
-        savePl(playlists.map { p -> if (p.id == id) p.copy(songs = p.songs - ssid) else p })
+    fun removeFromPl(id: String, ssid: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        savePl(playlists.map { q -> if (q.id == id) q.copy(songs = q.songs - ssid) else q })
+        syncNmRemove(p, listOf(ssid))
+    }
+
+    /**
+     * 本地歌单删歌后，把删掉的那几首同步到网易云歌单。
+     *
+     * 只处理网易云来源的歌：本站曲库的歌在网易云那边不存在，
+     * 传过去要么被忽略、要么报错，所以直接跳过。
+     */
+    private fun syncNmRemove(p: Playlist, ssids: List<String>) {
+        if (p.nmId <= 0L || prefs.nmCookie.isBlank()) return
+        val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.playlistDel(p.nmId, ids) }.getOrDefault(false)
+            withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单未同步删除（本地已删）") }
+        }
+    }
+
+    /**
+     * 本地歌单加歌后，把新增的那几首同步到网易云歌单。
+     * 同样只同步网易云来源的歌（见 [syncNmRemove]）。
+     */
+    private fun syncNmAdd(p: Playlist, ssids: List<String>) {
+        if (p.nmId <= 0L || prefs.nmCookie.isBlank()) return
+        val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.playlistAdd(p.nmId, ids) }.getOrDefault(false)
+            withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单未同步添加（本地已加）") }
+        }
+    }
 
     // ================= MV =================
 

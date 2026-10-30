@@ -151,6 +151,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
@@ -165,6 +167,9 @@ import android.view.SurfaceView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Path
 
 private const val PI_F = 3.14159265f
 
@@ -1045,7 +1050,14 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
 
     LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 8.dp)) {
         item {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            // 横向可滚动：按钮多的时候宁可滚动，也不要把「同步网易云」挤没了
+            // （之前固定排布，宽度不够时按钮被压缩，同步按钮直接看不见）
+            Row(
+                Modifier
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 GoButton("新建歌单", icon = Icons.Outlined.Add) { creating = true }
                 Spacer(Modifier.width(8.dp))
                 GoButton("导入", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { importing = true }
@@ -1737,17 +1749,10 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
             Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
             size = 24.dp, minHit = 34.dp, tint = Color.White,
         ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
-        // MV：只有这首歌有 MV（mvId > 0）时才显示。
-        // 这里用文字按钮而不是图标：图标扩展里 VideoLibrary / Movie 都取不到
-        // （编译报 Unresolved reference），文字「MV」反而更直白
+        // MV：只有这首歌有 MV（mvId > 0）时才显示
         if (s.mvId > 0L) {
             HS(6)
-            Box(
-                Modifier.size(34.dp).clickScale(true) { vm.playMv() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Txt("MV", 12, color = Color.White, weight = FontWeight.Bold)
-            }
+            MvIconButton({ vm.playMv() }, tint = Color.White, size = 22.dp, hit = 34.dp)
         }
         HS(6)
         QualityMenu(vm, Color.White)
@@ -1883,14 +1888,9 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") {
                     vm.pick(listOf(s.ssid), s.title, s.coverUrl)
                 }
-                // MV：只有这首歌有 MV（mvId > 0）时才显示（图标取不到，用文字按钮）
+                // MV：只有这首歌有 MV（mvId > 0）时才显示
                 if (s.mvId > 0L) {
-                    Box(
-                        Modifier.size(36.dp).clickScale(true) { vm.playMv() },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Txt("MV", 13, color = go.on, weight = FontWeight.Bold)
-                    }
+                    MvIconButton({ vm.playMv() }, tint = go.on, size = 24.dp, hit = 36.dp)
                 }
                 QualityMenu(vm)
                 SpeedMenu(vm)
@@ -1932,6 +1932,62 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
 // =====================================================================
 // 音质 / 倍速菜单
 // =====================================================================
+
+/**
+ * MV 按钮：视频图标用 Canvas 自绘。
+ *
+ * 图标扩展里没有视频类图标（VideoLibrary / Movie 都取不到，编译报
+ * Unresolved reference），所以直接画一个「摄像机 + 播放三角」。
+ * 不依赖任何图标名，不会再出现取不到的情况。
+ */
+@Composable
+fun MvIconButton(
+    onClick: () -> Unit,
+    tint: Color = LocalGo.current.on,
+    size: Dp = 24.dp,
+    hit: Dp = 36.dp,
+) {
+    Box(
+        Modifier.size(hit).clickScale(true, onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(size)) {
+            val w = this.size.width
+            val h = this.size.height
+            val st = Stroke(width = w * 0.09f)
+            // 机身：圆角矩形
+            drawRoundRect(
+                color = tint,
+                topLeft = Offset(0f, h * 0.22f),
+                size = Size(w * 0.74f, h * 0.56f),
+                cornerRadius = CornerRadius(w * 0.12f, w * 0.12f),
+                style = st,
+            )
+            // 右侧镜头：三角形楔子
+            drawPath(
+                Path().apply {
+                    moveTo(w * 0.74f, h * 0.36f)
+                    lineTo(w * 0.99f, h * 0.24f)
+                    lineTo(w * 0.99f, h * 0.76f)
+                    lineTo(w * 0.74f, h * 0.64f)
+                    close()
+                },
+                color = tint,
+                style = st,
+            )
+            // 机身里的播放三角
+            drawPath(
+                Path().apply {
+                    moveTo(w * 0.24f, h * 0.34f)
+                    lineTo(w * 0.24f, h * 0.66f)
+                    lineTo(w * 0.56f, h * 0.5f)
+                    close()
+                },
+                color = tint,
+            )
+        }
+    }
+}
 
 /** 音质菜单。[tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区） */
 @Composable
@@ -2474,9 +2530,9 @@ BoxWithConstraints(
 /**
  * MV 整屏播放页。
  *
- * 用独立的 ExoPlayer 播视频：和后台音频播放互不干扰。
- * 没有引入 media3-ui，画面用 SurfaceView 承接（player.setVideoSurfaceView），
- * 点击画面切换播放 / 暂停，左上角关闭返回。
+ * 画面按视频真实宽高比居中显示（之前直接铺满，比例就错了），
+ * 比例从 player.videoSize 拿，拿到之前先用 16:9 占位。
+ * 底部有播放 / 暂停与进度条：没有引入 media3-ui，控件自己拼。
  */
 @Composable
 fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
@@ -2488,22 +2544,72 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             playWhenReady = true
         }
     }
-    DisposableEffect(player) { onDispose { player.release() } }
+    // 视频真实比例：宽高都为 0 时（还没解析出来）用 16:9
+    var ratio by remember { mutableFloatStateOf(16f / 9f) }
+    var playing by remember { mutableStateOf(true) }
+    var pos by remember { mutableLongStateOf(0L) }
+    var dur by remember { mutableLongStateOf(0L) }
+    DisposableEffect(player) {
+        val l = object : androidx.media3.common.Player.Listener {
+            override fun onVideoSizeChanged(vs: androidx.media3.common.VideoSize) {
+                if (vs.width > 0 && vs.height > 0) ratio = vs.width.toFloat() / vs.height
+            }
+            override fun onPlayWhenReadyChanged(pwr: Boolean, reason: Int) { playing = pwr }
+            override fun onIsPlayingChanged(p: Boolean) { playing = p }
+        }
+        player.addListener(l)
+        onDispose { player.removeListener(l); player.release() }
+    }
+    // 进度：定时读，比逐帧监听省事，300ms 足够顺滑
+    LaunchedEffect(player) {
+        while (true) {
+            pos = player.currentPosition
+            dur = player.duration.coerceAtLeast(0L)
+            delay(300)
+        }
+    }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(
-            factory = { c -> SurfaceView(c).also { sv -> player.setVideoSurfaceView(sv) } },
-            modifier = Modifier.fillMaxSize(),
-        )
-        // 点画面切换播放 / 暂停（在视频之上、标题栏之下）
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            AndroidView(
+                factory = { c -> SurfaceView(c).also { sv -> player.setVideoSurfaceView(sv) } },
+                // 按真实比例：宽高谁先顶到边界就按谁算，不会拉伸变形
+                modifier = Modifier.fillMaxSize().wrapContentSize(),
+                update = { sv ->
+                    val pw = sv.width
+                    val ph = sv.height
+                    if (pw > 0 && ph > 0) {
+                        val boxW: Int
+                        val boxH: Int
+                        if (pw.toFloat() / ph > ratio) {
+                            boxH = ph
+                            boxW = (ph * ratio).toInt()
+                        } else {
+                            boxW = pw
+                            boxH = (pw / ratio).toInt()
+                        }
+                        val lp = sv.layoutParams
+                        if (lp != null && (lp.width != boxW || lp.height != boxH)) {
+                            lp.width = boxW
+                            lp.height = boxH
+                            sv.layoutParams = lp
+                        }
+                    }
+                },
+            )
+        }
+        // 点画面切换播放 / 暂停
         Box(Modifier.fillMaxSize().noRippleClickable {
-            if (player.isPlaying) player.pause() else player.play()
+            playing = !playing
+            player.playWhenReady = playing
         })
         // 顶部：关闭 + 标题
         Row(
             Modifier
                 .fillMaxWidth()
+                .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .height(48.dp)
+                .background(Color.Black.copy(alpha = 0.35f))
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -2512,6 +2618,34 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             }
             HS(8)
             Txt(v.title, 15, color = Color.White, maxLines = 1, weight = FontWeight.Medium)
+        }
+        // 底部：播放 / 暂停 + 进度条
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconBtn(
+                    if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                    if (playing) "暂停" else "播放",
+                    size = 34.dp, tint = Color.White,
+                ) {
+                    playing = !playing
+                    player.playWhenReady = playing
+                }
+                HS(8)
+                Txt(fmt(pos), 12, color = Color.White, tnum = true)
+                HS(4)
+                Box(Modifier.weight(1f)) {
+                    SimpleSeekBar(pos, dur) { player.seekTo(it) }
+                }
+                HS(4)
+                Txt(fmt(dur), 12, color = Color.White, tnum = true)
+            }
         }
     }
 }

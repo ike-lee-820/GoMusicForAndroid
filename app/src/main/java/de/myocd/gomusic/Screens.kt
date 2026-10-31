@@ -336,12 +336,37 @@ fun MainScreen(vm: MainViewModel) {
                 NavBar(vm)
             }
         }
+
+        // 以下弹层必须在最外层 Box 里组合，顺序上排在内容之后：
+        // 它们靠「后组合的盖在上面」生效，缺了任何一段都会变成
+        // 「点了没反应」—— 状态置了，但没有任何东西被画出来
+        AnimatedVisibility(
+            vm.showPlayer,
+            enter = slideInVertically(tween(240)) { it } + fadeIn(tween(180)),
+            exit = slideOutVertically(tween(240)) { it } + fadeOut(tween(180)),
+        ) { FullPlayer(vm) }
+
+        AnimatedVisibility(
+            vm.showLyrics,
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(150)),
+        ) { LyricsPage(vm) }
+
+        if (vm.showQueue) QueueSheet(vm)
+        if (vm.showSettings) SettingsSheet(vm)
+        if (vm.showNmLogin) NmLoginSheet(vm)
+        if (vm.showHistory) HistorySheet(vm)
+        if (vm.showDownloads) DownloadsSheet(vm)
+        vm.pickReq?.let { PickSheet(vm, it) }
+
+        // MV：放在所有内容之后组合，才在最上层。
+        // 之前它在二级页的 AnimatedContent 里，而 FullPlayer 组合在它之后，
+        // 于是播放页把 MV 整个盖住了 —— 点 MV 按钮看起来没反应。
+        val video = vm.stack.lastOrNull() as? Screen.Video
+        if (video != null) VideoScreen(vm, video)
     }
 }
 
-/**
- * 横屏左侧导航栏：竖屏底栏的竖排版本，逻辑完全一样（切标签、清栈、清搜索词）。
- */
 /** 横屏（含平板）判定 */
 @Composable
 fun isLandscape(): Boolean {
@@ -393,6 +418,9 @@ fun NavRail(vm: MainViewModel) {
     }
 }
 
+/**
+ * 横屏左侧导航栏：竖屏底栏的竖排版本，逻辑完全一样（切标签、清栈、清搜索词）。
+ */
 /**
  * 横屏右侧播放栏：竖屏底部迷你播放器的竖排版本。
  * 封面在上，歌名/歌手竖着排，下面是播放与播放列表，操作逻辑不变。

@@ -2221,7 +2221,11 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     val absent = vm.qualitiesAbsent
     val cur = vm.curLevel
     Box {
-        IconBtn(Icons.Outlined.HighQuality, "音质", size = 30.dp, tint = tint) { open = true }
+        IconBtn(Icons.Outlined.HighQuality, "音质", size = 30.dp, tint = tint) {
+            // 打开菜单才探测：探测要十几个请求，切歌时跑它会拖慢起播
+            vm.probeQualities()
+            open = true
+        }
         DropdownMenu(open, { open = false }) {
             NM_LEVELS.forEach { lv ->
                 val ok = lv !in absent

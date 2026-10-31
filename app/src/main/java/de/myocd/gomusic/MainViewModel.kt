@@ -1560,15 +1560,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         c.play()
     }
 
-    /** 预取马上要播的这一首（以及后面两首）的音源地址 */
+    /**
+     * 预取马上要播的这一首的音源地址。
+     *
+     * 只取这一首，不连带后面几首：预取本身也是十几个请求，
+     * 一次预取三首等于把请求量翻三倍，反而把当前这首歌的起播拖慢。
+     */
     private fun prefetchCurrent(list: List<Song>, index: Int) {
         val p = Prefs(app)
         Netease.cookie = p.nmCookie
-        val i = index.coerceIn(0, list.lastIndex)
-        for (k in i until minOf(i + 3, list.size)) {
-            val nid = neteaseIdOf(list[k].ssid) ?: continue
-            Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
-        }
+        val nid = neteaseIdOf(list[index.coerceIn(0, list.lastIndex)].ssid) ?: return
+        Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
     }
 
     fun playIndex(i: Int) {
@@ -1773,6 +1775,42 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         afterConnect?.let { afterConnect = null; it() }
     }
 
+    /**
+     * 打开音质菜单时才探测这首歌有哪些档位（结果缓存，只探一次）。
+     *
+     * 放在这里而不是切歌时：探测最多要 14 个请求，跟播放毫无关系，
+     * 切歌时跑它会和取地址、取歌词抢连接，把整首歌的起播拖慢。
+     */
+    fun probeQualities() {
+        val id = curSsid ?: return
+        val nid = neteaseIdOf(id) ?: return
+        if (offline) return
+        if (nmLevelsCache.containsKey(nid)) {
+            nmLevelsCache[nid]?.let {
+                qualitiesAbsent = it.absent.toSet()
+                if (it.ok.isNotEmpty()) qualities = it.ok
+            }
+            return
+        }
+        if (qualitiesProbing) return
+        qualitiesProbing = true
+        viewModelScope.launch {
+            val p = withContext(Dispatchers.IO) {
+                runCatching { Netease.availableLevels(nid) }.getOrNull()
+            }
+            qualitiesProbing = false
+            if (p != null) {
+                nmLevelsCache[nid] = p
+                if (curSsid == id) {
+                    qualitiesAbsent = p.absent.toSet()
+                    if (p.ok.isNotEmpty() && !offline) qualities = p.ok
+                }
+            }
+        }
+    }
+
+    private var qualitiesProbing = false
+
     /** 预取后面几首的音源地址，切过去时直接命中缓存，不用再干等 */
     private fun prefetchAhead() {
         val c = controller ?: return
@@ -1780,9 +1818,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val nm = neteaseIdOf(curSsid)
         if (nm == null) return
         Netease.cookie = p.nmCookie
-        val start = c.currentMediaItemIndex + 1
-        for (i in start until minOf(start + 2, c.mediaItemCount)) {
-            val nid = neteaseIdOf(c.getMediaItemAt(i).mediaId) ?: continue
+        val i = c.currentMediaItemIndex + 1
+        if (i < c.mediaItemCount) {
+            val nid = neteaseIdOf(c.getMediaItemAt(i).mediaId) ?: return
             Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
         }
     }
@@ -1852,23 +1890,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             // 离线时只列已经下载过的音质（没下载的播不了，不显示）
             qualities = if (offline) downloadedQualities(id).ifEmpty { NM_LEVELS } else NM_LEVELS
             val nid = neteaseIdOf(id)
-            // 后台逐档位探测真实存在的音质，探测完只显示拿得到的那些
+            // 音质档位不再在切歌时探测。
+            //
+            // 探测要对 7 个档位各发一次请求（失败还会再试一次），最多 14 个
+            // 请求 —— 而它只是为了让菜单能置灰「无音源」的档位，跟播放无关。
+            // 切歌时它和取地址、取歌词、预取一起涌向同一个服务端，
+            // 是「什么都慢」的最大一块。改成打开音质菜单时才探测
+            // （见 probeQualities），切歌本身一个请求都不多发。
             if (nid != null && !offline) {
-                val hit = nmLevelsCache[nid]
-                if (hit != null) {
+                nmLevelsCache[nid]?.let { hit ->
                     qualitiesAbsent = hit.absent.toSet()
                     if (hit.ok.isNotEmpty()) qualities = hit.ok
-                } else {
-                    viewModelScope.launch {
-                        val p = withContext(Dispatchers.IO) {
-                            runCatching { Netease.availableLevels(nid) }.getOrNull()
-                        }
-                        if (p != null && curSsid == id) {
-                            nmLevelsCache[nid] = p
-                            qualitiesAbsent = p.absent.toSet()
-                            if (p.ok.isNotEmpty() && !offline) qualities = p.ok
-                        }
-                    }
                 }
             }
             lyricJob = viewModelScope.launch {

@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 
 /** 曲库来源：本站 / 网易云 */
@@ -487,8 +488,10 @@ object Netease {
                             ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
                         return !u.isNullOrBlank()
                     }
-                    // 失败再试一次：偶发抖动不该让这一档变成「未知」
-                    probe() ?: probe()
+                    // 只探一次，不重试：7 个档位各重试一次就是 14 个请求，
+                    // 而它只是用来给菜单置灰「无音源」，不值得为偶发抖动
+                    // 把请求量翻倍。探不出来按 unknown 处理（不置灰）
+                    probe()
                 }
             }.map { (lv, d) -> lv to d.await() }
         }
@@ -603,6 +606,15 @@ object Netease {
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .callTimeout(12, TimeUnit.SECONDS)
+        .dispatcher(
+            Dispatcher().apply {
+                // OkHttp 默认每 host 只有 5 个并发，一批探测会被切成两批走。
+                // 这里放宽到 8：探测用的是「先首选档位 3 个」这种小批量，
+                // 不需要太多，但也不该被默认的 5 卡住
+                maxRequests = 16
+                maxRequestsPerHost = 8
+            }
+        )
         .build()
 
     /**

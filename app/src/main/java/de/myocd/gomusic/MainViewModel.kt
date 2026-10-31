@@ -352,18 +352,28 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun nmLoginPhone(phone: String, code: String, password: String, nickname: String) {
         if (phone.isBlank() || code.isBlank()) { toast("请填写手机号与验证码"); return }
         if (nickname.isNotBlank() && password.isBlank()) { toast("注册请填写密码"); return }
+        if (nmBusy) return
         nmBusy = true
-        viewModelScope.launch(Dispatchers.IO) {
-            val r = runCatching {
-                if (nickname.isBlank()) Netease.loginByCaptcha(phone, code)
-                else Netease.register(phone, password, code, nickname)
-            }.getOrNull()
-            withContext(Dispatchers.Main) {
-                nmBusy = false
-                when {
-                    r == null -> toast("网络异常，请稍后再试")
-                    r.ok -> nmLogin(r.cookie!!, null)
-                    else -> toast(r.message?.takeIf { it.isNotBlank() } ?: "登录失败（code ${r.code}）")
+        viewModelScope.launch {
+            // 整体超时：Netease.get 内部会重试多次且间隔递增，
+            // 服务端不响应时总耗时可能到十几秒，卡在那里界面像没反应。
+            // 到点就中断并提示，绝不让按钮一直转圈
+            val r = withTimeoutOrNull(20_000) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (nickname.isBlank()) Netease.loginByCaptcha(phone, code)
+                        else Netease.register(phone, password, code, nickname)
+                    }.getOrNull()
+                }
+            }
+            nmBusy = false
+            when {
+                r == null -> toast("登录超时或网络异常，请稍后再试")
+                r.ok -> nmLogin(r.cookie!!, null)
+                else -> {
+                    val m = r.message?.takeIf { it.isNotBlank() }
+                    toast(if (m != null) "登录失败：$m" else "登录失败（code ${r.code}）")
+                    NmLog.note("验证码登录失败 code=${r.code} msg=${r.message}")
                 }
             }
         }

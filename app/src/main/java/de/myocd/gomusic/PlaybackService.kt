@@ -143,11 +143,6 @@ class PlaybackService : MediaSessionService() {
         applyFocus()
     }
 
-    override fun onDestroy() {
-        runCatching { PlayCache.release() }
-        super.onDestroy()
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val r = super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACTION_APPLY_FOCUS) applyFocus()
@@ -233,6 +228,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         stopCallWatch()
+        // 释放 SimpleCache（边播边缓存用的）
+        runCatching { PlayCache.release() }
         session?.run {
             player.release()
             release()

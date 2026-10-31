@@ -934,13 +934,27 @@ object Netease {
      * 正确流程是 /captcha/sent 之后直接 /login/cellphone。
      */
     fun loginByCaptcha(phone: String, captcha: String): LoginResult {
-        val r = get(
-            "/login/cellphone",
-            "phone" to cleanPhone(phone),
-            "captcha" to captcha.trim(),
-            "countrycode" to "86",
-        )
-        return LoginResult(cookieOf(r), r.code(), msgOf(r))
+        val p = cleanPhone(phone)
+        val c = captcha.trim()
+        // 不同部署对参数的宽容度不一样：先带 countrycode，拿不到登录凭证
+        // 就去掉再试一次；仍不行再试「先 verify 再登录」这条路。
+        // 三条都走完还是失败，才把服务端的 message 报上去。
+        var r = get("/login/cellphone", "phone" to p, "captcha" to c, "countrycode" to "86")
+        var ck = cookieOf(r)
+        if (ck == null) {
+            r = get("/login/cellphone", "phone" to p, "captcha" to c)
+            ck = cookieOf(r)
+        }
+        val first = LoginResult(ck, r.code(), msgOf(r))
+        if (first.ok) return first
+        // 少数部署要求先 /captcha/verify 再登录（虽然多数会因此核销验证码）
+        val v = get("/captcha/verify", "phone" to p, "captcha" to c, "ctcode" to "86")
+        if (v.code() == 200) {
+            val r2 = get("/login/cellphone", "phone" to p, "captcha" to c)
+            val ck2 = cookieOf(r2)
+            if (ck2 != null) return LoginResult(ck2, r2.code(), msgOf(r2))
+        }
+        return first
     }
 
     /** 注册（注册成功即登录） */

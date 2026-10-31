@@ -170,7 +170,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawLine
 import androidx.compose.ui.graphics.Path
 
 private const val PI_F = 3.14159265f
@@ -1994,10 +1993,10 @@ fun TransIconButton(
                 val u = this.size.width / 24f
                 val st = Stroke(width = 1.7f * u)
                 // 「文」：顶部一点一撇、中间一横、下方撇捺
-                drawLine(c, Offset(12.6f * u, 3.2f * u), Offset(8.4f * u, 7.6f * u), st)
-                drawLine(c, Offset(3.6f * u, 8.8f * u), Offset(20.4f * u, 8.8f * u), st)
-                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(5.2f * u, 20.8f * u), st)
-                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(18.8f * u, 20.8f * u), st)
+                drawLine(c, Offset(12.6f * u, 3.2f * u), Offset(8.4f * u, 7.6f * u), st.width)
+                drawLine(c, Offset(3.6f * u, 8.8f * u), Offset(20.4f * u, 8.8f * u), st.width)
+                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(5.2f * u, 20.8f * u), st.width)
+                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(18.8f * u, 20.8f * u), st.width)
             }
         }
     }
@@ -2463,7 +2462,7 @@ LaunchedEffect(manualAt) {
 
 BoxWithConstraints(
     modifier.fillMaxSize()
-        .pointerInput(lines) {
+        .pointerInput(rows) {
             detectVerticalDragGestures(
                 onDragStart = { manualAt = System.currentTimeMillis() },
                 onDragEnd = { manualAt = System.currentTimeMillis() },
@@ -2627,9 +2626,17 @@ BoxWithConstraints(
 /**
  * MV 整屏播放页。
  *
- * 画面按视频真实宽高比居中显示（之前直接铺满，比例就错了），
- * 比例从 player.videoSize 拿，拿到之前先用 16:9 占位。
- * 底部有播放 / 暂停与进度条：没有引入 media3-ui，控件自己拼。
+ * 比例：按视频真实宽高比居中显示，宽高比从 player.videoSize 拿，
+ * 拿到之前先用 16:9 占位。
+ *
+ * 尺寸交给 Compose 算——用 BoxWithConstraints 拿到容器大小后按
+ * 「谁先顶到边界就按谁算」求出显示框，再用 Modifier.size 给 AndroidView。
+ * 之前是在 update 里改 SurfaceView 的 layoutParams，和 Compose 自己的
+ * 布局互相覆盖，所以比例时好时坏；SurfaceView 会把画面铺满整个 surface，
+ * surface 的框不对，画面就一定是变形的。
+ *
+ * 底部有播放 / 暂停 + 进度条 + 倍速（0.5–2），顶部有下载按钮。
+ * 倍速只作用于这个视频，和音频播放的倍速分开（两者是不同的 player）。
  */
 @Composable
 fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
@@ -2646,6 +2653,9 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
     var playing by remember { mutableStateOf(true) }
     var pos by remember { mutableLongStateOf(0L) }
     var dur by remember { mutableLongStateOf(0L) }
+    var speed by remember { mutableFloatStateOf(1f) }
+    var speedOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(speed) { player.setPlaybackSpeed(speed) }
     DisposableEffect(player) {
         val l = object : androidx.media3.common.Player.Listener {
             override fun onVideoSizeChanged(vs: androidx.media3.common.VideoSize) {
@@ -2665,83 +2675,97 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             delay(300)
         }
     }
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+        val cw = maxWidth
+        val ch = maxHeight
+        // 容器比视频更宽 -> 上下顶满、左右留黑边；反之左右顶满、上下留黑边
+        val wide = cw / ch > ratio
+        val boxW = if (wide) ch * ratio else cw
+        val boxH = if (wide) ch else cw / ratio
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             AndroidView(
                 factory = { c -> SurfaceView(c).also { sv -> player.setVideoSurfaceView(sv) } },
-                // 按真实比例：宽高谁先顶到边界就按谁算，不会拉伸变形
-                modifier = Modifier.fillMaxSize().wrapContentSize(),
-                update = { sv ->
-                    val pw = sv.width
-                    val ph = sv.height
-                    if (pw > 0 && ph > 0) {
-                        val boxW: Int
-                        val boxH: Int
-                        if (pw.toFloat() / ph > ratio) {
-                            boxH = ph
-                            boxW = (ph * ratio).toInt()
-                        } else {
-                            boxW = pw
-                            boxH = (pw / ratio).toInt()
-                        }
-                        val lp = sv.layoutParams
-                        if (lp != null && (lp.width != boxW || lp.height != boxH)) {
-                            lp.width = boxW
-                            lp.height = boxH
-                            sv.layoutParams = lp
-                        }
-                    }
-                },
+                modifier = Modifier.size(boxW, boxH),
             )
         }
-        // 点画面切换播放 / 暂停
-        Box(Modifier.fillMaxSize().noRippleClickable {
-            playing = !playing
-            player.playWhenReady = playing
-        })
-        // 顶部：关闭 + 标题
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .height(48.dp)
-                .background(Color.Black.copy(alpha = 0.35f))
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconBtn(Icons.Outlined.Close, "关闭", size = 44.dp, tint = Color.White) {
-                if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex)
+    }
+    // 点画面切换播放 / 暂停
+    Box(Modifier.fillMaxSize().noRippleClickable {
+        playing = !playing
+        player.playWhenReady = playing
+    })
+    // 顶部：关闭 + 标题 + 下载
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .align(Alignment.TopCenter)
+            .statusBarsPadding()
+            .height(48.dp)
+            .background(Color.Black.copy(alpha = 0.35f))
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconBtn(Icons.Outlined.Close, "关闭", size = 44.dp, tint = Color.White) {
+            if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex)
+        }
+        HS(8)
+        Txt(
+            v.title, 15, Modifier.weight(1f),
+            color = Color.White, maxLines = 1, weight = FontWeight.Medium,
+        )
+        if (vm.mvDownloading) {
+            Txt(
+                if (vm.mvDownloadProgress >= 0f) "下载中 ${(vm.mvDownloadProgress * 100).toInt()}%"
+                else "下载中…",
+                12, color = Color.White,
+            )
+        }
+        HS(4)
+        IconBtn(Icons.Outlined.Download, "下载 MV", size = 30.dp, tint = Color.White) {
+            vm.downloadMv(v)
+        }
+    }
+    // 底部：播放 / 暂停 + 进度条 + 倍速
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .align(Alignment.BottomCenter)
+            .navigationBarsPadding()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconBtn(
+                if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                if (playing) "暂停" else "播放",
+                size = 34.dp, tint = Color.White,
+            ) {
+                playing = !playing
+                player.playWhenReady = playing
             }
             HS(8)
-            Txt(v.title, 15, color = Color.White, maxLines = 1, weight = FontWeight.Medium)
-        }
-        // 底部：播放 / 暂停 + 进度条
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .background(Color.Black.copy(alpha = 0.45f))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconBtn(
-                    if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                    if (playing) "暂停" else "播放",
-                    size = 34.dp, tint = Color.White,
-                ) {
-                    playing = !playing
-                    player.playWhenReady = playing
+            Txt(fmt(pos), 12, color = Color.White, tnum = true)
+            HS(4)
+            Box(Modifier.weight(1f)) {
+                SimpleSeekBar(pos, dur) { player.seekTo(it) }
+            }
+            HS(4)
+            Txt(fmt(dur), 12, color = Color.White, tnum = true)
+            HS(4)
+            // 倍速：0.5–2
+            Box {
+                IconBtn(Icons.Outlined.Speed, "倍速", size = 30.dp, tint = Color.White) { speedOpen = true }
+                DropdownMenu(speedOpen, { speedOpen = false }) {
+                    listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
+                        DropdownMenuItem(
+                            { Txt(if (sp == 1f) "正常" else "${sp}x", 14) },
+                            {
+                                speed = sp
+                                speedOpen = false
+                            },
+                        )
+                    }
                 }
-                HS(8)
-                Txt(fmt(pos), 12, color = Color.White, tnum = true)
-                HS(4)
-                Box(Modifier.weight(1f)) {
-                    SimpleSeekBar(pos, dur) { player.seekTo(it) }
-                }
-                HS(4)
-                Txt(fmt(dur), 12, color = Color.White, tnum = true)
             }
         }
     }

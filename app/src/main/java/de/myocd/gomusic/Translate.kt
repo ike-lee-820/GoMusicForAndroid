@@ -4,12 +4,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import okhttp3.Request
-import okhttp3.RequestBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.util.UUID
 
@@ -66,17 +68,17 @@ object Translate {
 
     // ---------------- 主接口 ----------------
 
+    /** 请求体：用序列化构造，手动拼字符串遇到引号 / 换行会生成非法 JSON */
+    @Serializable
+    private class Req(val text: String, @SerialName("target_lang") val targetLang: String)
+
     private fun main(text: String): String? {
-        // 用序列化构造 body：手动拼字符串遇到引号 / 换行会生成非法 JSON
-        val body = json.encodeToString(
-            buildJsonObject {
-                put("text", text)
-                put("target_lang", "zh")
-            },
-        )
+        // 显式标注类型：encodeToString 的泛型在这里推不出来，
+        // 不写会报 "Cannot infer type for this parameter"
+        val body: String = json.encodeToString(Req(text, "zh"))
         val req = Request.Builder()
             .url(MAIN_URL)
-            .post(RequestBody.create(okhttp3.MediaType.parse("application/json; charset=utf-8"), body))
+            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .header("Connection", "close")
             .build()
         return runCatching {

@@ -502,7 +502,9 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                 if (vm.tab == TAB_HOME) {
                     Txt(titles[vm.tab], 20, Modifier.weight(1f), FontWeight.Bold)
                 } else {
-                    Txt(titles[vm.tab], 20, FontWeight.Bold)
+                    // weight 必须写成具名参数：Txt 的第 3 个位置是 modifier，
+                    // 直接传 FontWeight 会被当成 modifier 而报类型不符
+                    Txt(titles[vm.tab], 20, weight = FontWeight.Bold)
                     HS(12)
                     SearchField(
                         vm.query, { vm.query = it }, hints[vm.tab],

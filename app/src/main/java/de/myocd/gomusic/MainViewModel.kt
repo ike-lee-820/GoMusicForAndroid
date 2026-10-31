@@ -506,15 +506,29 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 点一次就并发翻完整篇并缓存（接口没有频率限制，不用一句一句等）。
      * 已经有译文时不发请求，改成切换译文的显示 —— 按钮这时不该重复翻译。
      */
+    /**
+     * 需要翻译的行（只含正文段里真正带外文的行）。
+     *
+     * 纯中文的句子不在里面：它们不需要译文，也不提交给 AI
+     * —— 否则 AI 会把中文句原样回一遍，界面上就多出一行没用的译文。
+     */
+    val lyricTransTargets: Set<Int> by derivedStateOf { computeTransTargets(lyricRows) }
+
     fun translateLyric() {
         val rows = lyricRows
         val id = curSsid ?: return
         if (rows.isEmpty()) { toast("暂无歌词"); return }
         if (rows.any { !it.trans.isNullOrBlank() }) { showTrans = !showTrans; return }
         if (transLoading) return
+        // 只翻译正文段里含外文的行；纯中文行留空，不显示译文
+        val order = lyricTransTargets.sorted()
+        if (order.isEmpty()) { toast("歌词已是中文，无需翻译"); return }
         transLoading = true
         viewModelScope.launch {
-            val res = Translate.all(rows.map { it.text })
+            val sub = order.map { rows[it].text }
+            val got = Translate.all(sub)
+            val res = MutableList(rows.size) { "" }
+            got.forEachIndexed { k, v -> if (k < order.size) res[order[k]] = v }
             transLoading = false
             if (res.all { it.isBlank() }) { toast("翻译失败，请检查网络"); return@launch }
             transCache = transCache + (id to res)
@@ -522,7 +536,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             // 翻的过程中可能已经切歌了：缓存照存，但不要改动当前显示
             if (curSsid == id) {
                 showTrans = true
-                toast("已翻译 ${res.count { it.isNotBlank() }}/${res.size} 句")
+                toast("已翻译 ${res.count { it.isNotBlank() }}/${order.size} 句")
             }
         }
     }

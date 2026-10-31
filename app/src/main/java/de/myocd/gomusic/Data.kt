@@ -112,13 +112,70 @@ private val CREDIT_CHARS = charArrayOf('词', '詞', '曲', '麯', '编', '編',
 /** 是否是「词 / 曲 / 编 / 制」这类标注行 */
 private fun isCreditLine(s: String): Boolean = s.any { it in CREDIT_CHARS }
 
+/** 是否含冒号（半角或全角）：「作词 : xxx」这类标注行，不属于歌词正文 */
+private fun hasColon(s: String): Boolean = s.contains(':') || s.contains('：')
+
 /**
- * 歌词是否含非中文部分（含则提供翻译按钮）。
+ * 歌词正文的行下标。
  *
- * 排除标注行，避免英文人名触发；全中文的歌词自然不会命中，不翻译。
+ * 含冒号的标注行把歌词切成若干段，真正要判断的只有其中**最长**的一段。
+ * 例（①⑦ 是标注行，③④⑥ 是普通行）：
+ *
+ * ```
+ * aaa:bbb    ①
+ * song:xxx   ②
+ * text       ③
+ * text       ④
+ * ggg:jjnn   ⑤
+ * text       ⑥
+ * lyric:xxx  ⑦
+ * ```
+ *
+ * 标注行是 ①②⑤⑦，切成 (②,⑤)=③④ 与 (⑤,⑦)=⑥ 两段；取较长的 ③④，
+ * ⑥ 要忽略 —— 它是两个尾部标注之间的夹缝，不是正文。
+ *
+ * 一条标注行都没有时（很多歌词没有作词作曲），整篇都算正文。
  */
-fun lyricNeedsTranslation(rows: List<LyricRow>): Boolean =
-    rows.any { !isCreditLine(it.text) && hasNonChinese(it.text) }
+fun lyricBodyIndexes(rows: List<LyricRow>): Set<Int> {
+    val n = rows.size
+    if (n == 0) return emptySet()
+    val marks = rows.indices.filter { hasColon(rows[it].text) }
+    if (marks.isEmpty()) return rows.indices.toSet()
+    var best: List<Int> = emptyList()
+    val bounds = listOf(-1) + marks + listOf(n)
+    for (k in 0 until bounds.size - 1) {
+        val a = bounds[k] + 1
+        val b = bounds[k + 1] // 不含
+        val seg = (a until b).filter { !hasColon(rows[it].text) }
+        if (seg.size > best.size) best = seg
+    }
+    return best.toSet()
+}
+
+/**
+ * 需要翻译的行下标：在正文段内、不是标注行、且确实含非中文。
+ *
+ * 纯中文的句子不在这里面 —— 它们本来就不需要译文，也不该被提交给 AI。
+ */
+fun computeTransTargets(rows: List<LyricRow>): Set<Int> =
+    lyricBodyIndexes(rows)
+        .filter { i -> !isCreditLine(rows[i].text) && hasNonChinese(rows[i].text) }
+        .toSet()
+
+/**
+ * 是否显示翻译按钮。
+ *
+ * 只在上面算出的正文段里判断，标注行（含冒号）和尾部夹缝都不算；
+ * 并且外语句子不足正文的 10% 时不显示 —— 只有个别英文单词或人名的
+ * 中文歌不该多出一个翻译按钮。
+ */
+fun lyricNeedsTranslation(rows: List<LyricRow>): Boolean {
+    val body = lyricBodyIndexes(rows)
+    if (body.isEmpty()) return false
+    val targets = computeTransTargets(rows)
+    if (targets.isEmpty()) return false
+    return targets.size * 10 >= body.size
+}
 
 /**
  * 把原始歌词行整理成逻辑行。

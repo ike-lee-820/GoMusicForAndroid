@@ -2670,17 +2670,17 @@ fun FullscreenIconButton(
             val n = 3f + o          // 近端（靠近角）
             val f = 3f + l + o      // 远端
             // 左上
-            drawLine(tint, Offset(n * u, f * u), Offset(n * u, n * u), st)
-            drawLine(tint, Offset(n * u, n * u), Offset(f * u, n * u), st)
+            drawLine(tint, Offset(n * u, f * u), Offset(n * u, n * u), st.width)
+            drawLine(tint, Offset(n * u, n * u), Offset(f * u, n * u), st.width)
             // 右上
-            drawLine(tint, Offset((24 - f) * u, n * u), Offset((24 - n) * u, n * u), st)
-            drawLine(tint, Offset((24 - n) * u, n * u), Offset((24 - n) * u, f * u), st)
+            drawLine(tint, Offset((24 - f) * u, n * u), Offset((24 - n) * u, n * u), st.width)
+            drawLine(tint, Offset((24 - n) * u, n * u), Offset((24 - n) * u, f * u), st.width)
             // 右下
-            drawLine(tint, Offset((24 - n) * u, (24 - f) * u), Offset((24 - n) * u, (24 - n) * u), st)
-            drawLine(tint, Offset((24 - n) * u, (24 - n) * u), Offset((24 - f) * u, (24 - n) * u), st)
+            drawLine(tint, Offset((24 - n) * u, (24 - f) * u), Offset((24 - n) * u, (24 - n) * u), st.width)
+            drawLine(tint, Offset((24 - n) * u, (24 - n) * u), Offset((24 - f) * u, (24 - n) * u), st.width)
             // 左下
-            drawLine(tint, Offset(f * u, (24 - n) * u), Offset(n * u, (24 - n) * u), st)
-            drawLine(tint, Offset(n * u, (24 - n) * u), Offset(n * u, (24 - f) * u), st)
+            drawLine(tint, Offset(f * u, (24 - n) * u), Offset(n * u, (24 - n) * u), st.width)
+            drawLine(tint, Offset(n * u, (24 - n) * u), Offset(n * u, (24 - f) * u), st.width)
         }
     }
 }

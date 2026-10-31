@@ -404,6 +404,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private var lyricSsid: String? = null
     /** 上一次歌词加载任务：切歌时取消，避免旧任务回来写脏数据 */
     private var lyricJob: Job? = null
+    /** 正在为哪一首加载歌词（与 lyricSsid 分开：后者是「已加载好」的那首） */
+    private var lyricLoadingFor: String? = null
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
 
     /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
@@ -1785,12 +1787,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // B 还没加载完又切回 A 时，lyricSsid 仍是 A，这里直接 return，
         // 而此时 lyric 已被清空、lyricLoading 还是 true —— 界面就一直转圈。
         // 表现就是「下一首再切回上一首，歌词永远加载不出来」。
-        if (id == lyricSsid && !lyricLoading) return
-        // 先取消上一首还没跑完的加载，避免它完成后把旧数据写回来
+        // 已经加载好了：直接复用（切音质后会再次走到这里，不该重来）
+        if (id == lyricSsid) return
+        // 正在为这一首加载：让它跑完，绝不能重启。
+        //
+        // 上一版把 lyricSsid 提前到加载开始时写入，于是同一首歌在加载期间
+        // 再次走到这里时，lyricSsid 已经等于 id，被当成「没在加载」而重启任务。
+        // onItem 会被多次调用（连接播放器一次、切歌回调一次），于是任务被
+        // 反复取消重启：歌词永远出不来，且每次重启都重新发一轮网络请求，
+        // 把连接池占满 —— 音频和图片也跟着变慢。
+        if (id == lyricLoadingFor) return
         lyricJob?.cancel()
-        // 一开始就把这首歌记为「正在加载」：中途切走再切回来时
-        // lyricSsid 已经不是它了，会重新走加载，不会卡在转圈
-        lyricSsid = id
+        lyricLoadingFor = id
         lyric = emptyList()
         lyricLoading = true
         qualities = emptyList()
@@ -1859,6 +1867,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyricLoading = false
                     lyricSsid = id
                 }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
             }
             return
         }
@@ -1876,6 +1885,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyricLoading = false
                     lyricSsid = id
                 }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
             }
             return
         }
@@ -1903,6 +1913,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyricLoading = false
                     lyricSsid = id
                 }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
             } catch (ignored: Exception) {
                 val t = withContext(Dispatchers.IO) { localLyrics(id) }
                 if (curSsid == id && t.isNotBlank()) lyric = lyricLines(t)
@@ -1910,6 +1921,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyricLoading = false
                     lyricSsid = id
                 }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
             }
         }
     }

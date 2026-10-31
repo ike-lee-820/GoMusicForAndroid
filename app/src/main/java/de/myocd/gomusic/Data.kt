@@ -174,15 +174,16 @@ object Api {
     /**
      * 共享客户端。
      *
-     * 超时从 20/40/90s 收到 8/15/25s：网易云接口慢的时候是「连不上」而不是
-     * 「慢慢返回」，干等几十秒只会让界面一直转圈。
+     * 超时：连接 10s（连不上早放弃）、读取 30s（接口慢时给足时间）、
+     * 单次调用 60s 上限。之前收到 8/15/25s 太激进，正常请求也会被判超时
+     * 而重试，反而更慢 —— 现在是「快失败」和「别误判」之间的折中。
      * 并发从默认 5 提到 16：批量取地址/探测音质时不再排队等连接。
      */
     val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(25, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .dns(ipv4First)
         .apply {

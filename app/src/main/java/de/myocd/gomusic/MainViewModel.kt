@@ -326,33 +326,38 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (phone.isBlank()) { toast("请填写手机号"); return }
         nmBusy = true
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = runCatching { Netease.sendCaptcha(phone) }.getOrDefault(false)
+            val err = runCatching { Netease.sendCaptcha(phone) }
+                .getOrElse { e -> e.message ?: "网络异常" }
             withContext(Dispatchers.Main) {
                 nmBusy = false
-                toast(if (ok) "验证码已发送" else "发送失败，请稍后再试")
+                // 失败原因透传：发得太频繁、号码无效，提示是不一样的
+                toast(if (err == null) "验证码已发送" else "发送失败：$err")
             }
         }
     }
 
-    /** 验证码登录；填了昵称则走注册 */
+    /**
+     * 验证码登录；填了昵称则走注册。
+     *
+     * 不再先调 /captcha/verify：那一步会把验证码核销掉，
+     * 导致紧接着的登录拿到一个已经失效的验证码。
+     */
     fun nmLoginPhone(phone: String, code: String, password: String, nickname: String) {
         if (phone.isBlank() || code.isBlank()) { toast("请填写手机号与验证码"); return }
+        if (nickname.isNotBlank() && password.isBlank()) { toast("注册请填写密码"); return }
         nmBusy = true
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = runCatching { Netease.verifyCaptcha(phone, code) }.getOrDefault(false)
-            if (!ok) {
-                withContext(Dispatchers.Main) { nmBusy = false; toast("验证码校验失败") }
-                return@launch
-            }
-            val cookie = if (nickname.isBlank()) {
-                runCatching { Netease.loginByCaptcha(phone, code) }.getOrNull()
-            } else {
-                runCatching { Netease.register(phone, password, code, nickname) }.getOrNull()
-            }
+            val r = runCatching {
+                if (nickname.isBlank()) Netease.loginByCaptcha(phone, code)
+                else Netease.register(phone, password, code, nickname)
+            }.getOrNull()
             withContext(Dispatchers.Main) {
                 nmBusy = false
-                if (cookie.isNullOrBlank()) toast("登录失败，请检查验证码")
-                else nmLogin(cookie, null)
+                when {
+                    r == null -> toast("网络异常，请稍后再试")
+                    r.ok -> nmLogin(r.cookie!!, null)
+                    else -> toast(r.message?.takeIf { it.isNotBlank() } ?: "登录失败（code ${r.code}）")
+                }
             }
         }
     }

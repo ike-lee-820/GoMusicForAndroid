@@ -36,6 +36,21 @@ fun neteaseIdOf(ssid: String?): Long? =
 /** 二维码轮询状态 */
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)
 
+/**
+ * 登录 / 注册的结果。
+ *
+ * 之前这类接口只返回 cookie 或 null，失败原因全丢了 —— 用户只能看到一句
+ * 「登录失败」，到底是验证码错了、发得太频繁还是服务端不支持，完全看不出来。
+ * 现在把服务端的 code 与 message 一起带回来。
+ */
+data class LoginResult(
+    val cookie: String? = null,
+    val code: Int = -1,
+    val message: String? = null,
+) {
+    val ok: Boolean get() = !cookie.isNullOrBlank()
+}
+
 /** 网易云可选音质档位（从低到高） */
 val NM_LEVELS = listOf(
     "standard", "higher", "exhigh", "lossless",
@@ -877,29 +892,55 @@ object Netease {
         return QrStatus(r.code(), ck, r.str("message"))
     }
 
-    /** 发送短信验证码 */
-    fun sendCaptcha(phone: String): Boolean = get("/captcha/sent", "phone" to phone).code() == 200
+    /**
+     * 手机号清洗：只留数字，去掉 +86 / 0086 / 86 前缀与分隔符。
+     * 用户常从通讯录粘贴「+86 138 0013 8000」这样的号码，服务端只认纯数字，
+     * 原样传过去会被判成无效手机号。
+     */
+    private fun cleanPhone(p: String): String {
+        var s = p.filter { it.isDigit() }
+        if (s.startsWith("0086")) s = s.removePrefix("0086")
+        else if (s.startsWith("86") && s.length > 11) s = s.removePrefix("86")
+        return s
+    }
 
-    /** 校验验证码 */
-    fun verifyCaptcha(phone: String, captcha: String): Boolean =
-        get("/captcha/verify", "phone" to phone, "captcha" to captcha).code() == 200
+    private fun cookieOf(r: JsonObject): String? =
+        r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
 
-    /** 验证码登录 */
-    fun loginByCaptcha(phone: String, captcha: String): String? {
-        val r = get("/login/cellphone", "phone" to phone, "captcha" to captcha)
-        if (r.code() != 200) return null
-        return r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+    private fun msgOf(r: JsonObject): String? = r.str("message", "msg")
+
+    /** 发送短信验证码。返回 null 表示已发送，否则是失败原因 */
+    fun sendCaptcha(phone: String): String? {
+        val r = get("/captcha/sent", "phone" to cleanPhone(phone), "ctcode" to "86")
+        return if (r.code() == 200) null else (msgOf(r) ?: "发送失败（code ${r.code()}）")
+    }
+
+    /**
+     * 验证码登录。
+     *
+     * 之前这里多做了一步 /captcha/verify 再登录。该接口属于注册流程，
+     * 调用后会把验证码标记为已核销，紧接着用同一个验证码去
+     * /login/cellphone 就被判失效 —— 这正是「收到验证码却登录不了」的原因。
+     * 正确流程是 /captcha/sent 之后直接 /login/cellphone。
+     */
+    fun loginByCaptcha(phone: String, captcha: String): LoginResult {
+        val r = get(
+            "/login/cellphone",
+            "phone" to cleanPhone(phone),
+            "captcha" to captcha.trim(),
+            "countrycode" to "86",
+        )
+        return LoginResult(cookieOf(r), r.code(), msgOf(r))
     }
 
     /** 注册（注册成功即登录） */
-    fun register(phone: String, password: String, captcha: String, nickname: String): String? {
+    fun register(phone: String, password: String, captcha: String, nickname: String): LoginResult {
         val r = get(
             "/register/cellphone",
-            "phone" to phone, "password" to password,
-            "captcha" to captcha, "nickname" to nickname,
+            "phone" to cleanPhone(phone), "password" to password,
+            "captcha" to captcha.trim(), "nickname" to nickname, "countrycode" to "86",
         )
-        if (r.code() != 200) return null
-        return r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+        return LoginResult(cookieOf(r), r.code(), msgOf(r))
     }
 
     /** 当前登录用户的 uid；取不到返回 0（未登录 / 登录态失效） */

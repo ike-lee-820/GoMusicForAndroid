@@ -17,7 +17,10 @@ import kotlin.math.sin
 import kotlin.math.roundToInt
 import kotlin.math.asin
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -274,6 +277,10 @@ fun MainScreen(vm: MainViewModel) {
     BackHandler(enabled = vm.showLyrics) { vm.showLyrics = false }
     BackHandler(enabled = vm.showPlayer && !vm.showLyrics) { vm.showPlayer = false }
     BackHandler(enabled = !vm.showPlayer && vm.stack.isNotEmpty()) { vm.stack.removeAt(vm.stack.lastIndex) }
+    // 后注册的先响应：MV 在栈顶时返回键关 MV，而不是关下面的播放页
+    BackHandler(enabled = vm.stack.lastOrNull() is Screen.Video) {
+        vm.stack.removeAt(vm.stack.lastIndex)
+    }
 
     Box(Modifier.fillMaxSize().background(go.bg)) {
         Column(Modifier.fillMaxSize()) {
@@ -299,7 +306,9 @@ fun MainScreen(vm: MainViewModel) {
                                     is Screen.Artist -> ArtistPage(vm, s)
                                     is Screen.PlaylistPage -> PlaylistPage(vm, s)
                                     is Screen.NmSongs -> NmSongsPage(vm, s)
-                                    is Screen.Video -> VideoScreen(vm, s)
+                                    // MV 不在这里画：它是全屏覆盖层，由最外层单独组合，
+                                    // 否则会被后面组合的 FullPlayer 盖住
+                                    is Screen.Video -> Spacer(Modifier.size(0.dp))
                                 }
                             }
                         } else {
@@ -330,6 +339,12 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.showHistory) HistorySheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
+
+        // MV：放在所有内容之后组合，才在最上层。
+        // 之前它在二级页的 AnimatedContent 里，而 FullPlayer 组合在它之后，
+        // 于是播放页把 MV 整个盖住了 —— 点 MV 按钮看起来没反应。
+        val video = vm.stack.lastOrNull() as? Screen.Video
+        if (video != null) VideoScreen(vm, video)
     }
 }
 
@@ -2623,6 +2638,53 @@ BoxWithConstraints(
     }
 }
 
+/** 从 Context 往上找到 Activity：设置屏幕方向必须拿 Activity，Context 本身没有这个能力 */
+private fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/**
+ * 全屏按钮：图标用 Canvas 自绘四个角的直角箭头。
+ *
+ * 图标集里取不到 fullscreen（和 VideoLibrary / Movie 一样会报
+ * Unresolved reference），所以照着官方图形自己画。
+ * [active] = 当前是全屏，画成向内收的角（表示退出全屏）。
+ */
+@Composable
+fun FullscreenIconButton(
+    onClick: () -> Unit,
+    active: Boolean = false,
+    tint: Color = Color.White,
+    size: Dp = 24.dp,
+    hit: Dp = 36.dp,
+) {
+    Box(Modifier.size(hit).clickScale(true, onClick), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(size)) {
+            val u = this.size.width / 24f
+            val st = Stroke(width = 1.8f * u)
+            // 四个角的直角：向外张开 = 进入全屏，向内收 = 退出全屏
+            val o = if (active) 2.6f else 0f
+            val l = 6.5f
+            val n = 3f + o          // 近端（靠近角）
+            val f = 3f + l + o      // 远端
+            // 左上
+            drawLine(tint, Offset(n * u, f * u), Offset(n * u, n * u), st)
+            drawLine(tint, Offset(n * u, n * u), Offset(f * u, n * u), st)
+            // 右上
+            drawLine(tint, Offset((24 - f) * u, n * u), Offset((24 - n) * u, n * u), st)
+            drawLine(tint, Offset((24 - n) * u, n * u), Offset((24 - n) * u, f * u), st)
+            // 右下
+            drawLine(tint, Offset((24 - n) * u, (24 - f) * u), Offset((24 - n) * u, (24 - n) * u), st)
+            drawLine(tint, Offset((24 - n) * u, (24 - n) * u), Offset((24 - f) * u, (24 - n) * u), st)
+            // 左下
+            drawLine(tint, Offset(f * u, (24 - n) * u), Offset(n * u, (24 - n) * u), st)
+            drawLine(tint, Offset(n * u, (24 - n) * u), Offset(n * u, (24 - f) * u), st)
+        }
+    }
+}
+
 /**
  * MV 整屏播放页。
  *
@@ -2655,7 +2717,23 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
     var dur by remember { mutableLongStateOf(0L) }
     var speed by remember { mutableFloatStateOf(1f) }
     var speedOpen by remember { mutableStateOf(false) }
+    var full by remember { mutableStateOf(false) }
     LaunchedEffect(speed) { player.setPlaybackSpeed(speed) }
+    // 全屏时按视频比例决定横屏还是竖屏：
+    // 宽 > 高（ratio > 1）用横屏，竖屏视频（多见于手机直拍 MV）用竖屏，
+    // 否则横屏全屏会把竖屏视频压成中间一小条。
+    // 退出全屏或离开本页都要恢复成「跟随系统」，不然回主界面方向是锁死的。
+    val act = LocalContext.current.findActivity()
+    LaunchedEffect(full, ratio) {
+        act?.requestedOrientation = when {
+            !full -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            ratio >= 1f -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { act?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+    }
     DisposableEffect(player) {
         val l = object : androidx.media3.common.Player.Listener {
             override fun onVideoSizeChanged(vs: androidx.media3.common.VideoSize) {
@@ -2727,6 +2805,10 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
         IconBtn(Icons.Outlined.Download, "下载 MV", size = 30.dp, tint = Color.White) {
             vm.downloadMv(v)
         }
+        HS(4)
+        FullscreenIconButton(
+            { full = !full }, active = full, tint = Color.White, size = 24.dp, hit = 34.dp,
+        )
     }
     // 底部：播放 / 暂停 + 进度条 + 倍速
     Column(

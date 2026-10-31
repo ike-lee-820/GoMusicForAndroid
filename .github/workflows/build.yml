@@ -22,6 +22,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
+      - name: Merge font chunks
+        run: |
+          set -eu
+          mkdir -p app/src/main/res/font
+          # 思源宋体太大，仓库里按 30MB 分片存放，构建前合并成完整字体。
+          # 少了这一步 R.font.song 就不存在，Fonts.kt 里 Font(res, ...) 会
+          # 因参数类型解析不出来而报 overload resolution ambiguity。
+          cat app/fontchunks/song.ttf.00 app/fontchunks/song.ttf.01 > app/src/main/res/font/song.ttf
+          ls -l app/src/main/res/font/
       - name: Build debug APK
         id: b
         run: gradle assembleDebug --no-daemon 2>&1 | tee build.log; exit ${PIPESTATUS[0]}

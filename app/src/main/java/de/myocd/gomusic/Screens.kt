@@ -3113,7 +3113,7 @@ fun SettingsSheet(vm: MainViewModel) {
                     Txt("接入网易云曲库", 14, weight = FontWeight.Medium)
                     Txt(
                         if (!vm.nmOn) "关闭：仅使用本站曲库"
-                        else if (vm.nmUser.isNullOrBlank()) "已开启：需登录网易云账号后才会搜索网易云"
+                        else if (vm.nmUser.isNullOrBlank()) "已开启：搜索与播放可直接用，登录后才能同步我的歌单"
                         else "已开启：${vm.nmUser}",
                         12, color = go.muted,
                     )
@@ -3133,7 +3133,8 @@ fun SettingsSheet(vm: MainViewModel) {
                 VS(8)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Txt(
-                        if (vm.nmUser.isNullOrBlank()) "未登录，网易云搜索不会启用" else "已登录：${vm.nmUser}",
+                        if (vm.nmUser.isNullOrBlank()) "未登录：搜索与播放照常用，仅同步歌单需要登录"
+                        else "已登录：${vm.nmUser}",
                         12, Modifier.weight(1f), color = go.muted,
                     )
                     if (vm.nmUser.isNullOrBlank()) {

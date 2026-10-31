@@ -1,9 +1,7 @@
 package de.myocd.gomusic
 
 import android.content.Context
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.builtins.MapSerializer
-import kotlinx.serialization.encodeToString
+import kotlinx.serialization.Serializable
 import java.io.File
 
 /**
@@ -14,6 +12,10 @@ import java.io.File
  * 而数据目录（getExternalFilesDir / SharedPreferences）清起来要手动找，
  * 还容易越堆越大。真正不能丢的东西（歌单、下载记录、登录态）仍留在数据目录。
  */
+/** 翻译缓存的序列化包装：让泛型 Map 有个具体类型可供序列化 */
+@Serializable
+private class TransWrap(val m: Map<String, List<String>> = emptyMap())
+
 object AppCache {
     /** 更新安装包 */
     private const val DIR_UPDATE = "update"
@@ -38,7 +40,7 @@ object AppCache {
         val t = runCatching { f.readText() }.getOrNull() ?: return null
         if (t.isBlank()) return null
         return runCatching {
-            Api.json.decodeFromString<Map<String, List<String>>>(t)
+            Api.json.decodeFromString<TransWrap>(t).m
         }.getOrNull()
     }
 
@@ -47,10 +49,10 @@ object AppCache {
         runCatching {
             val f = transFile(ctx)
             val tmp = File(f.parentFile, f.name + ".tmp")
-            // 显式给序列化器：Map 这种泛型容器，只靠实参推不出 T，
-            // 编译器会去匹配 (serializer, value) 那个重载然后报参数缺失
-            val ser = MapSerializer(String.serializer(), ListSerializer(String.serializer()))
-            tmp.writeText(Api.json.encodeToString(ser, v))
+            // 包一层再序列化：encodeToString(v) 只传实参时，Map 这种泛型
+            // 容器推不出 reified 的 T，编译器会转去匹配 (serializer, value)
+            // 重载然后报参数缺失。包成具体类型就没这个问题
+            tmp.writeText(Api.json.encodeToString(TransWrap(v)))
             tmp.renameTo(f)
         }
     }

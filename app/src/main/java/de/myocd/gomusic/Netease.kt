@@ -909,10 +909,20 @@ object Netease {
 
     private fun msgOf(r: JsonObject): String? = r.str("message", "msg")
 
-    /** 发送短信验证码。返回 null 表示已发送，否则是失败原因 */
+    /**
+     * 发送短信验证码。返回 null 表示已发送，否则是失败原因。
+     *
+     * /captcha/sent 与 /captcha/sent/v1 都能发，不同部署上可用情况不一样
+     * （有的只认其中一条），所以第一条失败就换另一条再试一次。
+     */
     fun sendCaptcha(phone: String): String? {
-        val r = get("/captcha/sent", "phone" to cleanPhone(phone), "ctcode" to "86")
-        return if (r.code() == 200) null else (msgOf(r) ?: "发送失败（code ${r.code()}）")
+        val p = cleanPhone(phone)
+        val r1 = get("/captcha/sent", "phone" to p, "ctcode" to "86")
+        if (r1.code() == 200) return null
+        val r2 = get("/captcha/sent/v1", "phone" to p, "ctcode" to "86")
+        if (r2.code() == 200) return null
+        return (msgOf(r2).takeIf { !it.isNullOrBlank() } ?: msgOf(r1))
+            ?: "发送失败（code ${r1.code()}）"
     }
 
     /**

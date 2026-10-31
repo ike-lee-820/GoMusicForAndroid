@@ -82,7 +82,10 @@ class PlaybackService : MediaSessionService() {
                     } else run {
                     val nid = neteaseIdOf(ssid)
                     val url = try {
-                        if (nid != null && p.nmCookie.isNotBlank()) {
+                        if (nid != null) {
+                            // 未登录也要走网易云取地址：只是拿不到高音质档位，
+                            // 但仍能播。之前要求 cookie 非空，未登录的网易云
+                            // 歌曲会掉到本站接口去取，结果取不到直接播不了
                             Netease.cookie = p.nmCookie
                             Netease.audioUrl(nid, p.quality, p.nmLevel.takeIf { it.isNotBlank() })
                                 ?: throw IOException("网易云没有可用音源")

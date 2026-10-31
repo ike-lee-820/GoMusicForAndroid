@@ -176,7 +176,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * /user/account 经常取不到 profile，昵称拿不到就判定未登录的话，
      * 会出现「明明登录了却不搜索」的情况。
      */
-    val nmReady: Boolean get() = nmOn && Netease.cookie.isNotBlank()
+    /**
+     * 网易云功能是否可用：只看开关，不再要求已登录。
+     *
+     * 之前要求 cookie 非空才能搜网易云 —— 登录一失败，整个网易云曲库就用不了。
+     * 实际上搜索、取歌、取地址未登录也能用（只是音质档位少一些），
+     * 只有「同步我的歌单 / 我喜欢的音乐」这类个人数据才真的需要登录。
+     */
+    val nmReady: Boolean get() = nmOn
     var nmSearching by mutableStateOf(false); private set
     var nmLoadingMore by mutableStateOf(false); private set
     /** 歌曲是否还有下一页（滑到底继续加载） */
@@ -1705,7 +1712,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val c = controller ?: return
         val p = Prefs(app)
         val nm = neteaseIdOf(curSsid)
-        if (nm == null || p.nmCookie.isBlank()) return
+        if (nm == null) return
         Netease.cookie = p.nmCookie
         val start = c.currentMediaItemIndex + 1
         for (i in start until minOf(start + 2, c.mediaItemCount)) {

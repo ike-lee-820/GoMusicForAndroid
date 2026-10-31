@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-            GoTheme(vm.primary, rememberAppFont(vm.fontKind, vm.fontWght)) {
+            GoTheme(vm.primary, rememberAppFont(vm.fontKind, vm.fontWght, vm.fontReady)) {
                 // 简繁转换：设置一改，界面与文字全部跟着变
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalZhMode provides vm.zhConvert,

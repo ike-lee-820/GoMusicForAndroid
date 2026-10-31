@@ -1607,6 +1607,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var fontKind by mutableIntStateOf(prefs.fontKind); private set
     /** 可变字体的字重（wght），250~900，默认 450 */
     var fontWght by mutableIntStateOf(prefs.fontWght); private set
+    /** 字体文件就绪版本号：下载完成后 +1，用来让界面重新加载字体 */
+    var fontReady by mutableIntStateOf(0); private set
+    /** 字体下载进度：-1 未在下载，0~100 为百分比 */
+    var fontDl by mutableIntStateOf(-1); private set
 
     /** 改简繁设置：立即生效（界面与文字都会跟着变）
      *  名字不能叫 setZhConvert —— 会和 var 自动生成的 setter 撞 JVM 签名 */
@@ -1615,10 +1619,32 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.zhConvert = m
     }
 
-    /** 切换全局字体（0 系统 / 1 思源宋体） */
+    /**
+     * 切换全局字体（0 系统 / 1 思源宋体）。
+     *
+     * 思源宋体不再内置在 APK 里：没下载过就顺手下一份，
+     * 下完 fontReady +1，界面立刻换上宋体。
+     */
     fun chooseFontKind(k: Int) {
         fontKind = k
         prefs.fontKind = k
+        if (k == FONT_SONG && !SongFont.has(app)) downloadFont()
+    }
+
+    /** 手动下载思源宋体（设置页按钮） */
+    fun downloadFont() {
+        if (fontDl >= 0) return
+        fontDl = 0
+        viewModelScope.launch {
+            val err = SongFont.download(app) { fontDl = it }
+            fontDl = -1
+            if (err == null) {
+                fontReady++
+                toast("思源宋体已就绪")
+            } else {
+                toast("字体下载失败：$err")
+            }
+        }
     }
 
     /**

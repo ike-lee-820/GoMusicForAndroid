@@ -3283,10 +3283,23 @@ fun SettingsSheet(vm: MainViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             )
             Txt(
-                if (vm.fontKind == FONT_SYSTEM) "系统字体不支持调字重，切换内置字体后可用"
+                if (vm.fontKind == FONT_SYSTEM) "系统字体不支持调字重，切换到思源宋体后可用"
                 else "范围 $WGHT_MIN–$WGHT_MAX，默认 $WGHT_DEFAULT；改动立即保存",
                 11, color = go.muted,
             )
+            // 思源宋体按需下载：APK 不再内置字体，选了但没下过就在这里下
+            if (vm.fontKind == FONT_SONG) {
+                VS(8)
+                when {
+                    SongFont.has(LocalContext.current) -> Txt("思源宋体已下载", 11, color = go.muted)
+                    vm.fontDl >= 0 -> Txt("正在下载字体 ${vm.fontDl}%", 11, color = go.primary)
+                    else -> Box(
+                        Modifier.clip(RoundedCornerShape(50)).background(go.surfaceHi)
+                            .clickable { vm.downloadFont() }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) { Txt("下载思源宋体（约 25MB，仅需一次）", 13, color = go.primary) }
+                }
+            }
             VS(16)
 
             // ---------- 简繁转换 ----------

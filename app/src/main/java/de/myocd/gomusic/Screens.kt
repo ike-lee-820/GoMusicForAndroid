@@ -1975,12 +1975,12 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
 // =====================================================================
 
 /**
- * 翻译按钮：图标画的是 Material Icons 的 translate（「文」字形）。
+ * 翻译按钮：就是一个「译」字。
  *
- * 图标扩展里取不到 translate（和 VideoLibrary / Movie 一样会报
- * Unresolved reference），所以照着官方图形自己画，两端形状一致。
+ * 之前画的是 Material Icons 的 translate（「文」字形），辨识度不高；
+ * 直接用汉字反而一眼就懂，也不用再管图标集里有没有对应图形。
  *
- * [active] 已经有译文时换个颜色，表示「这篇已经翻过了」；
+ * [active] 已经有译文时换成主题色，表示「这篇已经翻过了」；
  * [loading] 正在整篇翻译时转圈。
  */
 @Composable
@@ -2002,17 +2002,12 @@ fun TransIconButton(
                 color = tint, modifier = Modifier.size(size * 0.7f), strokeWidth = 2.dp,
             )
         } else {
-            val c = if (active) go.primary else tint
-            Canvas(Modifier.size(size)) {
-                // 按 24dp 的设计网格画，u 是「一格」对应的像素
-                val u = this.size.width / 24f
-                val st = Stroke(width = 1.7f * u)
-                // 「文」：顶部一点一撇、中间一横、下方撇捺
-                drawLine(c, Offset(12.6f * u, 3.2f * u), Offset(8.4f * u, 7.6f * u), st.width)
-                drawLine(c, Offset(3.6f * u, 8.8f * u), Offset(20.4f * u, 8.8f * u), st.width)
-                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(5.2f * u, 20.8f * u), st.width)
-                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(18.8f * u, 20.8f * u), st.width)
-            }
+            Txt(
+                "译",
+                (size.value * 0.75f).roundToInt(),
+                color = if (active) go.primary else tint,
+                weight = FontWeight.Bold,
+            )
         }
     }
 }

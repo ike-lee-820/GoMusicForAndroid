@@ -454,27 +454,48 @@ object Netease {
      * 每个档位只走一次 v1 基础请求（不再叠加 randomCNIP / realIP），
      * 避免探测一次就发几十个请求拖慢播放。
      */
-    fun availableLevels(id: Long): List<String> {
+    /**
+     * 音质探测结果。
+     *
+     * 三态是关键：请求失败不等于「没有音源」。
+     * 之前只分「有 / 无」，请求失败被当成「无」，而调用方拿到空列表时
+     * 又回退成显示全部档位 —— 两头都不准，于是出现「没有的也显示有」。
+     */
+    data class LevelProbe(
+        /** 确认有音源（接口返回了地址） */
+        val ok: List<String>,
+        /** 确认没有（接口正常返回但地址为空） */
+        val absent: List<String>,
+    )
+
+    fun availableLevels(id: Long): LevelProbe {
         // 7 个档位并发探测：串行要 7 个来回，菜单里「哪些档位有音源」
-        // 要等很久才显示得出来。并发后总耗时等于最慢的那一个请求
-        val hits = runBlocking(Dispatchers.IO) {
+        // 要等很久才显示得出来。并发后总耗时等于最慢的那一个请求。
+        // 每个档位返回三态：true=有 / false=没有 / null=没探出来（请求失败）
+        val res = runBlocking(Dispatchers.IO) {
             NM_LEVELS.map { lv ->
-                async {
-                    val r = runCatching {
-                        getOnce("/song/url/v1", "id" to id.toString(), "level" to lv)
-                    }.getOrNull() ?: return@async null
-                    if (r.code() != 200) return@async null
-                    val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
-                    val u = first?.str("url")
-                        ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
-                    if (u.isNullOrBlank()) null else lv
+                lv to async {
+                    fun probe(): Boolean? {
+                        val r = runCatching {
+                            getOnce("/song/url/v1", "id" to id.toString(), "level" to lv)
+                        }.getOrNull() ?: return null
+                        // 非 200 是接口报错，同样算没探出来，不能当成「没有音源」
+                        if (r.code() != 200) return null
+                        val first =
+                            (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                        val u = first?.str("url")
+                            ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+                        return !u.isNullOrBlank()
+                    }
+                    // 失败再试一次：偶发抖动不该让这一档变成「未知」
+                    probe() ?: probe()
                 }
-            }.mapNotNull { it.await() }
+            }.map { (lv, d) -> lv to d.await() }
         }
-        // 按档位从高到低排序（NM_LEVELS 本身是这个顺序）
-        val out = NM_LEVELS.filter { it in hits }
-        NmLog.note("音质探测 id=$id -> $out")
-        return out
+        val ok = res.filter { it.second == true }.map { it.first }
+        val absent = res.filter { it.second == false }.map { it.first }
+        NmLog.note("音质探测 id=$id -> 有=$ok 无=$absent")
+        return LevelProbe(ok, absent)
     }
 
     /**

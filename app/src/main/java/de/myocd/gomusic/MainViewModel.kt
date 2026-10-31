@@ -407,6 +407,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 正在为哪一首加载歌词（与 lyricSsid 分开：后者是「已加载好」的那首） */
     private var lyricLoadingFor: String? = null
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
+    /** 确认没有音源的档位：菜单里置灰。请求失败没探出来的不算在内 */
+    var qualitiesAbsent by mutableStateOf<Set<String>>(emptySet()); private set
 
     /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
     private val nmKnown = java.util.concurrent.ConcurrentHashMap<String, Song>()
@@ -1647,7 +1649,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 歌曲 id -> 实际能拿到的音质档位，探测过就缓存，避免每首都重探 */
-    private val nmLevelsCache = java.util.concurrent.ConcurrentHashMap<Long, List<String>>()
+    private val nmLevelsCache =
+        java.util.concurrent.ConcurrentHashMap<Long, Netease.LevelProbe>()
 
     /** 简繁转换模式：0 简体 / 1 繁体 / 2 仅搜索统一 / 3 不转换 */
     var zhConvert by mutableIntStateOf(prefs.zhConvert)
@@ -1778,6 +1781,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             lyricLoading = false
             lyricSsid = null
             qualities = emptyList()
+            qualitiesAbsent = emptySet()
             return
         }
         // 同一首歌（切音质后会再次走到这里）：歌词不用重来、也不该重复计播放。
@@ -1802,6 +1806,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         lyric = emptyList()
         lyricLoading = true
         qualities = emptyList()
+        qualitiesAbsent = emptySet()
         if (count) {
             val m = counts.toMutableMap()
             m[id] = (m[id] ?: 0) + 1
@@ -1822,14 +1827,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             if (nid != null && !offline) {
                 val hit = nmLevelsCache[nid]
                 if (hit != null) {
-                    if (hit.isNotEmpty()) qualities = hit
+                    qualitiesAbsent = hit.absent.toSet()
+                    if (hit.ok.isNotEmpty()) qualities = hit.ok
                 } else {
                     viewModelScope.launch {
-                        val lv = withContext(Dispatchers.IO) {
-                            runCatching { Netease.availableLevels(nid) }.getOrDefault(emptyList())
+                        val p = withContext(Dispatchers.IO) {
+                            runCatching { Netease.availableLevels(nid) }.getOrNull()
                         }
-                        nmLevelsCache[nid] = lv
-                        if (lv.isNotEmpty() && curSsid == id && !offline) qualities = lv
+                        if (p != null && curSsid == id) {
+                            nmLevelsCache[nid] = p
+                            qualitiesAbsent = p.absent.toSet()
+                            if (p.ok.isNotEmpty() && !offline) qualities = p.ok
+                        }
                     }
                 }
             }

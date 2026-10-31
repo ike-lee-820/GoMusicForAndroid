@@ -2215,14 +2215,16 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     if (!vm.nmQualityMode) return
     var open by remember { mutableStateOf(false) }
     val go = LocalGo.current
-    // 探测出来的真实可用档位（探测未完成前为空，这时不禁用任何一项）
-    val avail = vm.qualities
+    // 只置灰「确认没有音源」的档位。探测失败没探出来的保持可点 ——
+    // 之前把探测失败也当「无」，菜单全灰；而调用方拿到空列表又回退成
+    // 显示全部，于是变成「没有的也显示有」
+    val absent = vm.qualitiesAbsent
     val cur = vm.curLevel
     Box {
         IconBtn(Icons.Outlined.HighQuality, "音质", size = 30.dp, tint = tint) { open = true }
         DropdownMenu(open, { open = false }) {
             NM_LEVELS.forEach { lv ->
-                val ok = avail.isEmpty() || lv in avail
+                val ok = lv !in absent
                 val sel = lv == cur
                 DropdownMenuItem(
                     text = {

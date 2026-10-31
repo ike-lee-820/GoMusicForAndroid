@@ -27,6 +27,23 @@ object Updater {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
+    /**
+     * 更新专用客户端：不限总时长。
+     *
+     * 共用 Api.client 有 60s 的 callTimeout，而 APK 有几十 MB，
+     * 在慢网络/加速节点不稳定时 60s 根本下不完 —— 下到一半被掐断，
+     * 表现就是「下载失败」或一直卡着。检查接口走 GitHub，同样可能很慢，
+     * 所以这里只在「连不上」时快速放弃（15s），连上之后不限时。
+     * 另外去掉 Connection: close，保持连接复用。
+     */
+    private val client: okhttp3.OkHttpClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .writeTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
     /** 检查结果 */
     data class Info(
         val latest: String,          // 最新版本号，如 1.3.6
@@ -66,8 +83,8 @@ object Updater {
         for (u in urls) {
             NmLog.note("更新检查请求：$u")
             try {
-                val req = Request.Builder().url(u).header("Connection", "close").build()
-                Api.client.newCall(req).execute().use { r ->
+                val req = Request.Builder().url(u).build()
+                client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
                     if (r.isSuccessful && t.isNotBlank()) return t
                     NmLog.note("更新检查失败 HTTP ${r.code}：$u")
@@ -164,8 +181,8 @@ object Updater {
                 if (!dir.exists()) dir.mkdirs()
                 val out = java.io.File(dir, "GoMusic-${info.latest}.apk")
                 if (out.exists()) out.delete()
-                val req = Request.Builder().url(u).header("Connection", "close").build()
-                Api.client.newCall(req).execute().use { r ->
+                val req = Request.Builder().url(u).build()
+                client.newCall(req).execute().use { r ->
                     if (!r.isSuccessful) {
                         NmLog.note("APK 下载失败 HTTP ${r.code}：$u")
                         return@use

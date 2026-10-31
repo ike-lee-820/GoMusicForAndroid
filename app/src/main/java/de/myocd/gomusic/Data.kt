@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -170,13 +171,28 @@ object Api {
         }
     }
 
+    /**
+     * 共享客户端。
+     *
+     * 超时从 20/40/90s 收到 8/15/25s：网易云接口慢的时候是「连不上」而不是
+     * 「慢慢返回」，干等几十秒只会让界面一直转圈。
+     * 并发从默认 5 提到 16：批量取地址/探测音质时不再排队等连接。
+     */
     val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(40, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(90, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .dns(ipv4First)
+        .apply {
+            dispatcher(
+                Dispatcher().apply {
+                    maxRequests = 64
+                    maxRequestsPerHost = 16
+                }
+            )
+        }
         .build()
 
     /**

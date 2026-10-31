@@ -143,11 +143,15 @@ object Netease {
         val url = sb.toString()
         NmLog.req(url)
         var last: Exception? = null
-        // 失败自动重试：网络抖动 / 服务端偶发错误时多试几次，间隔递增
-        val delays = longArrayOf(400, 900, 1600)
+        // 失败自动重试：网络抖动 / 服务端偶发错误时多试几次。
+        // 只重试 2 次（间隔 300/700ms）：之前重试 3 次且间隔递增到 1.6s，
+        // 一次拿不到地址就要多花近 3 秒，取音源要试多个档位时慢得明显。
+        val delays = longArrayOf(300, 700)
         for (i in 0..delays.size) {
             try {
-                val req = Request.Builder().url(url).header("Connection", "close").build()
+                // 不要再带 Connection: close —— 它关掉了连接复用，
+                // 每个请求都要重新 TCP + TLS 握手，是「网易云请求慢」的主因
+                val req = Request.Builder().url(url).build()
                 Api.client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
                     NmLog.res(url, r.code, t)
@@ -451,19 +455,26 @@ object Netease {
      * 避免探测一次就发几十个请求拖慢播放。
      */
     fun availableLevels(id: Long): List<String> {
-        val out = LinkedHashSet<String>()
-        for (lv in NM_LEVELS) {
-            val r = runCatching {
-                get("/song/url/v1", "id" to id.toString(), "level" to lv)
-            }.getOrNull() ?: continue
-            if (r.code() != 200) continue
-            val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
-            val u = first?.str("url")
-                ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
-            if (!u.isNullOrBlank()) out.add(lv)
+        // 7 个档位并发探测：串行要 7 个来回，菜单里「哪些档位有音源」
+        // 要等很久才显示得出来。并发后总耗时等于最慢的那一个请求
+        val hits = runBlocking(Dispatchers.IO) {
+            NM_LEVELS.map { lv ->
+                async {
+                    val r = runCatching {
+                        getOnce("/song/url/v1", "id" to id.toString(), "level" to lv)
+                    }.getOrNull() ?: return@async null
+                    if (r.code() != 200) return@async null
+                    val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+                    val u = first?.str("url")
+                        ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+                    if (u.isNullOrBlank()) null else lv
+                }
+            }.mapNotNull { it.await() }
         }
-        NmLog.note("音质探测 id=$id -> ${out.toList()}")
-        return out.toList()
+        // 按档位从高到低排序（NM_LEVELS 本身是这个顺序）
+        val out = NM_LEVELS.filter { it in hits }
+        NmLog.note("音质探测 id=$id -> $out")
+        return out
     }
 
     /**
@@ -540,7 +551,8 @@ object Netease {
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
         return try {
-            val req = Request.Builder().url(url).header("Connection", "close").build()
+            // 同样不带 Connection: close，保持连接复用
+            val req = Request.Builder().url(url).build()
             urlClient.newCall(req).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.req(url)

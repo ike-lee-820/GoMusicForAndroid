@@ -282,9 +282,14 @@ fun MainScreen(vm: MainViewModel) {
         vm.stack.removeAt(vm.stack.lastIndex)
     }
 
+    // 横屏（含平板）：底栏挪到左侧竖排、迷你播放器挪到右侧竖排，
+    // 中间留给内容 —— 竖屏那两条横栏在横屏下会把内容压得很扁
+    val landscape = isLandscape()
+
     Box(Modifier.fillMaxSize().background(go.bg)) {
-        Column(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        // weight 必须在 Row/Column 作用域里用，所以把内容块做成带 Modifier 的 lambda
+        val contentBox: @Composable (Modifier) -> Unit = { mod ->
+            Box(mod.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                 Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
                     // 进入二级页时不再组合主页长列表：省掉整屏重组，打开歌单/专辑更快
                     if (top == null) HomeContent(vm, listStates)
@@ -317,34 +322,109 @@ fun MainScreen(vm: MainViewModel) {
                     }
                 }
             }
-            MiniPlayer(vm)
-            NavBar(vm)
         }
+        if (landscape) {
+            Row(Modifier.fillMaxSize()) {
+                NavRail(vm)
+                contentBox(Modifier.weight(1f))
+                MiniPlayerRail(vm)
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                contentBox(Modifier.weight(1f))
+                MiniPlayer(vm)
+                NavBar(vm)
+            }
+        }
+    }
+}
 
-        AnimatedVisibility(
-            vm.showPlayer,
-            enter = slideInVertically(tween(240)) { it } + fadeIn(tween(180)),
-            exit = slideOutVertically(tween(240)) { it } + fadeOut(tween(180)),
-        ) { FullPlayer(vm) }
+/**
+ * 横屏左侧导航栏：竖屏底栏的竖排版本，逻辑完全一样（切标签、清栈、清搜索词）。
+ */
+/** 横屏（含平板）判定 */
+@Composable
+fun isLandscape(): Boolean {
+    val c = LocalConfiguration.current
+    return c.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+}
 
-        AnimatedVisibility(
-            vm.showLyrics,
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(150)),
-        ) { LyricsPage(vm) }
+@Composable
+fun NavRail(vm: MainViewModel) {
+    val go = LocalGo.current
+    // 顺序：歌曲 / 专辑 / 首页 / 歌手 / 歌单 —— 首页在正中间
+    val tabs = listOf(
+        TAB_SONGS to ("歌曲" to Icons.Outlined.MusicNote),
+        TAB_ALBUMS to ("专辑" to Icons.Outlined.Album),
+        TAB_HOME to ("首页" to Icons.Outlined.Home),
+        TAB_ARTISTS to ("歌手" to Icons.Outlined.Person),
+        TAB_PLAYLISTS to ("歌单" to Icons.Outlined.LibraryMusic),
+    )
+    val w = 76.dp
+    Column(
+        Modifier.fillMaxHeight().width(w).background(go.surface)
+            .navigationBarsPadding().padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        tabs.forEach { (t, pair) ->
+            val (label, icon) = pair
+            val sel = vm.tab == t && vm.stack.isEmpty()
+            Column(
+                Modifier.fillMaxWidth().height(64.dp).clickable {
+                    vm.stack.clear()
+                    vm.chooseTab(t)
+                    vm.query = ""
+                },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    icon, label, tint = if (sel) go.primary else go.muted,
+                    modifier = Modifier.size(22.dp),
+                )
+                VS(2)
+                Txt(
+                    label, 11,
+                    weight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (sel) go.primary else go.muted,
+                )
+            }
+        }
+    }
+}
 
-        if (vm.showQueue) QueueSheet(vm)
-        if (vm.showSettings) SettingsSheet(vm)
-        if (vm.showNmLogin) NmLoginSheet(vm)
-        if (vm.showHistory) HistorySheet(vm)
-        if (vm.showDownloads) DownloadsSheet(vm)
-        vm.pickReq?.let { PickSheet(vm, it) }
-
-        // MV：放在所有内容之后组合，才在最上层。
-        // 之前它在二级页的 AnimatedContent 里，而 FullPlayer 组合在它之后，
-        // 于是播放页把 MV 整个盖住了 —— 点 MV 按钮看起来没反应。
-        val video = vm.stack.lastOrNull() as? Screen.Video
-        if (video != null) VideoScreen(vm, video)
+/**
+ * 横屏右侧播放栏：竖屏底部迷你播放器的竖排版本。
+ * 封面在上，歌名/歌手竖着排，下面是播放与播放列表，操作逻辑不变。
+ */
+@Composable
+fun MiniPlayerRail(vm: MainViewModel) {
+    val s = vm.currentSong
+    val go = LocalGo.current
+    val w = 150.dp
+    Column(
+        Modifier.fillMaxHeight().width(w).background(go.surface)
+            .navigationBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (s == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Txt("未在播放", 12, color = go.muted, align = TextAlign.Center)
+            }
+            return@Column
+        }
+        Cover(s.coverUrl, Modifier.size(96.dp), 12.dp)
+        VS(10)
+        // 竖排：歌名在上、歌手在下，都居中，窄栏里不够宽就换行而不是截断
+        Txt(s.title, 14, weight = FontWeight.Medium, align = TextAlign.Center, maxLines = 2)
+        VS(4)
+        Txt(s.artist, 11, color = go.muted, align = TextAlign.Center, maxLines = 2)
+        VS(10)
+        IconBtn(
+            if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+            if (vm.isPlaying) "暂停" else "播放", size = 44.dp,
+        ) { vm.togglePlay() }
+        IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表") { vm.showQueue = true }
     }
 }
 
@@ -416,19 +496,24 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
     val hints = listOf("搜索歌名或歌手", "搜索专辑名或歌手", "搜索歌名或歌手", "搜索歌手", "搜索歌单")
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
+            // 搜索栏放在标题和设置中间（同一行），省掉它单独占的一整行
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt(titles[vm.tab], 20, Modifier.weight(1f), FontWeight.Bold)
+                // 首页不显示搜索栏：首页内容都是推荐位，不需要搜索
+                if (vm.tab == TAB_HOME) {
+                    Txt(titles[vm.tab], 20, Modifier.weight(1f), FontWeight.Bold)
+                } else {
+                    Txt(titles[vm.tab], 20, FontWeight.Bold)
+                    HS(12)
+                    SearchField(
+                        vm.query, { vm.query = it }, hints[vm.tab],
+                        Modifier.weight(1f),
+                        onSearch = { vm.searchNetease(vm.query.trim()) },
+                    )
+                }
+                HS(4)
                 IconBtn(Icons.Outlined.Settings, "设置", size = 44.dp) { vm.showSettings = true }
             }
             VS(8)
-            // 首页不显示搜索栏（首页内容都是推荐位，不需要搜索）
-            if (vm.tab != TAB_HOME) {
-                SearchField(
-                    vm.query, { vm.query = it }, hints[vm.tab],
-                    onSearch = { vm.searchNetease(vm.query.trim()) },
-                )
-                VS(8)
-            }
             if (vm.offline) OfflineBar(vm)
             DownloadBar(vm)
         }

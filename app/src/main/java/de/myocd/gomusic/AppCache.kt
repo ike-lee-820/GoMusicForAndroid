@@ -1,6 +1,9 @@
 package de.myocd.gomusic
 
 import android.content.Context
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.encodeToString
 import java.io.File
 
 /**
@@ -44,7 +47,10 @@ object AppCache {
         runCatching {
             val f = transFile(ctx)
             val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(Api.json.encodeToString(v))
+            // 显式给序列化器：Map 这种泛型容器，只靠实参推不出 T，
+            // 编译器会去匹配 (serializer, value) 那个重载然后报参数缺失
+            val ser = MapSerializer(String.serializer(), ListSerializer(String.serializer()))
+            tmp.writeText(Api.json.encodeToString(ser, v))
             tmp.renameTo(f)
         }
     }

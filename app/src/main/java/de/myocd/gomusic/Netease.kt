@@ -575,9 +575,11 @@ object Netease {
         val lock = urlInFlight.computeIfAbsent(k) { java.util.concurrent.locks.ReentrantLock() }
         val mine = lock.tryLock()
         if (!mine) {
-            repeat(40) { // 最多等 6 秒
-                if (urlCache.containsKey(k) || urlMiss.containsKey(k)) break
+            // 最多等 6 秒（while 而不是 repeat：lambda 里不能用 break）
+            var waited = 0
+            while (waited < 6000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
                 runCatching { Thread.sleep(150) }
+                waited += 150
             }
             urlCache[k]?.let { (u, t) ->
                 if (System.currentTimeMillis() - t < URL_TTL_MS)

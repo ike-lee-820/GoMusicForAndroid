@@ -1,7 +1,9 @@
 package de.myocd.gomusic
 
 import android.content.Context
-import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
 
 /**
@@ -12,10 +14,6 @@ import java.io.File
  * 而数据目录（getExternalFilesDir / SharedPreferences）清起来要手动找，
  * 还容易越堆越大。真正不能丢的东西（歌单、下载记录、登录态）仍留在数据目录。
  */
-/** 翻译缓存的序列化包装：让泛型 Map 有个具体类型可供序列化 */
-@Serializable
-private class TransWrap(val m: Map<String, List<String>> = emptyMap())
-
 object AppCache {
     /** 更新安装包 */
     private const val DIR_UPDATE = "update"
@@ -40,7 +38,13 @@ object AppCache {
         val t = runCatching { f.readText() }.getOrNull() ?: return null
         if (t.isBlank()) return null
         return runCatching {
-            Api.json.decodeFromString<TransWrap>(t).m
+            val obj = Api.json.parseToJsonElement(t) as? JsonObject ?: return@runCatching emptyMap<String, List<String>>()
+            val out = LinkedHashMap<String, List<String>>()
+            for ((k, v) in obj) {
+                val arr = v as? JsonArray ?: continue
+                out[k] = arr.mapNotNull { (it as? JsonPrimitive)?.content }
+            }
+            out
         }.getOrNull()
     }
 
@@ -49,12 +53,30 @@ object AppCache {
         runCatching {
             val f = transFile(ctx)
             val tmp = File(f.parentFile, f.name + ".tmp")
-            // 包一层再序列化：encodeToString(v) 只传实参时，Map 这种泛型
-            // 容器推不出 reified 的 T，编译器会转去匹配 (serializer, value)
-            // 重载然后报参数缺失。包成具体类型就没这个问题
-            tmp.writeText(Api.json.encodeToString(TransWrap(v)))
+            // 手写 JSON：encodeToString 对泛型 Map 推不出 reified 的 T，
+            // 包成 @Serializable 包装类又要求类可见（private 的拿不到 serializer）。
+            // 这里就是 ssid -> 译文数组，结构很简单，直接拼最省事
+            val body = v.entries.joinToString(",", "{", "}") { (k, lines) ->
+                "${esc(k)}:[${lines.joinToString(",") { esc(it) }}]"
+            }
+            tmp.writeText(body)
             tmp.renameTo(f)
         }
+    }
+
+    /** JSON 字符串转义：歌词里可能有引号、换行，裸拼会写出非法 JSON */
+    private fun esc(s: String): String {
+        val sb = StringBuilder(s.length + 8).append('"')
+        for (c in s) when {
+            c == '"' -> sb.append("\\\"")
+            c == '\\' -> sb.append("\\\\")
+            c == '\n' -> sb.append("\\n")
+            c == '\r' -> sb.append("\\r")
+            c == '\t' -> sb.append("\\t")
+            c < ' ' -> sb.append("\\u%04x".format(c.code))
+            else -> sb.append(c)
+        }
+        return sb.append('"').toString()
     }
 
     /** 清空所有可清理缓存（设置里「清除缓存」用），返回释放的字节数 */

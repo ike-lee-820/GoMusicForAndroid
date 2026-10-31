@@ -10,9 +10,6 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      # 在仓库 Settings -> Variables 配 OPENROUTER_API_KEY；没配则翻译走思知兜底
-      OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
     permissions:
       contents: write
     steps:

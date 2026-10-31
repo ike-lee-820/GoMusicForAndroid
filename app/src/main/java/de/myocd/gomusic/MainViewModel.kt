@@ -391,6 +391,52 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         rememberSongs(nm)
     }
     val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] ?: nmKnown[it] } }
+
+    // ---- MV 可用性：只有确认拿得到地址才显示按钮 ----
+    /** ssid -> 有没有 MV（确认过的才在表里） */
+    private val mvOk = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    /** 正在确认的歌，避免同一首重复请求 */
+    private val mvProbing = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+    /** 确认结果回来了要触发一次重组 */
+    var mvVersion by mutableStateOf(0); private set
+
+    /**
+     * 确认这首歌有没有 MV，结果按歌缓存（同一首只问一次）。
+     *
+     * 只有接口明确说「拿不到地址」才算没有 MV；请求失败（离线 / 网络抖动）
+     * 判断不了，按「有」处理，不会因为一次抖动就把按钮永久藏掉。
+     */
+    fun probeMv(s: Song?) {
+        val id = s?.mvId ?: return
+        val k = s!!.ssid
+        if (id <= 0L || mvOk.containsKey(k) || !mvProbing.add(k)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = Netease.mvExists(id)
+            withContext(Dispatchers.Main) {
+                // 判断不了（网络/接口出错）就按「有」显示：
+                // 不能因为一次抖动就把按钮永久藏掉
+                mvOk[k] = ok ?: true
+                mvVersion++
+                mvProbing.remove(k)
+            }
+        }
+    }
+
+    /**
+     * MV 按钮能不能显示。
+     *
+     * mvId > 0 只是「接口给了一个 id」，很多歌的 MV 已经下架或需要付费，
+     * 点了也放不出来。所以必须 [probeMv] 确认过才显示；没确认前先不显示，
+     * 免得没有 MV 的歌也冒出按钮。
+     */
+    fun mvAvailable(s: Song?): Boolean {
+        mvVersion // 读一次：确认结果回来时这里会重新算
+        val id = s?.mvId ?: return false
+        if (id <= 0L) return false
+        return mvOk[s!!.ssid] ?: false
+    }
     val lyricIndex: Int by derivedStateOf {
         if (lyric.isEmpty() || lyric[0].timeMs < 0) -1
         else lyric.indexOfLast { it.timeMs <= positionMs }
@@ -1654,6 +1700,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     if (d != null && curSsid == id) {
                         nmKnown[id] = d
+                        probeMv(d)
                         // 用详情里的完整信息刷新列表里的这一首
                         nmSongs = nmSongs.map { if (it.ssid == id) d else it }
                         updateCover(d.coverUrl)

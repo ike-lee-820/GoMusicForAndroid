@@ -1750,10 +1750,11 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
             Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
             size = 24.dp, minHit = 34.dp, tint = Color.White,
         ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
-        // MV：只有这首歌有 MV（mvId > 0）时才显示
-        if (s.mvId > 0L) {
+        // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
+        LaunchedEffect(s.ssid) { vm.probeMv(s) }
+        if (vm.mvAvailable(s)) {
             HS(6)
-            MvIconButton({ vm.playMv() }, tint = Color.White, size = 22.dp, hit = 34.dp)
+            MvIconButton({ vm.playMv() }, tint = Color.White, size = 24.dp, hit = 34.dp)
         }
         HS(6)
         QualityMenu(vm, Color.White)
@@ -1889,8 +1890,9 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") {
                     vm.pick(listOf(s.ssid), s.title, s.coverUrl)
                 }
-                // MV：只有这首歌有 MV（mvId > 0）时才显示
-                if (s.mvId > 0L) {
+                // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
+                LaunchedEffect(s.ssid) { vm.probeMv(s) }
+                if (vm.mvAvailable(s)) {
                     MvIconButton({ vm.playMv() }, tint = go.on, size = 24.dp, hit = 36.dp)
                 }
                 QualityMenu(vm)
@@ -1935,11 +1937,13 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
 // =====================================================================
 
 /**
- * MV 按钮：视频图标用 Canvas 自绘。
+ * MV 按钮：图标用 Canvas 自绘，画的是 Material Icons 的 music_video
+ * （显示器外框 + 里面的音符）。
  *
- * 图标扩展里没有视频类图标（VideoLibrary / Movie 都取不到，编译报
- * Unresolved reference），所以直接画一个「摄像机 + 播放三角」。
- * 不依赖任何图标名，不会再出现取不到的情况。
+ * 之前画的是「摄像机 + 播放三角」，和一排 Material 图标放在一起很跳，
+ * 而且桌面端用的是 music_video，两端还不一样。这里照着 music_video 画：
+ * 图标扩展里的视频类图标取不到（VideoLibrary / Movie 都报 Unresolved
+ * reference），自绘不依赖图标名，两端也能一致。
  */
 @Composable
 fun MvIconButton(
@@ -1953,35 +1957,36 @@ fun MvIconButton(
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(size)) {
-            val w = this.size.width
-            val h = this.size.height
-            val st = Stroke(width = w * 0.09f)
-            // 机身：圆角矩形
+            // 按 24dp 的设计网格画，u 是「一格」对应的像素
+            val u = this.size.width / 24f
+            val line = Stroke(width = 1.7f * u)
+            // 显示器外框
             drawRoundRect(
                 color = tint,
-                topLeft = Offset(0f, h * 0.22f),
-                size = Size(w * 0.74f, h * 0.56f),
-                cornerRadius = CornerRadius(w * 0.12f, w * 0.12f),
-                style = st,
+                topLeft = Offset(2f * u, 4f * u),
+                size = Size(20f * u, 16f * u),
+                cornerRadius = CornerRadius(2f * u, 2f * u),
+                style = line,
             )
-            // 右侧镜头：三角形楔子
-            drawPath(
-                Path().apply {
-                    moveTo(w * 0.74f, h * 0.36f)
-                    lineTo(w * 0.99f, h * 0.24f)
-                    lineTo(w * 0.99f, h * 0.76f)
-                    lineTo(w * 0.74f, h * 0.64f)
-                    close()
-                },
+            // 音符头
+            drawOval(
                 color = tint,
-                style = st,
+                topLeft = Offset(5.9f * u, 13.4f * u),
+                size = Size(6.2f * u, 5.2f * u),
             )
-            // 机身里的播放三角
+            // 符干
+            drawRect(
+                color = tint,
+                topLeft = Offset(11.4f * u, 7.2f * u),
+                size = Size(1.5f * u, 9.6f * u),
+            )
+            // 符尾
             drawPath(
                 Path().apply {
-                    moveTo(w * 0.24f, h * 0.34f)
-                    lineTo(w * 0.24f, h * 0.66f)
-                    lineTo(w * 0.56f, h * 0.5f)
+                    moveTo(12.9f * u, 7.2f * u)
+                    lineTo(18.4f * u, 9.1f * u)
+                    lineTo(18.4f * u, 11.1f * u)
+                    lineTo(12.9f * u, 9.3f * u)
                     close()
                 },
                 color = tint,

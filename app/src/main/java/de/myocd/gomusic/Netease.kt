@@ -962,6 +962,26 @@ object Netease {
     }
 
     /**
+     * 这首歌到底有没有 MV（三态）。
+     *
+     * mv 字段非 0 只说明接口给了一个 id，不等于真能播：
+     * MV 下架 / 需要付费 / 地区限制时 /mv/url 是拿不到地址的。
+     * 所以按钮不能只看 mvId，要确认一次。
+     *
+     * 用 getOnce（不重试）判断：拿不到响应说明是网络问题，返回 null 表示
+     * 「无法判断」，调用方不能据此把按钮藏掉。
+     */
+    fun mvExists(mvId: Long): Boolean? {
+        if (mvId <= 0L) return false
+        val r = getOnce("/mv/url", "id" to mvId.toString()) ?: return null
+        // 接口自己报错（不是 200）说明是服务端/网络问题，不能当成「没有 MV」
+        val code = r["code"]?.toString()?.trim('"')?.toIntOrNull()
+        if (code != null && code != 200) return null
+        val u = r.obj("data")?.str("url") ?: r.str("url")
+        return !u.isNullOrBlank() && u.startsWith("http")
+    }
+
+    /**
      * 往网易云歌单加歌（/playlist/tracks?op=add）。
      *
      * 只接受网易云歌曲 id：本站曲库的歌在网易云那边不存在，

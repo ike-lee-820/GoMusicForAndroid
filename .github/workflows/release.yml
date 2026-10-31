@@ -10,6 +10,9 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # 在仓库 Settings -> Variables 配 OPENROUTER_API_KEY；没配则翻译走思知兜底
+      OPENROUTER_API_KEY: ${{ vars.OPENROUTER_API_KEY }}
     permissions:
       contents: write
     steps:
@@ -22,13 +25,6 @@ jobs:
         with:
           gradle-version: 8.10.2
 
-      - name: Merge font chunks
-        run: |
-          set -eu
-          mkdir -p app/src/main/res/font
-          # 思源宋体太大，仓库里按 30MB 分片存放，构建前合并成完整字体
-          cat app/fontchunks/song.ttf.00 app/fontchunks/song.ttf.01 > app/src/main/res/font/song.ttf
-          ls -l app/src/main/res/font/
       - name: Restore keystore
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}

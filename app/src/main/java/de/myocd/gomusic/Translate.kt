@@ -2,6 +2,9 @@ package de.myocd.gomusic
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.FormBody
@@ -12,7 +15,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * 歌词翻译：只走思知 AI 对话接口，并且**整篇一次提交**。
+ * 歌词翻译：整篇一次提交，主用 OpenRouter（NVIDIA Nemotron 3 Ultra），失败退回思知 AI。
  *
  * 之前是「主翻译接口逐句并发，AI 只做兜底」。主接口返回的是机器译文、
  * 目标语言偶尔还会弄错（翻出来是英文），而 AI 的译文更贴合歌词语境，
@@ -28,6 +31,17 @@ import java.util.concurrent.TimeUnit
  */
 object Translate {
 
+    // ---- 主用：OpenRouter（NVIDIA Nemotron 3 Ultra，免费） ----
+    private const val OR_URL = "https://openrouter.ai/api/v1/chat/completions"
+    /**
+     * 密钥不写进源码：GitHub 的 secret scanning 会拦下带密钥的提交。
+     * 改由构建注入（gradle.properties 的 OR_KEY 或环境变量 OPENROUTER_API_KEY），
+     * 没配就退回思知。
+     */
+    private val OR_KEY get() = BuildConfig.OR_KEY
+    private const val OR_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    // ---- 备用：思知 AI 对话 ----
     private const val AI_URL = "https://api.sizhi.com/chat"
     private const val AI_APPID = "b179db75c4804ae5954d2e7ad794e5bd"
 
@@ -107,7 +121,49 @@ object Translate {
      * POST 优先：整篇歌词很长，拼进 URL 会超过服务端对 GET 长度的限制。
      * 少数部署只读 query，所以 POST 没拿到时再退回 GET。
      */
+    /**
+     * 主用 OpenRouter；它报错 / 拿不到就退回思知。
+     * 两者返回的都是整篇译文文本，后面的解析逻辑共用。
+     */
     private fun ask(spoken: String): String? {
+        openRouter(spoken)?.let { return it }
+        return sizhi(spoken)
+    }
+
+    /** 主用：OpenRouter，OpenAI 兼容的 chat/completions */
+    private fun openRouter(spoken: String): String? {
+        if (OR_KEY.isBlank()) return null
+        // 未开启 reasoning，响应里就只有译文，不带思考过程
+        val body: String = Api.json.encodeToString(
+            OrReq(OR_MODEL, listOf(OrMsg("user", spoken))),
+        )
+        val req = Request.Builder()
+            .url(OR_URL)
+            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .header("Authorization", "Bearer $OR_KEY")
+            .header("Connection", "close")
+            .build()
+        return runCatching {
+            http.newCall(req).execute().use { r ->
+                val s = r.body?.string().orEmpty()
+                if (!r.isSuccessful || s.isBlank()) return@runCatching null
+                val o = parseObj(s) ?: return@runCatching null
+                val ch = o["choices"] as? JsonArray ?: return@runCatching null
+                val first = ch.firstOrNull() as? JsonObject ?: return@runCatching null
+                strOf(first.obj("message"), "content")
+            }
+        }.getOrNull()
+    }
+
+    /** 请求体：用序列化构造，手动拼字符串遇到引号 / 换行会生成非法 JSON */
+    @Serializable
+    private class OrReq(val model: String, val messages: List<OrMsg>)
+
+    @Serializable
+    private class OrMsg(val role: String, val content: String)
+
+    /** 备用：思知。POST 优先（整篇很长，GET 会被服务端截断），拿不到再退回 GET */
+    private fun sizhi(spoken: String): String? {
         val uid = UUID.randomUUID().toString()
         val base = "$AI_URL?appid=$AI_APPID&userid=$uid"
         post(base, spoken)?.let { return it }

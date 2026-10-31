@@ -22,10 +22,16 @@ android {
 
     defaultConfig {
         applicationId = "de.myocd.gomusic"
+        // OpenRouter 密钥：不写进源码（GitHub 的 secret scanning 会拦下带密钥的提交），
+        // 改从环境变量 OPENROUTER_API_KEY 或 gradle.properties 的 OR_KEY 注入
+        buildConfigField(
+            "String", "OR_KEY",
+            "\"${System.getenv("OPENROUTER_API_KEY") ?: (project.findProperty("OR_KEY") as String? ?: "")}\"",
+        )
         minSdk = 26
         targetSdk = 35
-        versionCode = 64
-        versionName = "2.5.5"
+        versionCode = 65
+        versionName = "2.5.6"
     }
 
     signingConfigs {

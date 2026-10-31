@@ -100,15 +100,15 @@ private val NON_CHINESE_RE = Regex(
 fun hasNonChinese(s: String): Boolean = NON_CHINESE_RE.containsMatchIn(s)
 
 /**
- * 作词 / 作曲 / 编曲这类标注行里的字（简体与繁体各三个）。
+ * 作词 / 作曲 / 编曲 / 制作这类标注行里的字（简体与繁体各四个）。
  *
  * 这些行几乎都带英文人名（「作曲 : John Doe」「编曲 : XXX」），
  * 会把整篇误判成外文歌词、白白多出一个翻译按钮。
  * 判断「要不要翻译」时先把它们排除掉。
  */
-private val CREDIT_CHARS = charArrayOf('词', '詞', '曲', '麯', '编', '編')
+private val CREDIT_CHARS = charArrayOf('词', '詞', '曲', '麯', '编', '編', '制', '製')
 
-/** 是否是「词 / 曲 / 编」这类标注行 */
+/** 是否是「词 / 曲 / 编 / 制」这类标注行 */
 private fun isCreditLine(s: String): Boolean = s.any { it in CREDIT_CHARS }
 
 /**

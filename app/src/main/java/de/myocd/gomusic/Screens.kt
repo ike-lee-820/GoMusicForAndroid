@@ -2506,10 +2506,16 @@ BoxWithConstraints(
     // 半径换算成像素：offset 用的是像素，之前直接拿 dp 数值当像素用，
     // 在高密度屏上实际半径只有设计的 1/density，弧会比预期弯得多
     val rPx = with(density) { rDp.dp.toPx() }
-    val shift = (rPx * (1 - cos(span * stepRad))) / 2
-    // 行宽留一点余量：文字旋转后包围盒会变宽，
-    // 顶满整行的话两端容易超出歌词区被屏幕切掉
-    val lineW = maxWidth * 0.9f
+    val maxWPx = with(density) { maxWidth.toPx() }
+    // 行宽固定：宽度随文字长短变化的话，各行左端就会参差，
+    // 圆盘看着不圆。定宽之后所有行的左端都在同一条弧上。
+    val lineWPx = maxWPx * 0.78f
+    // 弧的横向位移上限。旋转是绕左端转的，横向不会向外扩张，
+    // 所以只要「行宽的一半 + 最大位移」不超过容器的一半，就不会出屏：
+    // 以前位移没有上限，外侧行被推到屏幕外，看着就是「歌词超出屏幕」。
+    val maxShiftPx = ((maxWPx - lineWPx) / 2f).coerceAtLeast(0f)
+    val shiftPx = ((rPx * (1 - cos(span * stepRad))) / 2f).coerceAtMost(maxShiftPx)
+    val lineW = with(density) { lineWPx.toDp() }
     // 多渲染一行作缓冲：让最外侧的行在透明度已经衰减到 0 之后
     // 才被移出渲染范围，进出就不会「啪」地出现或消失
     val edge = span + 1
@@ -2523,7 +2529,7 @@ BoxWithConstraints(
         //
         // 上一版为了「左端对齐」把横向位移改成 0，结果行只沿竖直方向排开、
         // 文字却在转 —— 排列是直线、字是斜的，两者对不上，所以看着很假。
-        val x = -rPx * (1 - cos(th)) + shift
+        val x = -rPx * (1 - cos(th)) + shiftPx
         val y = rPx * sin(th)
         // 边缘平滑淡出：用 smoothstep，最外侧处的值与斜率都是 0，
         // 行在边缘进出时不会有突跳（原来是线性再加 0.25 下限，
@@ -2543,7 +2549,8 @@ BoxWithConstraints(
         Box(
             Modifier
                 .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
-                .wrapContentWidth(unbounded = true)
+                // 定宽：左端对齐，各行左端才落在同一条弧上
+                .width(lineW)
                 .wrapContentHeight(unbounded = true)
                 .graphicsLayer {
                     // 框与文字同一个角度：外框跟着一起转
@@ -2558,7 +2565,7 @@ BoxWithConstraints(
             // 所以译文和原句一样贴合圆弧，不会被斜切。
             Column(
                 Modifier
-                    .widthIn(max = lineW)
+                    .fillMaxWidth()
                     .padding(horizontal = 6.dp, vertical = 3.dp),
             ) {
                 Text(

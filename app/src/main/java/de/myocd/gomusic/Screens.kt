@@ -285,8 +285,10 @@ fun MainScreen(vm: MainViewModel) {
     // 横屏（含平板）：底栏挪到左侧竖排、迷你播放器挪到右侧竖排，
     // 中间留给内容 —— 竖屏那两条横栏在横屏下会把内容压得很扁
     val landscape = isLandscape()
+    // 横屏：状态栏隐藏了，在左侧补一条等宽的空白（挖孔/圆角常在这一侧）
+    val sideInset = if (landscape) statusBarHeightDp() else 0.dp
 
-    Box(Modifier.fillMaxSize().background(go.bg)) {
+    Box(Modifier.fillMaxSize().background(go.bg).padding(start = sideInset)) {
         // weight 必须在 Row/Column 作用域里用，所以把内容块做成带 Modifier 的 lambda
         val contentBox: @Composable (Modifier) -> Unit = { mod ->
             Box(mod.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
@@ -372,6 +374,22 @@ fun MainScreen(vm: MainViewModel) {
 fun isLandscape(): Boolean {
     val c = LocalConfiguration.current
     return c.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+}
+
+/**
+ * 系统状态栏高度。
+ *
+ * 横屏时状态栏被隐藏（见 MainActivity 的 StatusBarMode），各处的
+ * statusBarsPadding 会变成 0 —— 内容会顶到屏幕最左边，而横屏时挖孔、
+ * 圆角往往就在这一侧，图标会被压住。所以横屏下改成在左侧手动留出
+ * 一条等宽的空白，等于「把顶部那条搬到了左边」。
+ */
+@Composable
+fun statusBarHeightDp(): Dp {
+    val res = LocalContext.current.resources
+    val id = res.getIdentifier("status_bar_height", "dimen", "android")
+    val px = if (id > 0) runCatching { res.getDimensionPixelSize(id) }.getOrDefault(0) else 0
+    return with(LocalDensity.current) { px.toDp() }
 }
 
 @Composable

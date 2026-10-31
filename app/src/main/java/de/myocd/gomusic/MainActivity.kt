@@ -14,9 +14,11 @@ import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,13 +54,6 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
-        // 显示顶部状态栏（时间、电量、通知图标）。
-        // 之前试过默认隐藏以换取全屏观感，但隐藏后 statusBarsPadding 变 0，
-        // 各处顶部留白跟着变，且下滑才看得到时间，实际用起来不方便 —— 加回来。
-        // 状态栏背景透明、内容延伸到其下方（enableEdgeToEdge），观感仍是全屏的。
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
-        }
         if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         // Android 9 及以下写公共下载目录需要存储权限
         if (Build.VERSION.SDK_INT < 29) storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -90,6 +85,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             GoTheme(vm.primary, rememberAppFont(vm.fontKind, vm.fontWght)) {
+                StatusBarMode()
                 // 简繁转换：设置一改，界面与文字全部跟着变
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalZhMode provides vm.zhConvert,
@@ -112,5 +108,24 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         vm.handleLink(intent.data)
+    }
+}
+
+/**
+ * 状态栏：竖屏显示，横屏隐藏。
+ *
+ * 横屏时顶部那条会把本就不多的竖向空间再吃一截。隐藏后 statusBarsPadding
+ * 会变成 0，所以横屏下由 statusBarHeightDp() 在左侧补一条等宽空白，
+ * 避免内容压到挖孔 / 圆角那一侧。
+ */
+@Composable
+private fun StatusBarMode() {
+    val act = LocalContext.current as? ComponentActivity ?: return
+    val landscape = isLandscape()
+    LaunchedEffect(landscape) {
+        WindowCompat.getInsetsController(act.window, act.window.decorView).apply {
+            if (landscape) hide(WindowInsetsCompat.Type.statusBars())
+            else show(WindowInsetsCompat.Type.statusBars())
+        }
     }
 }

@@ -12,7 +12,9 @@ import java.security.MessageDigest
  * 加载过的封面下次直接从缓存文件读，不用再走网络。
  */
 object ImageCache {
-    private const val DIR = "imgcache"
+    /** 目录名：AppCache 清理时要一并清掉，所以对外可见 */
+    const val DIR_NAME = "imgcache"
+    private const val DIR = DIR_NAME
     private const val MAX_BYTES = 200L * 1024 * 1024
 
     private var dir: File? = null
@@ -22,6 +24,9 @@ object ImageCache {
             dir = File(ctx.cacheDir, DIR).apply { mkdirs() }
         }
     }
+
+    /** 清空后重新指向目录（AppCache.clear 用） */
+    fun reset() { dir = null }
 
     private fun fileOf(url: String): File {
         val md = MessageDigest.getInstance("MD5").digest(url.toByteArray())

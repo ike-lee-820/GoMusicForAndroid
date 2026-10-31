@@ -41,6 +41,9 @@ private val NM_HEADERS = mapOf(
 private const val NM_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 
+/** 缓存文件名：ssid 里可能带 / 之类的字符，不能直接用 */
+private fun ssid_safe(s: String): String = s.replace(Regex("[^A-Za-z0-9_.-]"), "_")
+
 class PlaybackService : MediaSessionService() {
     companion object {
         /** 设置里改了后台播放策略后，用它通知服务重新应用（服务读 Prefs） */
@@ -68,6 +71,15 @@ class PlaybackService : MediaSessionService() {
                 if (local != null) {
                     spec.withUri(local)
                 } else {
+                    // 在线播放：先把整首下到缓存目录再播，播起来就不受网络抖动影响。
+                    // 切歌时 PlayCache.onSwitch 会立刻删掉上一首的整首文件。
+                    val key = ssid_safe(ssid) + "_" + wantQuality
+                    PlayCache.onSwitch(applicationContext, key)
+                    if (PlayCache.cached(applicationContext, key) != null) {
+                        val hit = PlayCache.cached(applicationContext, key)!!
+                        NmLog.note("播放缓存命中：${hit.name}")
+                        spec.withUri(Uri.fromFile(hit))
+                    } else run {
                     val nid = neteaseIdOf(ssid)
                     val url = try {
                         if (nid != null && p.nmCookie.isNotBlank()) {
@@ -88,8 +100,17 @@ class PlaybackService : MediaSessionService() {
                     // —— 这就是「拿到正确 url 却播不了」的常见原因
                     val isNm = nid != null && p.nmCookie.isNotBlank()
                     NmLog.note("解析到播放地址：$url -> $safe（${if (isNm) "网易云" else "本站"}）")
-                    val base = spec.withUri(u)
-                    if (isNm) base.withRequestHeaders(NM_HEADERS) else base
+                    val hd = if (isNm) NM_HEADERS else emptyMap()
+                    val f = PlayCache.ensure(applicationContext, key, safe, hd)
+                    if (f != null) {
+                        NmLog.note("整首缓存完成：${f.name}（${f.length()} 字节）")
+                        spec.withUri(Uri.fromFile(f))
+                    } else {
+                        // 缓存失败就退回在线直连，至少还能播
+                        val base = spec.withUri(u)
+                        if (isNm) base.withRequestHeaders(NM_HEADERS) else base
+                    }
+                    }
                 }
             } else spec
         }

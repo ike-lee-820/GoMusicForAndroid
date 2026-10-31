@@ -49,7 +49,12 @@ class InstallResultReceiver : BroadcastReceiver() {
                 else toast(ctx, "请在弹出的界面点「安装」")
             }
 
-            PackageInstaller.STATUS_SUCCESS -> toast(ctx, "更新完成")
+            PackageInstaller.STATUS_SUCCESS -> {
+                // 装完就把缓存目录里的安装包删掉：它只是个临时文件，
+                // 留着会让「缓存」白白占着几十 MB
+                file?.let { runCatching { java.io.File(it).delete() } }
+                toast(ctx, "更新完成")
+            }
 
             else -> {
                 NmLog.note("更新安装失败：status=$status $msg")

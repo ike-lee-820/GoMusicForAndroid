@@ -1153,11 +1153,28 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         updateProgress = null
     }
 
+    /**
+     * 清除缓存：封面、歌词翻译、播放整首缓存、更新安装包。
+     * 这些都在 ctx.cacheDir 下，删掉不影响歌单、下载记录与登录态。
+     */
+    fun clearCache() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val freed = AppCache.clear(app)
+            withContext(Dispatchers.Main) {
+                toast(
+                    if (freed > 0) "已清除缓存 ${freed / 1024 / 1024} MB"
+                    else "没有可清除的缓存",
+                )
+            }
+        }
+    }
+
     /** 应用内更新：下载 APK 后走系统安装（需要安装权限） */
     fun updateInApp() {
         val info = updateInfo ?: return
         if (updateProgress != null) return
-        val dir = java.io.File(app.getExternalFilesDir(null), "update")
+        // 安装包放缓存目录：装完就删，也不占数据目录（方便清理）
+        val dir = AppCache.updateDir(app)
         updateProgress = 0L to 0L
         viewModelScope.launch {
             val f = withContext(Dispatchers.IO) {

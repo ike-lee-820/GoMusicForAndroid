@@ -34,7 +34,8 @@ data class Playlist(
 
 /** 对应网页端 localStorage：play_counts / user_playlists / play_mode / quality / theme_color */
 class Prefs(ctx: Context) {
-    private val sp = ctx.applicationContext.getSharedPreferences("gomusic", Context.MODE_PRIVATE)
+    private val app = ctx.applicationContext
+    private val sp = app.getSharedPreferences("gomusic", Context.MODE_PRIVATE)
     private val json = Api.json
 
     var playCounts: Map<String, Int>
@@ -156,16 +157,30 @@ class Prefs(ctx: Context) {
      * 歌词翻译缓存：ssid -> 译文列表（按逻辑行顺序）。
      *
      * 翻过的歌下次打开直接读缓存，不再请求接口。
-     * 上限 [MAX_LYRIC_TRANS] 首：整篇译文不小，无限堆积会把 prefs 撑大，
+     * 上限 [MAX_LYRIC_TRANS] 首：整篇译文不小，无限堆积会撑大存储，
      * 超出时丢最旧的（写入顺序即时间顺序）。
+     *
+     * 存在缓存目录（[AppCache]）而不是 SharedPreferences：
+     * 系统「清除缓存」能清干净，也不占用数据目录。
+     * 首次读取时把旧 prefs 里的译文迁移过来，老用户已有的译文不会丢。
      */
     var lyricTrans: Map<String, List<String>>
-        get() = runCatching {
-            json.decodeFromString<Map<String, List<String>>>(sp.getString("lyric_trans", "{}")!!)
-        }.getOrDefault(emptyMap())
+        get() {
+            AppCache.readTrans(app)?.let { return it }
+            val old = runCatching {
+                json.decodeFromString<Map<String, List<String>>>(sp.getString("lyric_trans", "{}")!!)
+            }.getOrDefault(emptyMap())
+            if (old.isNotEmpty()) {
+                AppCache.writeTrans(app, old)
+                sp.edit().remove("lyric_trans").apply()
+            }
+            return old
+        }
         set(v) {
             val cut = if (v.size <= MAX_LYRIC_TRANS) v
             else v.entries.drop(v.size - MAX_LYRIC_TRANS).associate { it.key to it.value }
-            sp.edit().putString("lyric_trans", json.encodeToString(cut)).apply()
+            AppCache.writeTrans(app, cut)
+            // 已迁移，prefs 里那份不再维护，避免两边不一致
+            if (sp.contains("lyric_trans")) sp.edit().remove("lyric_trans").apply()
         }
 }

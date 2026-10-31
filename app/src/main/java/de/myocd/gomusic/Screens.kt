@@ -3323,6 +3323,23 @@ fun SettingsSheet(vm: MainViewModel) {
                 11, color = go.muted,
             )
             VS(8)
+
+            // ---------- 存储 ----------
+            Txt("存储", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("清除缓存", 14, weight = FontWeight.Medium)
+                    Txt("封面、歌词翻译、播放缓存与更新安装包，不影响歌单与已下载歌曲", 12, color = go.muted)
+                }
+                HS(8)
+                GoButton("清除") { vm.clearCache() }
+            }
+            VS(8)
         }
     }
     if (confirmClear) {

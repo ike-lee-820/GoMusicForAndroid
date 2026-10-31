@@ -2675,7 +2675,10 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             delay(300)
         }
     }
-    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+    // 整个画面放进一个 Box：下面的顶栏/底栏要用 Modifier.align 贴边，
+    // 而 align 只在 BoxScope 里才有，函数体顶层直接用会解析不到
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
         val cw = maxWidth
         val ch = maxHeight
         // 容器比视频更宽 -> 上下顶满、左右留黑边；反之左右顶满、上下留黑边
@@ -2767,6 +2770,7 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
                     }
                 }
             }
+        }
         }
     }
 }

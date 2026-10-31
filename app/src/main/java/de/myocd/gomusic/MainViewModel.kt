@@ -131,6 +131,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var downloads by mutableStateOf(prefs.downloads); private set
     /** 正在下载的 ssid */
     var downloading by mutableStateOf<Set<String>>(emptySet()); private set
+
     /** 当前下载进度（含速度），界面上显示用 */
     var dlStatus by mutableStateOf<DlStatus?>(null); private set
 
@@ -2139,6 +2140,55 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 mvLoading = false
                 if (url.isNullOrBlank()) toast("没有取到 MV 地址")
                 else stack.add(Screen.Video(s.title, url))
+            }
+        }
+    }
+
+    // ---- MV 下载 ----
+    /** MV 是否正在下载 */
+    var mvDownloading by mutableStateOf(false); private set
+    /** MV 下载进度 0~1，负数表示还不知道总大小 */
+    var mvDownloadProgress by mutableFloatStateOf(-1f); private set
+
+    /**
+     * 下载当前 MV 的视频文件到 Download/GoMusic/MV。
+     *
+     * MV 是直链视频，不走歌曲那套「音频 + 封面 + 歌词 + 信息文件」的流程，
+     * 也不写下载记录（它不是一首歌，不能当成歌曲离线播放）。
+     */
+    fun downloadMv(v: Screen.Video) {
+        if (mvDownloading) return
+        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        mvDownloading = true
+        mvDownloadProgress = 0f
+        val noti = Noti(app)
+        noti.ensureChannel()
+        viewModelScope.launch(Dispatchers.IO) {
+            var lastBytes = 0L
+            var lastTime = System.currentTimeMillis()
+            val r = runCatching {
+                LocalLib.downloadMv(app, v.title, v.url) { done, total ->
+                    val now = System.currentTimeMillis()
+                    val dt = now - lastTime
+                    if (dt < 400 && done < total) return@downloadMv
+                    lastBytes = done
+                    lastTime = now
+                    val pct = if (total > 0) (done * 100 / total).toInt() else -1
+                    viewModelScope.launch(Dispatchers.Main) {
+                        mvDownloadProgress = if (total > 0) done.toFloat() / total else -1f
+                        noti.progress(
+                            v.title, 1, 1, pct, "",
+                            if (total > 0) "${Noti.size(done)} / ${Noti.size(total)}" else Noti.size(done),
+                        )
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                mvDownloading = false
+                mvDownloadProgress = -1f
+                noti.cancel()
+                r.onSuccess { toast("MV 已保存到 ${LocalLib.dirText()}${LocalLib.MV_DIR}/") }
+                    .onFailure { toast("MV 下载失败") }
             }
         }
     }

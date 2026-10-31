@@ -508,8 +508,23 @@ object Netease {
      */
     private val urlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
 
+    /**
+     * 负缓存：取不到地址时记一笔，短时间内的重复请求直接放弃。
+     *
+     * 没有它时，一首取不到音源的歌被点一次就要重新走一遍十几个请求，
+     * 连续点/自动切歌会把连接池占满，连正常歌曲也跟着变慢。
+     */
+    private val urlMiss = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     /** 缓存有效期：网易云 CDN 地址一般能撑几十分钟，留足余量取 10 分钟 */
     private const val URL_TTL_MS = 10 * 60 * 1000L
+
+    /** 负缓存有效期：取不到往往只是暂时的（登录态、限流），30 秒后允许重试 */
+    private const val URL_MISS_TTL_MS = 30_000L
+
+    /** 在途请求：同一首歌同时被预取和播放解析时共用一次探测，不重复发 */
+    private val urlInFlight = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock>()
+    private val inflightLock = Any()
 
     private fun cacheKey(id: Long, quality: String, level: String?): String =
         "$id|$quality|${level.orEmpty()}|${cookie.take(8).hashCode()}"
@@ -537,7 +552,7 @@ object Netease {
      * （存着「无损」，实际是 320k，离线播放与文件命名都会错）。
      */
     fun audioWithLevel(id: Long, quality: String, level: String? = null): Pair<String, String>? {
-        // 命中缓存直接返回，不再走那一长串串行试档位
+        // 命中缓存直接返回，不再走那一长串探测
         val k = cacheKey(id, quality, level)
         urlCache[k]?.let { (u, t) ->
             if (System.currentTimeMillis() - t < URL_TTL_MS) {
@@ -546,9 +561,39 @@ object Netease {
             }
             urlCache.remove(k)
         }
-        val hit = resolveAudioUrl(id, quality, level)
-        if (hit != null) urlCache[k] = hit.first to System.currentTimeMillis()
-        return hit
+        // 负缓存：刚取过且没取到，不再重复打一轮请求
+        val missAt = urlMiss[k]
+        if (missAt != null) {
+            if (System.currentTimeMillis() - missAt < URL_MISS_TTL_MS) {
+                NmLog.note("音源负缓存命中，跳过 id=$id")
+                return null
+            }
+            urlMiss.remove(k)
+        }
+        // 在途去重：预取和播放解析同时到时，后来的直接等前一次的结果，
+        // 不再各发一轮（否则同一首歌瞬间打出二十几个请求）
+        val lock = urlInFlight.computeIfAbsent(k) { java.util.concurrent.locks.ReentrantLock() }
+        val mine = lock.tryLock()
+        if (!mine) {
+            repeat(40) { // 最多等 6 秒
+                if (urlCache.containsKey(k) || urlMiss.containsKey(k)) break
+                runCatching { Thread.sleep(150) }
+            }
+            urlCache[k]?.let { (u, t) ->
+                if (System.currentTimeMillis() - t < URL_TTL_MS)
+                    return u to (level?.takeIf { it.isNotBlank() } ?: quality)
+            }
+            return null
+        }
+        return try {
+            val hit = resolveAudioUrl(id, quality, level)
+            if (hit != null) urlCache[k] = hit.first to System.currentTimeMillis()
+            else urlMiss[k] = System.currentTimeMillis()
+            hit
+        } finally {
+            lock.unlock()
+            urlInFlight.remove(k)
+        }
     }
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
@@ -624,12 +669,24 @@ object Netease {
      * 档位一路降档时以实际拿到的那一档为准（见 [audioWithLevel]）。
      */
     private fun resolveAudioUrl(id: Long, quality: String, level: String?): Pair<String, String>? {
-        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（并发探测）")
+        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（分档探测）")
         // 候选档位：指定的档位优先，然后按音质设置降档。
         // 不再追加全部 NM_LEVELS：那会多出十来个几乎用不上的档位，
         // levels(quality) 本身已经一路降到 standard
         val cands = (listOfNotNull(level?.takeIf { it.isNotBlank() }) + levels(quality)).distinct()
-        val hits = probeLevels(id, cands)
+
+        // 分两步探测，而不是一次把「所有档位 × 3 种参数」全打出去：
+        // 那通常是 12 个并发请求，服务端一慢就全部堆在一起，
+        // 每个都要等最慢的那个才返回 —— 这就是「半天播不出来」。
+        // 先只试最高那一档的 3 种参数（3 个请求），命中就直接用；
+        // 拿不到再对其余档位并发。绝大多数歌在第一步就拿到了。
+        val first = probeLevels(id, listOf(cands.first()))
+        first.firstOrNull()?.let {
+            NmLog.note("首选档位拿到地址（${it.lv}）：${it.url}")
+            return it.url to it.lv
+        }
+        val rest = cands.drop(1)
+        val hits = if (rest.isEmpty()) emptyList() else first + probeLevels(id, rest)
         // 按档位优先级取能用的最高音质
         for (lv in cands) {
             hits.firstOrNull { it.lv == lv }?.let {
@@ -666,20 +723,41 @@ object Netease {
         return null
     }
 
-    /** 游客 cookie：未登录状态下部分接口会报「需要验证」，用它规避 */
+    /** 游客 cookie 缓存：一次会话里重复取只会拖慢取地址，缓存 10 分钟 */
+    private var anonCache: Pair<String, Long>? = null
+
+    /**
+     * 游客 cookie：未登录状态下部分接口会报「需要验证」，用它规避。
+     *
+     * 走 getOnce 而不是 get()：get() 失败会重试两次并 sleep（约 1 秒），
+     * 而这个接口常在取地址的兜底路径上被调用，多等一秒就是「半天播不出来」。
+     */
     fun anonCookie(): String? {
-        val r = get("/register/anonimous")
+        anonCache?.let { (ck, t) ->
+            if (System.currentTimeMillis() - t < 10 * 60 * 1000L) return ck
+        }
+        val r = getOnce("/register/anonimous") ?: return null
         val ck = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
         NmLog.note("游客 cookie：${if (ck.isNullOrBlank()) "未拿到" else "已拿到"}")
+        if (!ck.isNullOrBlank()) anonCache = ck to System.currentTimeMillis()
         return ck
     }
 
     /** realIP 兜底用的国内 IP（网易对境外 IP 会返回 460 cheating） */
     private const val FALLBACK_CN_IP = "116.25.146.177"
 
+    /**
+     * 歌词。
+     *
+     * 先发一次不带重试的快请求：服务端正常时这就是一次往返。
+     * 拿不到（网络抖动、偶发空响应）才退回带重试的 get()，
+     * 避免每次切歌都先白等一轮重试的 sleep —— 歌词慢主要来自这里。
+     */
     fun lyric(id: Long): String {
-        val r = get("/lyric", "id" to id.toString())
-        val lrc = r.obj("lrc")?.str("lyric")
+        val fast = getOnce("/lyric", "id" to id.toString())
+            ?.obj("lrc")?.str("lyric")
+        if (!fast.isNullOrBlank()) return fast
+        val lrc = get("/lyric", "id" to id.toString()).obj("lrc")?.str("lyric")
         if (lrc.isNullOrBlank()) NmLog.note("歌词为空 id=$id")
         return lrc ?: ""
     }

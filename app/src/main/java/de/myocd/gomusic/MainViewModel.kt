@@ -1551,9 +1551,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             afterConnect = { playSongs(list, index) }
             return
         }
+        // 点下去就先把要播这首的地址取起来：取地址要打十几个请求，
+        // 而它同时在 ExoPlayer 的准备线程上同步做。提前起一轮，
+        // 等播放器真正来解析时多半已经落在缓存里，不用干等。
+        runCatching { prefetchCurrent(list, index) }
         c.setMediaItems(list.map(::toItem), index.coerceIn(0, list.lastIndex), 0)
         c.prepare()
         c.play()
+    }
+
+    /** 预取马上要播的这一首（以及后面两首）的音源地址 */
+    private fun prefetchCurrent(list: List<Song>, index: Int) {
+        val p = Prefs(app)
+        Netease.cookie = p.nmCookie
+        val i = index.coerceIn(0, list.lastIndex)
+        for (k in i until minOf(i + 3, list.size)) {
+            val nid = neteaseIdOf(list[k].ssid) ?: continue
+            Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
+        }
     }
 
     fun playIndex(i: Int) {

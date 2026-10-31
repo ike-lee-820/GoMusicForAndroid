@@ -33,6 +33,8 @@ object LocalLib {
     const val COVER_DIR = "封面"
     const val LYRIC_DIR = "歌词"
     const val META_DIR = "歌曲信息"
+    /** MV 视频单独放一个目录：和音频不是一个东西，混在「音乐」里不好找 */
+    const val MV_DIR = "MV"
 
     fun dirText(): String = "Download/$ROOT/"
 
@@ -78,6 +80,28 @@ object LocalLib {
         val (u, f) = openOut(ctx, sub, name, mime)
         val s = stream(ctx, u, f) ?: return ""
         runCatching { s.use { it.write(data) } }
+        finish(ctx, u)
+        return uriText(u, f)
+    }
+
+    /**
+     * 下载 MV 视频到 Download/GoMusic/MV 下，返回文件位置（content:// 或 file://）。
+     *
+     * MV 地址是直链（多数是 mp4），直接按流写入即可，不用像歌曲那样
+     * 另外补封面 / 歌词 / 信息文件。
+     */
+    fun downloadMv(
+        ctx: Context,
+        title: String,
+        url: String,
+        onProgress: ((readBytes: Long, totalBytes: Long) -> Unit)? = null,
+    ): String {
+        val ext = url.substringBefore('?').substringAfterLast('.', "mp4")
+            .takeIf { it.length in 2..4 } ?: "mp4"
+        val mime = if (ext == "mp4") "video/mp4" else "video/*"
+        val (u, f) = openOut(ctx, MV_DIR, "${safe(title)}.$ext", mime)
+        val os = stream(ctx, u, f) ?: throw java.io.IOException("无法写入下载目录")
+        os.use { Api.fetch(url, it, onProgress) }
         finish(ctx, u)
         return uriText(u, f)
     }

@@ -1,111 +1,80 @@
 package de.myocd.gomusic
 
 import android.content.Context
-import okhttp3.Request
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.database.StandaloneDatabaseProvider
 import java.io.File
 
 /**
- * 播放整首缓存。
+ * 播放缓存：边播边缓存整首。
  *
- * 在线播放是边下边播，网络一抖就停下来转圈。这里改成先把整首下载到缓存目录，
- * 再交给播放器读本地文件 —— 开始播之后不再依赖网络，不会卡。
+ * 之前是「先把整首下载完，再交给播放器读文件」—— 播一首要先等它下完，
+ * 大文件等得明显。现在改成 [SimpleCache] + CacheDataSource：播放器一开始读，
+ * 数据同时写进缓存，播到哪儿就缓存到哪儿，顺序播完即整首落盘。
+ * 听一半切歌只会缓存一半，但切歌时会立刻清掉，不会留残缺文件占空间。
  *
- * 代价是点开一首新歌要先等它下完（期间播放器显示缓冲），
- * 换来的是播放过程绝对不中断。
- *
- * 只缓存一首：切到下一首时立刻删掉上一首的整首文件，
- * 不然每首歌留一个完整音频，听一会儿就是几百 MB。
+ * 只保留一首：开始播新音源（切歌或换音质）时，立刻删掉上一个音源的缓存。
  */
 object PlayCache {
     private const val DIR = "playcache"
+    /** 上限：正常只占一首，留些余量应对切歌瞬间两首共存 */
+    private const val MAX_BYTES = 400L * 1024 * 1024
 
-    /** 当前正在播（或正在准备）的缓存键 */
+    private var cache: SimpleCache? = null
+
+    /** 当前正在用的音源地址 */
     @Volatile
-    private var curKey: String? = null
+    private var curUrl: String? = null
 
-    private val lock = Any()
-
-    private fun dir(ctx: Context): File =
-        File(ctx.applicationContext.cacheDir, DIR).apply { mkdirs() }
-
-    private fun extOf(url: String): String {
-        val p = url.substringBefore('?')
-        val e = p.substringAfterLast('.', "")
-        return if (e.length in 2..4) e else "mp3"
-    }
-
-    private fun fileOf(ctx: Context, key: String, ext: String) = File(dir(ctx), "$key.$ext")
-
-    /** 已缓存且完整的整首文件 */
-    fun cached(ctx: Context, key: String): File? {
-        val d = dir(ctx)
-        return d.listFiles()?.firstOrNull {
-            it.name.startsWith("$key.") && !it.name.endsWith(".part") && it.length() > 0
-        }
+    @Synchronized
+    fun get(ctx: Context): SimpleCache {
+        cache?.let { return it }
+        val app = ctx.applicationContext
+        val dir = File(app.cacheDir, DIR).apply { mkdirs() }
+        val c = SimpleCache(
+            dir,
+            LeastRecentlyUsedCacheEvictor(MAX_BYTES),
+            StandaloneDatabaseProvider(app),
+        )
+        cache = c
+        return c
     }
 
     /**
-     * 切歌：立刻清掉上一首的整首缓存。
-     * 同名（重播同一首）不删，否则会把正在用的文件删掉。
+     * 开始播某个音源：换地址（切歌 / 换音质）时立刻清掉上一个音源的缓存。
+     * 同一个地址重复调用（重新缓冲）不会误删正在用的那份。
      */
-    fun onSwitch(ctx: Context, key: String) {
-        val old = curKey
-        curKey = key
-        if (old == null || old == key) return
-        runCatching {
-            dir(ctx).listFiles()?.forEach { f ->
-                if (f.name.startsWith("$old.")) f.delete()
+    fun noteUrl(url: String) {
+        if (url == curUrl) return
+        val old = curUrl
+        curUrl = url
+        val c = cache ?: return
+        if (old != null) {
+            runCatching {
+                c.removeResource(old)
+                NmLog.note("已清除上一首播放缓存")
             }
         }
     }
 
-    /**
-     * 把整首下载到缓存目录，返回本地文件；失败返回 null（调用方回退在线直连）。
-     *
-     * 下载完会再确认一次「当前要播的还是不是这一首」：
-     * 中途切歌的话，白下的文件直接删掉，不留垃圾。
-     */
-    fun ensure(ctx: Context, key: String, url: String, headers: Map<String, String>): File? {
-        cached(ctx, key)?.let { return it }
-        val ext = extOf(url)
-        val dst = fileOf(ctx, key, ext)
-        val tmp = File(dst.parentFile, dst.name + ".part")
-        return synchronized(lock) {
-            // 锁内再看一次：并发进来时可能已经被别人下好了
-            cached(ctx, key)?.let { return@synchronized it }
-            try {
-                val b = Request.Builder().url(url)
-                headers.forEach { (k, v) -> b.header(k, v) }
-                tmp.delete()
-                var ok = false
-                Api.client.newCall(b.build()).execute().use { r ->
-                    if (!r.isSuccessful) throw IllegalStateException("HTTP ${r.code}")
-                    val body = r.body ?: throw IllegalStateException("空响应")
-                    tmp.outputStream().use { out ->
-                        body.byteStream().use { inp -> inp.copyTo(out) }
-                    }
-                    ok = true
-                }
-                if (!ok || tmp.length() == 0L) throw IllegalStateException("下载内容为空")
-                if (curKey != key) {
-                    // 下载期间已经切歌了，这一份没人要
-                    tmp.delete()
-                    null
-                } else {
-                    dst.delete()
-                    if (tmp.renameTo(dst)) dst else null
-                }
-            } catch (e: Exception) {
-                NmLog.note("整首缓存失败：$key -> ${e.message}")
-                runCatching { tmp.delete() }
-                null
-            }
-        }
+    @Synchronized
+    fun release() {
+        runCatching { cache?.release() }
+        cache = null
+        curUrl = null
     }
 
     /** 清空播放缓存（设置里「清除缓存」用） */
+    @Synchronized
     fun clear(ctx: Context) {
-        curKey = null
-        runCatching { dir(ctx).listFiles()?.forEach { it.delete() } }
+        val c = cache
+        if (c != null) {
+            runCatching {
+                c.keys.toList().forEach { k -> c.removeResource(k) }
+            }
+        }
+        runCatching { File(ctx.applicationContext.cacheDir, DIR).deleteRecursively() }
+        curUrl = null
     }
 }

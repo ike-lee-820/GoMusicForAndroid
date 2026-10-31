@@ -30,8 +30,8 @@ android {
         )
         minSdk = 26
         targetSdk = 35
-        versionCode = 68
-        versionName = "2.5.9"
+        versionCode = 69
+        versionName = "2.5.10"
     }
 
     signingConfigs {
@@ -86,6 +86,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-datasource:1.4.1")
+    // SimpleCache 的 DatabaseProvider 在这个模块里（边播边缓存要用）
+    implementation("androidx.media3:media3-database:1.4.1")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")

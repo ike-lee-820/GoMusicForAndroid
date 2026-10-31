@@ -1495,9 +1495,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 队列条目。uri 里带上当前音质：换音质时 uri 跟着变，播放器才会重新解析音源。
+     * 只靠 prefs 的话，replaceMediaItem 拿到的是同一个 uri，
+     * ExoPlayer 认为没变化，于是「音质切了，音源还是原来那份」。
+     */
     private fun toItem(s: Song): MediaItem = MediaItem.Builder()
         .setMediaId(s.ssid)
-        .setUri("gomusic:///${s.ssid}")
+        .setUri("gomusic:///${s.ssid}?q=${quality}&nl=${prefs.nmLevel}")
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(s.title)
@@ -1674,13 +1679,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             quality = k
             prefs.quality = k
         }
-        // 重新解析当前曲目地址并回到原位置
+        // 用新的 uri 重建当前条目：uri 变了才会真正重新解析音源，
+        // 直接 replaceMediaItem(原来的 item) 会被当成没变化而跳过
         val c = controller ?: return
         if (c.mediaItemCount == 0) return
         try {
             val i = c.currentMediaItemIndex
             val pos = c.currentPosition
-            c.replaceMediaItem(i, c.getMediaItemAt(i))
+            val ssid = c.getMediaItemAt(i).mediaId
+            val s = songsByIds(listOf(ssid)).firstOrNull() ?: return
+            c.replaceMediaItem(i, toItem(s))
             c.seekTo(i, pos)
         } catch (ignored: Exception) {
         }

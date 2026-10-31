@@ -14,6 +14,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -41,9 +42,6 @@ private val NM_HEADERS = mapOf(
 private const val NM_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
 
-/** 缓存文件名：ssid 里可能带 / 之类的字符，不能直接用 */
-private fun ssid_safe(s: String): String = s.replace(Regex("[^A-Za-z0-9_.-]"), "_")
-
 class PlaybackService : MediaSessionService() {
     companion object {
         /** 设置里改了后台播放策略后，用它通知服务重新应用（服务读 Prefs） */
@@ -66,20 +64,16 @@ class PlaybackService : MediaSessionService() {
                 val p = Prefs(applicationContext)
                 // 已下载过的歌曲直接放本地文件，离线也能播。
                 // 同一首歌可能有多个音质的下载，按当前音质挑对应的那份
-                val wantQuality = if (neteaseIdOf(ssid) != null && p.nmLevel.isNotBlank()) p.nmLevel else p.quality
+                // 音质由 MediaItem 的 uri 带过来（?q=&nl=）：换音质时 uri 变了，
+                // 播放器才会真正重新解析音源；只靠 prefs 的话 replaceMediaItem
+                // 拿到的是同一个 uri，ExoPlayer 认为没变化，音质切了却不换音源
+                val q = spec.uri.getQueryParameter("q")?.takeIf { it.isNotBlank() } ?: p.quality
+                val nl = spec.uri.getQueryParameter("nl")?.takeIf { it.isNotBlank() } ?: p.nmLevel
+                val wantQuality = if (neteaseIdOf(ssid) != null && nl.isNotBlank()) nl else q
                 val local = LocalLib.audioUri(applicationContext, ssid, wantQuality)
                 if (local != null) {
                     spec.withUri(local)
                 } else {
-                    // 在线播放：先把整首下到缓存目录再播，播起来就不受网络抖动影响。
-                    // 切歌时 PlayCache.onSwitch 会立刻删掉上一首的整首文件。
-                    val key = ssid_safe(ssid) + "_" + wantQuality
-                    PlayCache.onSwitch(applicationContext, key)
-                    if (PlayCache.cached(applicationContext, key) != null) {
-                        val hit = PlayCache.cached(applicationContext, key)!!
-                        NmLog.note("播放缓存命中：${hit.name}")
-                        spec.withUri(Uri.fromFile(hit))
-                    } else run {
                     val nid = neteaseIdOf(ssid)
                     val url = try {
                         if (nid != null) {
@@ -87,7 +81,7 @@ class PlaybackService : MediaSessionService() {
                             // 但仍能播。之前要求 cookie 非空，未登录的网易云
                             // 歌曲会掉到本站接口去取，结果取不到直接播不了
                             Netease.cookie = p.nmCookie
-                            Netease.audioUrl(nid, p.quality, p.nmLevel.takeIf { it.isNotBlank() })
+                            Netease.audioUrl(nid, q, nl.takeIf { it.isNotBlank() })
                                 ?: throw IOException("网易云没有可用音源")
                         } else {
                             Api.audioUrl(ssid, p.quality)
@@ -103,17 +97,11 @@ class PlaybackService : MediaSessionService() {
                     // —— 这就是「拿到正确 url 却播不了」的常见原因
                     val isNm = nid != null && p.nmCookie.isNotBlank()
                     NmLog.note("解析到播放地址：$url -> $safe（${if (isNm) "网易云" else "本站"}）")
-                    val hd = if (isNm) NM_HEADERS else emptyMap()
-                    val f = PlayCache.ensure(applicationContext, key, safe, hd)
-                    if (f != null) {
-                        NmLog.note("整首缓存完成：${f.name}（${f.length()} 字节）")
-                        spec.withUri(Uri.fromFile(f))
-                    } else {
-                        // 缓存失败就退回在线直连，至少还能播
-                        val base = spec.withUri(u)
-                        if (isNm) base.withRequestHeaders(NM_HEADERS) else base
-                    }
-                    }
+                    // 交给 CacheDataSource：边播边缓存，播完即整首落盘。
+                    // 切歌或换音质时 PlayCache.noteUrl 会清掉上一份
+                    PlayCache.noteUrl(safe)
+                    val base = spec.withUri(u)
+                    if (isNm) base.withRequestHeaders(NM_HEADERS) else base
                 }
             } else spec
         }
@@ -125,7 +113,14 @@ class PlaybackService : MediaSessionService() {
             .setConnectTimeoutMs(8_000)
             .setReadTimeoutMs(8_000)
         // 用 DefaultDataSource 包一层，才能播放本地 content:// / file:// 的音频
-        val dsFactory = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, http), resolver)
+        val upstream = DefaultDataSource.Factory(this, http)
+        // 边播边缓存：播放器一边读，数据一边写进 SimpleCache，
+        // 不用先把整首下完才开始播（那样每首都要干等）
+        val cached = CacheDataSource.Factory()
+            .setCache(PlayCache.get(this))
+            .setUpstreamDataSourceFactory(upstream)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        val dsFactory = ResolvingDataSource.Factory(cached, resolver)
 
         // 加大缓冲：默认的缓冲量偏小，网络一抖就容易停下来转圈。
         // prioritizeTimeOverSizeThresholds 让它优先凑够时间长度而不是数据量，
@@ -146,6 +141,11 @@ class PlaybackService : MediaSessionService() {
 
         session = MediaSession.Builder(this, p).setCallback(Cb()).build()
         applyFocus()
+    }
+
+    override fun onDestroy() {
+        runCatching { PlayCache.release() }
+        super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

@@ -2074,6 +2074,8 @@ fun MvIconButton(
 /** 音质菜单。[tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区） */
 @Composable
 fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
+    // 本站曲库的歌只有服务端给的那一份，没有多档位可选，不显示这个菜单
+    if (!vm.nmQualityMode) return
     var open by remember { mutableStateOf(false) }
     val ctx = LocalContext.current
     Box {

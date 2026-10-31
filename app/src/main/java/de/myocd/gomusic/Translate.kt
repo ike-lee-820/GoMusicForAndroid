@@ -32,8 +32,12 @@ object Translate {
     private const val MAIN_URL = "https://translate.mapi.myocd.de5.net/translate"
     private const val AI_URL = "https://api.sizhi.com/chat"
     private const val AI_APPID = "b179db75c4804ae5954d2e7ad794e5bd"
+    /**
+     * AI 兜底的提示语：必须点明「中文」，否则它经常自作主张用英文回答。
+     */
     private const val AI_PROMPT =
-        "输出中文翻译，要顺口且诗意且精简的歌词式翻译，原句没有逗号尽量不使用逗号分句，禁止给出其他内容纯翻译："
+        "把下面这句歌词翻译成简体中文，要顺口且诗意且精简的歌词式翻译，" +
+            "原句没有逗号尽量不使用逗号分句，禁止给出其他内容纯翻译，禁止用英文回答："
 
     /**
      * 每批并发多少个。
@@ -58,13 +62,22 @@ object Translate {
         out.map { it ?: "" }
     }
 
-    /** 单句：主接口拿不到就用 AI 兜底 */
+    /**
+     * 单句：主接口拿不到就用 AI 兜底。
+     *
+     * 结果必须真的含中文才算数 —— 主接口偶尔会把目标语言弄错返回英文，
+     * AI 也常自作主张用英文回答，那种结果直接丢弃（留空，不显示假译文）。
+     */
     fun one(text: String): String? {
         val t = text.trim()
         if (t.isBlank()) return null
-        main(t)?.let { return clean(it) }
-        return ai(t)?.let { clean(it) }
+        main(t)?.let { if (hasChinese(it)) return clean(it) }
+        ai(t)?.let { if (hasChinese(it)) return clean(it) }
+        return null
     }
+
+    /** 译文里有没有汉字：接口返回英文说明目标语言没生效，不能用 */
+    private fun hasChinese(s: String): Boolean = s.any { it in '\u4e00'..'\u9fff' }
 
     // ---------------- 主接口 ----------------
 

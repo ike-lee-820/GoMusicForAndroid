@@ -99,8 +99,25 @@ private val NON_CHINESE_RE = Regex(
 /** 这句歌词是否含有非中文部分 */
 fun hasNonChinese(s: String): Boolean = NON_CHINESE_RE.containsMatchIn(s)
 
-/** 歌词是否含非中文部分（含则提供翻译按钮） */
-fun lyricNeedsTranslation(rows: List<LyricRow>): Boolean = rows.any { hasNonChinese(it.text) }
+/**
+ * 作词 / 作曲 / 编曲这类标注行里的字（简体与繁体各三个）。
+ *
+ * 这些行几乎都带英文人名（「作曲 : John Doe」「编曲 : XXX」），
+ * 会把整篇误判成外文歌词、白白多出一个翻译按钮。
+ * 判断「要不要翻译」时先把它们排除掉。
+ */
+private val CREDIT_CHARS = charArrayOf('词', '詞', '曲', '麯', '编', '編')
+
+/** 是否是「词 / 曲 / 编」这类标注行 */
+private fun isCreditLine(s: String): Boolean = s.any { it in CREDIT_CHARS }
+
+/**
+ * 歌词是否含非中文部分（含则提供翻译按钮）。
+ *
+ * 排除标注行，避免英文人名触发；全中文的歌词自然不会命中，不翻译。
+ */
+fun lyricNeedsTranslation(rows: List<LyricRow>): Boolean =
+    rows.any { !isCreditLine(it.text) && hasNonChinese(it.text) }
 
 /**
  * 把原始歌词行整理成逻辑行。

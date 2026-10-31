@@ -402,6 +402,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val lyricTimeoutMs = 8_000L
     /** 当前歌词属于哪首歌：切音质会重新 replaceMediaItem，但歌词不用重取 */
     private var lyricSsid: String? = null
+    /** 上一次歌词加载任务：切歌时取消，避免旧任务回来写脏数据 */
+    private var lyricJob: Job? = null
     var qualities by mutableStateOf<List<String>>(emptyList()); private set
 
     /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
@@ -1776,9 +1778,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             qualities = emptyList()
             return
         }
-        // 同一首歌：切换音质后会重新 replaceMediaItem 并再次回到这里，
-        // 这时歌词与可用音质都不用重来，也不该重复计一次播放
-        if (id == lyricSsid) return
+        // 同一首歌（切音质后会再次走到这里）：歌词不用重来、也不该重复计播放。
+        //
+        // 但必须同时确认歌词确实已经加载好了 —— 只判 id == lyricSsid 会卡死：
+        // lyricSsid 是加载「完成后」才写的，于是 A 的歌词加载中切到 B，
+        // B 还没加载完又切回 A 时，lyricSsid 仍是 A，这里直接 return，
+        // 而此时 lyric 已被清空、lyricLoading 还是 true —— 界面就一直转圈。
+        // 表现就是「下一首再切回上一首，歌词永远加载不出来」。
+        if (id == lyricSsid && !lyricLoading) return
+        // 先取消上一首还没跑完的加载，避免它完成后把旧数据写回来
+        lyricJob?.cancel()
+        // 一开始就把这首歌记为「正在加载」：中途切走再切回来时
+        // lyricSsid 已经不是它了，会重新走加载，不会卡在转圈
+        lyricSsid = id
         lyric = emptyList()
         lyricLoading = true
         qualities = emptyList()
@@ -1813,7 +1825,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-            viewModelScope.launch {
+            lyricJob = viewModelScope.launch {
                 // 播放前用 /song/detail 补全封面 / 专辑 / 歌手
                 // （搜索接口给的 al.picUrl 经常是空的）
                 if (nid != null) {
@@ -1855,7 +1867,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (offline) {
             // 离线只能播已下载的音质，菜单里就不列没下载的
             qualities = downloadedQualities(id)
-            viewModelScope.launch {
+            lyricJob = viewModelScope.launch {
                 val t = withTimeoutOrNull(lyricTimeoutMs) {
                     withContext(Dispatchers.IO) { localLyrics(id) }
                 } ?: ""
@@ -1867,7 +1879,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        viewModelScope.launch {
+        lyricJob = viewModelScope.launch {
             try {
                 val d = withContext(Dispatchers.IO) { Api.detail(id) }
                 if (curSsid != id) return@launch

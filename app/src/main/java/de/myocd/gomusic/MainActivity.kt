@@ -52,12 +52,12 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
-        // 默认隐藏顶部状态栏：全屏看封面/歌词时不留那条黑边。
-        // 从屏幕顶部下滑可以临时把它拉出来看时间、通知
+        // 显示顶部状态栏（时间、电量、通知图标）。
+        // 之前试过默认隐藏以换取全屏观感，但隐藏后 statusBarsPadding 变 0，
+        // 各处顶部留白跟着变，且下滑才看得到时间，实际用起来不方便 —— 加回来。
+        // 状态栏背景透明、内容延伸到其下方（enableEdgeToEdge），观感仍是全屏的。
         WindowCompat.getInsetsController(window, window.decorView).apply {
-            hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
-            systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         }
         if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         // Android 9 及以下写公共下载目录需要存储权限

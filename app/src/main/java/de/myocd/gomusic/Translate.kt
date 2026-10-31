@@ -1,118 +1,131 @@
 package de.myocd.gomusic
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
- * 歌词翻译。
+ * 歌词翻译：只走思知 AI 对话接口，并且**整篇一次提交**。
  *
- * 主接口：POST translate.mapi.myocd.de5.net/translate
- *   body {"text": "...", "target_lang": "zh"}，返回里的 data 就是译文。
- * 这个接口没有频率限制，所以点一次就把整篇歌词并发发出去，
- * 而不是一句一句等。
+ * 之前是「主翻译接口逐句并发，AI 只做兜底」。主接口返回的是机器译文、
+ * 目标语言偶尔还会弄错（翻出来是英文），而 AI 的译文更贴合歌词语境，
+ * 所以改成只用 AI。
  *
- * 备用：主接口失效时走思知 AI 对话接口，同样没有限制。
- * AI 输出比较自由，所以把「要什么样的译文」写进提示语里，
- * 拿到结果后再剥掉它偶尔加上的引号和前缀。
+ * 全文一次提交（而不是一句一个请求）：给 AI 完整上下文，人称、语气、
+ * 专有名词在全篇里才翻得一致，逐句翻会出现同一句前后不一致。
+ * 代价是一次要等它把整篇生成完，所以超时给得比较长。
+ *
+ * 对齐方式：原文按「行号. 内容」一起提交，要求 AI 按同样的行号返回；
+ * 解析时先按行号严格匹配，对不上再退化为顺序对齐，
+ * 两种都对不上就整篇放弃 —— 错位比没有译文更糟。
  */
 object Translate {
 
-    private const val MAIN_URL = "https://translate.mapi.myocd.de5.net/translate"
     private const val AI_URL = "https://api.sizhi.com/chat"
     private const val AI_APPID = "b179db75c4804ae5954d2e7ad794e5bd"
+
     /**
-     * AI 兜底的提示语：必须点明「中文」，否则它经常自作主张用英文回答。
+     * 提示语：必须点明「简体中文」（否则它常用英文回答），
+     * 并强调按行号一一对应、只输出译文。
      */
     private const val AI_PROMPT =
-        "把下面这句歌词翻译成简体中文，要顺口且诗意且精简的歌词式翻译，" +
-            "原句没有逗号尽量不使用逗号分句，禁止给出其他内容纯翻译，禁止用英文回答："
+        "把下面这段歌词逐行翻译成简体中文。" +
+            "要求：顺口、诗意、精简的歌词式翻译；原句没有逗号就尽量不使用逗号分句；" +
+            "严格按行号一一对应，第 N 行原文只输出第 N 行的译文，行数必须与原文相同；" +
+            "只输出译文本身，禁止任何解释、标题、序号以外的内容；禁止用英文回答。\n" +
+            "歌词：\n"
 
-    /**
-     * 每批并发多少个。
-     *
-     * 一次性把几十个请求全撒出去容易把接口拖慢、也更容易超时，
-     * 分批仍是「一次翻译完整篇」，只是每批内部并发、批与批串行。
-     */
-    private const val CONCURRENCY = 8
-
-    private val json = Api.json
-
-    /**
-     * 整篇翻译：并发请求，返回与输入等长的列表，翻不出来的那一句是空串。
-     * 调用方按行号对齐，空串即「这句没翻译」。
-     */
-    suspend fun all(texts: List<String>): List<String> = withContext(Dispatchers.IO) {
-        val out = arrayOfNulls<String>(texts.size)
-        for (chunk in texts.mapIndexed { i, t -> i to t }.chunked(CONCURRENCY)) {
-            val done = chunk.map { (i, t) -> async { i to (one(t) ?: "") } }.awaitAll()
-            done.forEach { (i, v) -> out[i] = v }
-        }
-        out.map { it ?: "" }
+    /** 整篇生成比较慢，单独放宽读超时（共享连接池与线程池） */
+    private val http: OkHttpClient by lazy {
+        Api.client.newBuilder()
+            .readTimeout(120, TimeUnit.SECONDS)
+            .callTimeout(180, TimeUnit.SECONDS)
+            .build()
     }
 
     /**
-     * 单句：主接口拿不到就用 AI 兜底。
-     *
-     * 结果必须真的含中文才算数 —— 主接口偶尔会把目标语言弄错返回英文，
-     * AI 也常自作主张用英文回答，那种结果直接丢弃（留空，不显示假译文）。
+     * 整篇翻译：一次请求翻完，返回与输入等长的列表，翻不出来的那一句是空串。
+     * 调用方按行号对齐，空串即「这句没翻译」。
+     * 空行直接跳过，不占用行号。
      */
-    fun one(text: String): String? {
-        val t = text.trim()
-        if (t.isBlank()) return null
-        main(t)?.let { if (hasChinese(it)) return clean(it) }
-        ai(t)?.let { if (hasChinese(it)) return clean(it) }
-        return null
+    suspend fun all(texts: List<String>): List<String> = withContext(Dispatchers.IO) {
+        // 只提交非空行：空行让 AI 去「翻译」只会得到莫名其妙的回复
+        val idx = texts.mapIndexedNotNull { i, t -> if (t.trim().isBlank()) null else i }
+        if (idx.isEmpty()) return@withContext texts.map { "" }
+        val numbered = idx.joinToString("\n") { i -> "${i + 1}. ${texts[i].trim()}" }
+        val raw = ask(AI_PROMPT + numbered)
+            ?: return@withContext texts.map { "" }
+        val map = parseNumbered(raw, idx.map { it + 1 })
+        texts.mapIndexed { i, t ->
+            if (t.trim().isBlank()) return@mapIndexed ""
+            val v = map[i + 1] ?: return@mapIndexed ""
+            val c = clean(v)
+            // 译文必须真的含中文：AI 偶尔还是会用英文回答，那种结果不要
+            if (hasChinese(c)) c else ""
+        }
     }
 
     /** 译文里有没有汉字：接口返回英文说明目标语言没生效，不能用 */
     private fun hasChinese(s: String): Boolean = s.any { it in '\u4e00'..'\u9fff' }
 
-    // ---------------- 主接口 ----------------
-
-    /** 请求体：用序列化构造，手动拼字符串遇到引号 / 换行会生成非法 JSON */
-    @Serializable
-    private class Req(val text: String, @SerialName("target_lang") val targetLang: String)
-
-    private fun main(text: String): String? {
-        // 显式标注类型：encodeToString 的泛型在这里推不出来，
-        // 不写会报 "Cannot infer type for this parameter"
-        val body: String = json.encodeToString(Req(text, "zh"))
-        val req = Request.Builder()
-            .url(MAIN_URL)
-            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .header("Connection", "close")
-            .build()
-        return runCatching {
-            Api.client.newCall(req).execute().use { r ->
-                val s = r.body?.string().orEmpty()
-                if (!r.isSuccessful || s.isBlank()) return@runCatching null
-                val o = parseObj(s) ?: return@runCatching null
-                // code 200 才算成功；接口偶发返回非 200，这时要交给备用
-                if (intOf(o, "code") != 200) null else strOf(o, "data")
-            }
-        }.getOrNull()
+    /**
+     * 把 AI 的回答按行号拆回每行。
+     *
+     * AI 可能不守规矩（漏编号、串行、夹带解释），所以先按
+     * 「行号 + 分隔符」严格匹配；匹配不齐时，若剥掉编号后剩下的行数
+     * 刚好等于原文行数，就按顺序对齐；都对不上就整篇放弃。
+     */
+    private fun parseNumbered(raw: String, want: List<Int>): Map<Int, String> {
+        val lines = raw.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+        val head = Regex("^(\\d+)\\s*[.、)．:：]\\s*(.*)$")
+        val byId = LinkedHashMap<Int, String>()
+        for (l in lines) {
+            val m = head.find(l) ?: continue
+            val id = m.groupValues[1].toIntOrNull() ?: continue
+            val body = m.groupValues[2].trim()
+            if (body.isNotBlank()) byId[id] = body
+        }
+        if (want.all { byId.containsKey(it) }) return byId
+        // 退化：顺序对齐
+        val stripped = lines.map { head.replace(it, "").trim() }.filter { it.isNotBlank() }
+        if (stripped.size == want.size) {
+            return want.mapIndexed { k, id -> id to stripped[k] }.toMap()
+        }
+        return emptyMap()
     }
 
-    // ---------------- 备用：AI 对话 ----------------
+    // ---------------- 请求 ----------------
 
-    private fun ai(text: String): String? {
-        val spoken = URLEncoder.encode(AI_PROMPT + text, "UTF-8")
-        val url = "$AI_URL?appid=$AI_APPID&userid=${UUID.randomUUID()}&spoken=$spoken"
-        val req = Request.Builder().url(url).header("Connection", "close").build()
+    /**
+     * POST 优先：整篇歌词很长，拼进 URL 会超过服务端对 GET 长度的限制。
+     * 少数部署只读 query，所以 POST 没拿到时再退回 GET。
+     */
+    private fun ask(spoken: String): String? {
+        val uid = UUID.randomUUID().toString()
+        val base = "$AI_URL?appid=$AI_APPID&userid=$uid"
+        post(base, spoken)?.let { return it }
+        return get("$base&spoken=${URLEncoder.encode(spoken, "UTF-8")}")
+    }
+
+    private fun post(url: String, spoken: String): String? {
+        val body = FormBody.Builder().add("spoken", spoken).build()
+        return call(Request.Builder().url(url).post(body).header("Connection", "close").build())
+    }
+
+    private fun get(url: String): String? {
+        return call(Request.Builder().url(url).header("Connection", "close").build())
+    }
+
+    private fun call(req: Request): String? {
         return runCatching {
-            Api.client.newCall(req).execute().use { r ->
+            http.newCall(req).execute().use { r ->
                 val s = r.body?.string().orEmpty()
                 if (!r.isSuccessful || s.isBlank()) return@runCatching null
                 val o = parseObj(s) ?: return@runCatching null
@@ -126,7 +139,7 @@ object Translate {
     // ---------------- 工具 ----------------
 
     private fun parseObj(s: String): JsonObject? =
-        runCatching { json.parseToJsonElement(s) as? JsonObject }.getOrNull()
+        runCatching { Api.json.parseToJsonElement(s) as? JsonObject }.getOrNull()
 
     private fun JsonObject.obj(k: String): JsonObject? = this[k] as? JsonObject
 
@@ -141,10 +154,7 @@ object Translate {
         return v.content.takeIf { it.isNotBlank() && it != "null" }
     }
 
-    /**
-     * 清掉 AI 偶尔加的包装：多余引号、「翻译：」这类前缀。
-     * 主接口本来就是干净的，这一步对它无害。
-     */
+    /** 清掉 AI 偶尔加的包装：多余引号、「翻译：」这类前缀 */
     private fun clean(s: String): String {
         var t = s.trim().trim('"', '\'', '“', '”', '「', '」').trim()
         listOf("翻译：", "翻译:", "译文：", "译文:").forEach { p ->

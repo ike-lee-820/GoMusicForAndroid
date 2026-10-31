@@ -2077,18 +2077,47 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     // 本站曲库的歌只有服务端给的那一份，没有多档位可选，不显示这个菜单
     if (!vm.nmQualityMode) return
     var open by remember { mutableStateOf(false) }
-    val ctx = LocalContext.current
+    val go = LocalGo.current
+    // 探测出来的真实可用档位（探测未完成前为空，这时不禁用任何一项）
+    val avail = vm.qualities
+    val cur = vm.curLevel
     Box {
         IconBtn(Icons.Outlined.HighQuality, "音质", size = 30.dp, tint = tint) { open = true }
         DropdownMenu(open, { open = false }) {
             NM_LEVELS.forEach { lv ->
+                val ok = avail.isEmpty() || lv in avail
+                val sel = lv == cur
                 DropdownMenuItem(
-                    { Txt(nmLevelLabel(lv), 14) },
-                    {
-                        vm.updateQuality(lv)
-                        open = false
-                        vm.toast("已切换到${nmLevelLabel(lv)}")
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Txt(
+                                nmLevelLabel(lv), 14,
+                                color = when {
+                                    !ok -> go.muted.copy(alpha = 0.45f)
+                                    sel -> go.primary
+                                    else -> go.on
+                                },
+                                weight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                            )
+                            HS(8)
+                            when {
+                                sel -> Txt("✓", 14, color = go.primary)
+                                !ok -> Txt("无音源", 11, color = go.muted.copy(alpha = 0.6f))
+                            }
+                        }
                     },
+                    onClick = {
+                        open = false
+                        when {
+                            !ok -> vm.toast("这首歌没有${nmLevelLabel(lv)}的音源")
+                            sel -> Unit
+                            else -> {
+                                vm.updateQuality(lv)
+                                vm.toast("已切换到${nmLevelLabel(lv)}")
+                            }
+                        }
+                    },
+                    enabled = ok,
                 )
             }
         }

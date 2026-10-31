@@ -1681,25 +1681,37 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 网易云当前音质档位（空 = 跟随设置） */
     val nmLevel: String get() = prefs.nmLevel
 
+    /** 当前网易云歌曲实际用的档位：菜单里高亮这一项 */
+    val curLevel: String get() =
+        prefs.nmLevel.takeIf { it.isNotBlank() } ?: nmLevelOfQuality(quality)
+
     fun updateQuality(k: String) {
         // 网易云歌曲：档位存到 nmLevel，不动本站的 quality
         if (k in NM_LEVELS) {
+            if (k == curLevel) return
             prefs.nmLevel = k
         } else {
             quality = k
             prefs.quality = k
         }
-        // 用新的 uri 重建当前条目：uri 变了才会真正重新解析音源，
-        // 直接 replaceMediaItem(原来的 item) 会被当成没变化而跳过
         val c = controller ?: return
         if (c.mediaItemCount == 0) return
         try {
             val i = c.currentMediaItemIndex
             val pos = c.currentPosition
-            val ssid = c.getMediaItemAt(i).mediaId
-            val s = songsByIds(listOf(ssid)).firstOrNull() ?: return
-            c.replaceMediaItem(i, toItem(s))
+            val old = c.getMediaItemAt(i)
+            // 只改 uri 上的音质参数、保留原有元数据：
+            // 之前要回头查 songsByIds 找 Song，查不到就静默放弃、什么都不发生
+            val uri = "gomusic:///${old.mediaId}?q=$quality&nl=${prefs.nmLevel}"
+            val item = old.buildUpon().setUri(Uri.parse(uri)).build()
+            val wasPlaying = c.isPlaying
+            c.replaceMediaItem(i, item)
+            // 强制重新准备：只 replace 的话 ExoPlayer 会沿用已缓冲的旧音源，
+            // 听感上就是「档位切了，声音没变」
+            c.stop()
+            c.prepare()
             c.seekTo(i, pos)
+            if (wasPlaying) c.play()
         } catch (ignored: Exception) {
         }
     }

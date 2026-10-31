@@ -170,6 +170,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawLine
 import androidx.compose.ui.graphics.Path
 
 private const val PI_F = 3.14159265f
@@ -179,6 +180,12 @@ private const val PI_F = 3.14159265f
  * 与可见行数此消彼长：间距越大，一屏能放的歌词越少。
  */
 private const val ARC_ROW_SPACING_DP = 63f
+
+/**
+ * 显示译文时行距的放大倍数。
+ * 一行变成「原句 + 译文」两块，比原来高一截，行距不放大的话相邻两行会叠住。
+ */
+private const val ARC_ROW_SPACING_TRANS_MUL = 1.6f
 
 /**
  * 最外侧那行的最大倾斜角（度）。
@@ -1666,9 +1673,11 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     .padding(bottom = (ARC_LYRIC_LIFT_WIDE * 2).dp),
             ) {
                 ArcLyrics(
-                    vm.lyric, vm.lyricIndex,
+                    vm.lyricRows, vm.lyricRowIndex,
                     Modifier.fillMaxSize(), vm.lyricLoading,
                     curColor = go.primary,
+                    // 译文跟着一起显示；已经有译文后点翻译按钮会关掉它
+                    showTrans = vm.showTrans,
                     // 行距缩小 -> 一屏能看到的歌词行数更多
                     rowSpacingDp = ARC_ROW_SPACING_DP_WIDE,
                     curSp = ARC_CUR_SP_WIDE,
@@ -1755,6 +1764,14 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
         if (vm.mvAvailable(s)) {
             HS(6)
             MvIconButton({ vm.playMv() }, tint = Color.White, size = 24.dp, hit = 34.dp)
+        }
+        // 翻译：歌词里有非中文才出现
+        if (vm.lyricNeedTrans) {
+            HS(6)
+            TransIconButton(
+                { vm.translateLyric() }, tint = Color.White, size = 24.dp, hit = 34.dp,
+                active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
+            )
         }
         HS(6)
         QualityMenu(vm, Color.White)
@@ -1895,6 +1912,13 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 if (vm.mvAvailable(s)) {
                     MvIconButton({ vm.playMv() }, tint = go.on, size = 24.dp, hit = 36.dp)
                 }
+                // 翻译：歌词里有非中文才出现
+                if (vm.lyricNeedTrans) {
+                    TransIconButton(
+                        { vm.translateLyric() }, tint = go.on, size = 24.dp, hit = 36.dp,
+                        active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
+                    )
+                }
                 QualityMenu(vm)
                 SpeedMenu(vm)
             }
@@ -1935,6 +1959,49 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
 // =====================================================================
 // 音质 / 倍速菜单
 // =====================================================================
+
+/**
+ * 翻译按钮：图标画的是 Material Icons 的 translate（「文」字形）。
+ *
+ * 图标扩展里取不到 translate（和 VideoLibrary / Movie 一样会报
+ * Unresolved reference），所以照着官方图形自己画，两端形状一致。
+ *
+ * [active] 已经有译文时换个颜色，表示「这篇已经翻过了」；
+ * [loading] 正在整篇翻译时转圈。
+ */
+@Composable
+fun TransIconButton(
+    onClick: () -> Unit,
+    tint: Color = LocalGo.current.on,
+    size: Dp = 24.dp,
+    hit: Dp = 36.dp,
+    active: Boolean = false,
+    loading: Boolean = false,
+) {
+    val go = LocalGo.current
+    Box(
+        Modifier.size(hit).clickScale(true, onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                color = tint, modifier = Modifier.size(size * 0.7f), strokeWidth = 2.dp,
+            )
+        } else {
+            val c = if (active) go.primary else tint
+            Canvas(Modifier.size(size)) {
+                // 按 24dp 的设计网格画，u 是「一格」对应的像素
+                val u = this.size.width / 24f
+                val st = Stroke(width = 1.7f * u)
+                // 「文」：顶部一点一撇、中间一横、下方撇捺
+                drawLine(c, Offset(12.6f * u, 3.2f * u), Offset(8.4f * u, 7.6f * u), st)
+                drawLine(c, Offset(3.6f * u, 8.8f * u), Offset(20.4f * u, 8.8f * u), st)
+                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(5.2f * u, 20.8f * u), st)
+                drawLine(c, Offset(11.8f * u, 10.2f * u), Offset(18.8f * u, 20.8f * u), st)
+            }
+        }
+    }
+}
 
 /**
  * MV 按钮：图标用 Canvas 自绘，画的是 Material Icons 的 music_video
@@ -2316,11 +2383,12 @@ BoxWithConstraints(modifier.fillMaxSize()) {
  */
 @Composable
 fun ArcLyrics(
-lines: List<LrcLine>,
+rows: List<LyricRow>,
 idx: Int,
 modifier: Modifier = Modifier,
 loading: Boolean = false,
 curColor: Color = Color.White,
+showTrans: Boolean = true,
 rowSpacingDp: Float = ARC_ROW_SPACING_DP,
 curSp: Float = 19f,
 otherSp: Float = 15f,
@@ -2328,7 +2396,7 @@ radiusBoost: Float = ARC_RADIUS_BOOST,
 minSpan: Int = 1,
 onSeek: (Long) -> Unit,
 ) {
-if (lines.isEmpty()) {
+if (rows.isEmpty()) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (loading) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2345,8 +2413,8 @@ if (lines.isEmpty()) {
     return
 }
 ArcContent(
-    lines = lines, idx = idx, modifier = modifier,
-    curColor = curColor, rowSpacingDp = rowSpacingDp,
+    rows = rows, idx = idx, modifier = modifier,
+    curColor = curColor, showTrans = showTrans, rowSpacingDp = rowSpacingDp,
     curSp = curSp, otherSp = otherSp,
     radiusBoost = radiusBoost, minSpan = minSpan, onSeek = onSeek,
 )
@@ -2354,10 +2422,11 @@ ArcContent(
 
 @Composable
 private fun ArcContent(
-lines: List<LrcLine>,
+rows: List<LyricRow>,
 idx: Int,
 modifier: Modifier,
 curColor: Color,
+showTrans: Boolean = true,
 rowSpacingDp: Float = ARC_ROW_SPACING_DP,
 curSp: Float = 19f,
 otherSp: Float = 15f,
@@ -2381,7 +2450,7 @@ val animOff = remember { Animatable(0f) }
 var manualAt by remember { mutableLongStateOf(0L) }
 // 位置在这里统一裁剪，边界只依赖歌词行数，不会在拖动中跳变
 val cur = (base + animOff.value + dragOff)
-    .coerceIn(-0.6f, lines.lastIndex.toFloat() + 0.6f)
+    .coerceIn(-0.6f, rows.lastIndex.toFloat() + 0.6f)
 // 每滑一次就更新 manualAt，这个协程会重启并重新计时 3 秒
 LaunchedEffect(manualAt) {
     if (manualAt == 0L) return@LaunchedEffect
@@ -2411,11 +2480,14 @@ BoxWithConstraints(
         },
     contentAlignment = Alignment.Center,
 ) {
-    // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 15 行）
-    val rowSpan = rowSpacingDp
-    val rows = (maxHeight.value / rowSpan).toInt().coerceIn(minSpan * 2 + 1, 25)
+    // 行距固定，可见行数由屏幕高度决定（至少 3 行，最多 15 行）。
+    // 显示译文时一行是「原句 + 译文」两块，比原来高，行距要跟着放大，
+    // 否则相邻两行会叠在一起。
+    val hasTrans = showTrans && rows.any { !it.trans.isNullOrBlank() }
+    val rowSpan = rowSpacingDp * (if (hasTrans) ARC_ROW_SPACING_TRANS_MUL else 1f)
+    val visibleRows = (maxHeight.value / rowSpan).toInt().coerceIn(minSpan * 2 + 1, 25)
     // 上下各显示 span 行；保底 minSpan，行距加大后也不会只剩一两行
-    val span = (rows / 2).coerceAtLeast(minSpan)
+    val span = (visibleRows / 2).coerceAtLeast(minSpan)
     // 圆心半径由「最外侧行的倾斜角」反推，弧的弯曲程度保持稳定
     val tiltRad = ARC_MAX_TILT_DEG * PI_F / 180f
     // 圆心再按倍数拉远：越远弧越平缓，歌词横向铺得更开
@@ -2433,7 +2505,7 @@ BoxWithConstraints(
     // 才被移出渲染范围，进出就不会「啪」地出现或消失
     val edge = span + 1
     val from = (cur - edge).toInt().coerceAtLeast(0)
-    val to = (cur + edge).toInt().coerceAtMost(lines.lastIndex)
+    val to = (cur + edge).toInt().coerceAtMost(rows.lastIndex)
     for (i in from..to) {
         val d = i - cur
         val th = d * stepRad
@@ -2473,23 +2545,42 @@ BoxWithConstraints(
                 },
             contentAlignment = Alignment.CenterStart,
         ) {
-            Text(
-                zhText(lines[i].text),
+            // 一行 = 原句 +（可选）译文。整块共用上面的 rotationZ，
+            // 所以译文和原句一样贴合圆弧，不会被斜切。
+            Column(
                 Modifier
                     .widthIn(max = lineW)
                     .padding(horizontal = 6.dp, vertical = 3.dp),
-                // 当前句用主题色
-                color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
-                fontSize = if (isCur) curSp.sp else otherSp.sp,
-                lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
-                // 稍粗：当前句用 ExtraBold，其余行也比常规粗一档
-                fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
-                // 左侧对齐
-                textAlign = TextAlign.Start,
-                // 完整换行显示，不截断、不加省略号（省略号看着也像被切了）
-                maxLines = Int.MAX_VALUE,
-                overflow = TextOverflow.Clip,
-            )
+            ) {
+                Text(
+                    zhText(rows[i].text),
+                    // 当前句用主题色
+                    color = if (isCur) curColor else Color.White.copy(alpha = 0.5f),
+                    fontSize = if (isCur) curSp.sp else otherSp.sp,
+                    lineHeight = if (isCur) (curSp * 1.5f).sp else (otherSp * 1.5f).sp,
+                    // 稍粗：当前句用 ExtraBold，其余行也比常规粗一档
+                    fontWeight = if (isCur) FontWeight.ExtraBold else FontWeight.Medium,
+                    // 左侧对齐
+                    textAlign = TextAlign.Start,
+                    // 完整换行显示，不截断、不加省略号（省略号看着也像被切了）
+                    maxLines = Int.MAX_VALUE,
+                    overflow = TextOverflow.Clip,
+                )
+                // 译文：永远不跟着高亮（高亮只属于原句），字号更小、更暗。
+                // 点它和点原句一样跳到这一行的时间，也就是「跳到对应原句处」。
+                if (showTrans && !rows[i].trans.isNullOrBlank()) {
+                    Text(
+                        zhText(rows[i].trans ?: ""),
+                        color = Color.White.copy(alpha = if (isCur) 0.62f else 0.34f),
+                        fontSize = (otherSp * 0.92f).sp,
+                        lineHeight = (otherSp * 1.45f).sp,
+                        fontWeight = FontWeight.Normal,
+                        textAlign = TextAlign.Start,
+                        maxLines = Int.MAX_VALUE,
+                        overflow = TextOverflow.Clip,
+                    )
+                }
+            }
         }
         }
 
@@ -2499,7 +2590,7 @@ BoxWithConstraints(
         // 改由整块歌词区统一接管点击：把点击的纵坐标反解回行号。
         //   y = r·sin(θ) → θ = asin(y / r) → 行号 = 当前行 + θ / 每行弧度
         // 这样点哪一行就是哪一行，既不会跳错行，也不会有点不到的空隙。
-        // pointerInput 只在 lines 变化时重启，lambda 里直接捕获 cur / rPx 会拿到
+        // pointerInput 只在 rows 变化时重启，lambda 里直接捕获 cur / rPx 会拿到
         // 旧值（播放中 cur 一直在变）。用 rememberUpdatedState 取最新值。
         val curNow by rememberUpdatedState(cur)
         val rPxNow by rememberUpdatedState(rPx)
@@ -2507,19 +2598,19 @@ BoxWithConstraints(
         val spanNow by rememberUpdatedState(span)
         val maxHNow by rememberUpdatedState(maxHeight)
         Box(
-            Modifier.fillMaxSize().pointerInput(lines) {
+            Modifier.fillMaxSize().pointerInput(rows) {
                 detectTapGestures { off ->
-                    if (lines.isEmpty()) return@detectTapGestures
+                    if (rows.isEmpty()) return@detectTapGestures
                     val hPx = with(density) { maxHNow.toPx() }
                     val rel = off.y - hPx / 2
                     val th = asin((rel / rPxNow).coerceIn(-1f, 1f))
                     val d = th / stepNow
-                    val hitK = (curNow + d).roundToInt().coerceIn(0, lines.lastIndex)
+                    val hitK = (curNow + d).roundToInt().coerceIn(0, rows.lastIndex)
                     // 淡出到几乎看不见的行不接受点击
                     val tt = (abs(hitK - curNow) / spanNow.toFloat()).coerceIn(0f, 1f)
                     val f = 1f - (tt * tt * (3f - 2f * tt))
                     if (f <= 0.12f) return@detectTapGestures
-                    val line = lines[hitK]
+                    val line = rows[hitK]
                     if (line.timeMs < 0) return@detectTapGestures
                     // 点了就立刻回到跟播：清掉手动偏移，
                     // 位置交给播放进度重新算，避免停在手动位置上跳错行
@@ -2659,8 +2750,9 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
 @Composable
 fun LyricsList(vm: MainViewModel) {
     val go = LocalGo.current
-    val lines = vm.lyric
-    val idx = vm.lyricIndex
+    // 用逻辑行：自带翻译的歌词原文与译文并成一行，译文跟着原句走
+    val lines = vm.lyricRows
+    val idx = vm.lyricRowIndex
     if (lines.isEmpty()) {
         // 还在请求时显示「正在加载」，只有确认拿不到才说「暂无歌词」
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2703,17 +2795,33 @@ fun LyricsList(vm: MainViewModel) {
             itemsIndexed(lines) { i, l ->
                 val cur = i == idx
                 val size = if (cur) 19 else 17
-                Text(
-                    zhText(l.text),
+                Column(
                     Modifier.fillMaxWidth()
+                        // 点整块（含译文）都跳到这一行的时间，也就是「跳到对应原句处」
                         .clickable(enabled = l.timeMs >= 0) { vm.seekTo(l.timeMs) }
                         .padding(horizontal = 24.dp, vertical = 4.dp),
-                    color = if (cur) go.primary else go.muted,
-                    fontSize = size.sp,
-                    lineHeight = (size * 1.8f).sp,
-                    fontWeight = if (cur) FontWeight.Bold else FontWeight.Normal,
-                    textAlign = TextAlign.Center,
-                )
+                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        zhText(l.text),
+                        color = if (cur) go.primary else go.muted,
+                        fontSize = size.sp,
+                        lineHeight = (size * 1.8f).sp,
+                        fontWeight = if (cur) FontWeight.Bold else FontWeight.Normal,
+                        textAlign = TextAlign.Center,
+                    )
+                    // 译文：不跟着高亮，字号更小、更暗
+                    if (vm.showTrans && !l.trans.isNullOrBlank()) {
+                        Text(
+                            zhText(l.trans ?: ""),
+                            color = go.muted.copy(alpha = if (cur) 0.95f else 0.6f),
+                            fontSize = (size - 3).sp,
+                            lineHeight = (size * 1.5f).sp,
+                            fontWeight = FontWeight.Normal,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
             }
         }
     }

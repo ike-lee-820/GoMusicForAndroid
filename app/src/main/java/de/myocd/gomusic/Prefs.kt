@@ -15,6 +15,9 @@ const val MAX_HISTORY = 10000
 /** 歌曲信息快照上限（历史里要能显示歌名/歌手） */
 const val MAX_SNAPSHOTS = 2000
 
+/** 歌词翻译缓存的歌曲数上限 */
+const val MAX_LYRIC_TRANS = 300
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -148,4 +151,21 @@ class Prefs(ctx: Context) {
             json.decodeFromString<List<DownloadRecord>>(sp.getString("downloads", "[]")!!)
         }.getOrDefault(emptyList())
         set(v) { sp.edit().putString("downloads", json.encodeToString(v)).apply() }
+
+    /**
+     * 歌词翻译缓存：ssid -> 译文列表（按逻辑行顺序）。
+     *
+     * 翻过的歌下次打开直接读缓存，不再请求接口。
+     * 上限 [MAX_LYRIC_TRANS] 首：整篇译文不小，无限堆积会把 prefs 撑大，
+     * 超出时丢最旧的（写入顺序即时间顺序）。
+     */
+    var lyricTrans: Map<String, List<String>>
+        get() = runCatching {
+            json.decodeFromString<Map<String, List<String>>>(sp.getString("lyric_trans", "{}")!!)
+        }.getOrDefault(emptyMap())
+        set(v) {
+            val cut = if (v.size <= MAX_LYRIC_TRANS) v
+            else v.entries.drop(v.size - MAX_LYRIC_TRANS).associate { it.key to it.value }
+            sp.edit().putString("lyric_trans", json.encodeToString(cut)).apply()
+        }
 }

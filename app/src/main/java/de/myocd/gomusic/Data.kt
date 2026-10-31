@@ -63,6 +63,77 @@ data class SongDetail(
 
 data class LrcLine(val timeMs: Long, val text: String)
 
+/**
+ * 一行歌词（逻辑行）：原句 + 可选的译文。
+ *
+ * 歌词有两种来源译文：
+ * 1. 自带翻译 —— 原文与译文两句时间完全相同，第二句就是第一句的译文；
+ * 2. 接口翻译 —— [Translate] 整篇翻出来的，按逻辑行顺序对齐。
+ *
+ * 渲染时 [text] 会跟着播放高亮，[trans] 永远不高亮；
+ * 点 [trans] 与点 [text] 行为一致，都是跳到 [timeMs]。
+ */
+data class LyricRow(
+    /** 原句在原始歌词行里的下标：播放位置是按原始行算的，要靠它换算 */
+    val index: Int,
+    /** 原句时间，< 0 表示这行没有时间轴 */
+    val timeMs: Long,
+    /** 原句 */
+    val text: String,
+    /** 译文，null = 没有译文 */
+    val trans: String? = null,
+)
+
+/**
+ * 非中文书写系统的字符：拉丁、西里尔、日文假名、韩文、希腊、阿拉伯、泰文。
+ *
+ * 用来判断「这首歌的歌词是不是外文的」——只有外文歌词才需要翻译按钮，
+ * 中文歌不需要。CJK 统一表意文字（含汉字与日文汉字）不算。
+ */
+private val NON_CHINESE_RE = Regex(
+    "[A-Za-z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF"
+        + "\u3040-\u30FF\u31F0-\u31FF\uAC00-\uD7AF"
+        + "\u0600-\u06FF\u0900-\u097F\u0E00-\u0E7F]",
+)
+
+/** 这句歌词是否含有非中文部分 */
+fun hasNonChinese(s: String): Boolean = NON_CHINESE_RE.containsMatchIn(s)
+
+/** 歌词是否含非中文部分（含则提供翻译按钮） */
+fun lyricNeedsTranslation(rows: List<LyricRow>): Boolean = rows.any { hasNonChinese(it.text) }
+
+/**
+ * 把原始歌词行整理成逻辑行。
+ *
+ * 自带翻译的歌词里，原句和译文两句的时间完全相同：
+ * 第一句视为原句（会高亮），第二句视为它的译文（不高亮），两行合成一个逻辑行。
+ *
+ * 时间 < 0 的纯文本歌词不参与配对 —— 那种情况每行时间都一样，
+ * 整篇会被误判成「一行原文一行译文」。
+ *
+ * [trans] 是接口翻译的结果，按逻辑行顺序对齐。
+ */
+fun buildLyricRows(lines: List<LrcLine>, trans: List<String>? = null): List<LyricRow> {
+    val out = ArrayList<LyricRow>(lines.size)
+    var i = 0
+    while (i < lines.size) {
+        val a = lines[i]
+        val b = lines.getOrNull(i + 1)
+        if (a.timeMs >= 0 && b != null && b.timeMs == a.timeMs) {
+            out.add(LyricRow(i, a.timeMs, a.text, b.text.trim().takeIf { it.isNotEmpty() }))
+            i += 2
+        } else {
+            out.add(LyricRow(i, a.timeMs, a.text, null))
+            i += 1
+        }
+    }
+    if (trans == null) return out
+    return out.mapIndexed { k, r ->
+        if (r.trans != null) r
+        else r.copy(trans = trans.getOrNull(k)?.trim()?.takeIf { it.isNotEmpty() })
+    }
+}
+
 object Api {
     val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
 

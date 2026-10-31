@@ -437,6 +437,67 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (id <= 0L) return false
         return mvOk[s!!.ssid] ?: false
     }
+    // ===================================================================
+    // 歌词翻译
+    // ===================================================================
+    /**
+     * 译文缓存：ssid -> 按逻辑行对齐的译文。
+     * 必须是 state：换掉它要让上面那些 derivedState 重新算，普通字段不会。
+     */
+    private var transCache by mutableStateOf(prefs.lyricTrans)
+
+    /** 是否显示译文：已经有译文后再点翻译按钮就是切换显示 */
+    var showTrans by mutableStateOf(true); private set
+
+    /** 正在翻译整篇 */
+    var transLoading by mutableStateOf(false); private set
+
+    /** 当前歌词整理后的逻辑行（自带翻译的歌词会把原文与译文并成一行）。
+     *  名字不能叫 buildLyricRows：那是 Data.kt 里造这个列表的函数。 */
+    val lyricRows: List<LyricRow> by derivedStateOf {
+        val raw = lyric
+        if (raw.isEmpty()) emptyList() else buildLyricRows(raw, transCache[curSsid])
+    }
+
+    /** 当前句落在哪个逻辑行：播放位置是按原始行算的，这里换算一次 */
+    val lyricRowIndex: Int by derivedStateOf {
+        val i = lyricIndex
+        if (i < 0) -1 else lyricRows.indexOfFirst { it.index == i }
+    }
+
+    /** 歌词里有非中文才给翻译按钮（中文歌不需要） */
+    val lyricNeedTrans: Boolean by derivedStateOf { lyricNeedsTranslation(lyricRows) }
+
+    /** 是否已经译过：自带译文，或已经翻过并写进了缓存 */
+    val lyricHasTrans: Boolean by derivedStateOf { lyricRows.any { !it.trans.isNullOrBlank() } }
+
+    /**
+     * 翻译当前歌词。
+     *
+     * 点一次就并发翻完整篇并缓存（接口没有频率限制，不用一句一句等）。
+     * 已经有译文时不发请求，改成切换译文的显示 —— 按钮这时不该重复翻译。
+     */
+    fun translateLyric() {
+        val rows = lyricRows
+        val id = curSsid ?: return
+        if (rows.isEmpty()) { toast("暂无歌词"); return }
+        if (rows.any { !it.trans.isNullOrBlank() }) { showTrans = !showTrans; return }
+        if (transLoading) return
+        transLoading = true
+        viewModelScope.launch {
+            val res = Translate.all(rows.map { it.text })
+            transLoading = false
+            if (res.all { it.isBlank() }) { toast("翻译失败，请检查网络"); return@launch }
+            transCache = transCache + (id to res)
+            prefs.lyricTrans = transCache
+            // 翻的过程中可能已经切歌了：缓存照存，但不要改动当前显示
+            if (curSsid == id) {
+                showTrans = true
+                toast("已翻译 ${res.count { it.isNotBlank() }}/${res.size} 句")
+            }
+        }
+    }
+
     val lyricIndex: Int by derivedStateOf {
         if (lyric.isEmpty() || lyric[0].timeMs < 0) -1
         else lyric.indexOfLast { it.timeMs <= positionMs }

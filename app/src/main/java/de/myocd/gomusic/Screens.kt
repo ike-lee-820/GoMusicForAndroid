@@ -432,6 +432,10 @@ fun MiniPlayerRail(vm: MainViewModel) {
     val w = 150.dp
     Column(
         Modifier.fillMaxHeight().width(w).background(go.surface)
+            // 整栏可点：点封面或歌名就进播放页。横屏下 FullPlayer 的 wide
+            // 判定为 true，自动用横版双栏（左播放器 / 右旋转歌词）。
+            // 栏内播放、播放列表按钮自带 clickable，优先响应，不会误打开播放页
+            .clickable { if (vm.currentSong != null) vm.showPlayer = true }
             .navigationBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

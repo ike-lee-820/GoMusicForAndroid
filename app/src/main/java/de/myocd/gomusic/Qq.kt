@@ -68,6 +68,7 @@ object Qq {
         }
         override fun loadForRequest(url: HttpUrl): List<Cookie> = store[url.host].orEmpty()
         fun allCookies(): List<Cookie> = store.values.flatten()
+        fun clear() = store.clear()
     }
 
     /** cookie 里存下来的凭证（响应体没有 token 时的兜底） */
@@ -210,7 +211,17 @@ object Qq {
         // 后续搜索、取歌词就全成了匿名请求（日志里能直接看到）
         if (token.isBlank()) credFromCookie()?.let { setToken(it) }
         val cred = currentCredential()
-        NmLog.note("QQ 请求：$path  凭证=${if (cred.isNullOrBlank()) "无（匿名）" else "有"}")
+        // 记凭证来源与长度（不记内容，避免泄露）：401 时靠它判断
+        // 带的到底是 token、还是 cookie 里抓来的某个值
+        val src = when {
+            !token.isBlank() -> "token"
+            cred != null -> "cookie"
+            else -> "无"
+        }
+        NmLog.note(
+            "QQ 请求：$path  凭证=${src} 长度=${cred?.length ?: 0}" +
+                if (cred != null) " 前缀=${cred.take(4)}" else ""
+        )
         // 失败重试一次即可：QQ 接口偶发抖动，但重试太多会把切歌拖慢
         repeat(2) { attempt ->
             try {
@@ -222,15 +233,24 @@ object Qq {
                     NmLog.req(url)
                     NmLog.res(url, r.code, t.take(400))
                     if (!r.isSuccessful || t.isBlank()) {
+                        // 401：凭证无效或已过期。记下来，调用方据此提示重新登录，
+                        // 否则界面上只看到「没有音源」，看不出是没登录
+                        if (r.code == 401) {
+                            needsLogin = true
+                            NmLog.note("QQ 接口要求登录（401）：$path  已带凭证=${cred?.length ?: 0} 字符")
+                        }
                         // 502/503 是「上游拒绝」，短暂退避后重试才有机会成功；
                         // 间隔太短只会再撞一次同样的拒绝
                         lastServerError = r.code
                         if (r.code == 502 || r.code == 503) {
                             try { Thread.sleep(1200) } catch (ignored: Exception) { }
                         }
+                        // 401 重试没有意义：凭证不对，再发一次还是 401
+                        if (r.code == 401) return null
                         return@repeat
                     }
                     lastServerError = 0
+                    needsLogin = false
                     return json.parseToJsonElement(t) as? JsonObject
                 }
             } catch (e: Exception) {
@@ -245,6 +265,18 @@ object Qq {
     /** 最近一次请求的服务端错误码（0 表示无）。用于给用户明确提示，而不是静默空结果 */
     @Volatile var lastServerError: Int = 0
         private set
+
+    /** 接口返回过 401：凭证无效或已过期，需要重新扫码登录 */
+    @Volatile var needsLogin: Boolean = false
+        private set
+
+    /** 清空无效凭证：401 之后旧 token 已经没用了，留着只会继续发无效请求 */
+    fun clearInvalidCredential() {
+        needsLogin = false
+        token = ""
+        cookieCred = ""
+        jar.clear()
+    }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 

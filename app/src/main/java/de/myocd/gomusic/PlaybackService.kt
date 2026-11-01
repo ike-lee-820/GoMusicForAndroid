@@ -94,6 +94,9 @@ class PlaybackService : MediaSessionService() {
                                     break
                                 }
                             }
+                            if (got == null && Qq.needsLogin) {
+                                throw IOException("QQ 音乐需要登录：请重新扫码")
+                            }
                             got ?: throw IOException("QQ 音乐没有可用音源")
                         } else if (nid != null) {
                             // 老歌单里可能还有网易云的歌，按原方式请求，避免播不了

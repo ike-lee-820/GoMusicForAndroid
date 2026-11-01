@@ -2035,6 +2035,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun attach(c: MediaController) {
         c.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { this@MainViewModel.isPlaying = isPlaying }
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // 取地址失败多半是服务端拒绝：401 说明凭证失效，
+                // 直接弹登录；否则把原因说出来，别只显示「播放失败」
+                val msg = error.message.orEmpty()
+                NmLog.note("播放出错：$msg")
+                if (msg.contains("需要登录") || Qq.needsLogin) {
+                    Qq.clearInvalidCredential()
+                    prefs.qqToken = ""
+                    qqUser = null
+                    showQqLogin = true
+                    toast("QQ 音乐登录已失效，请重新扫码")
+                } else {
+                    toast(msg.ifBlank { "播放失败" })
+                }
+            }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 onItem(mediaItem, true)
                 prefetchAhead()

@@ -3256,8 +3256,32 @@ fun SettingsSheet(vm: MainViewModel) {
         0xFFD0BCFF, 0xFFFF8A80, 0xFFFFB74D, 0xFFFFF176,
         0xFF81C784, 0xFF4DD0E1, 0xFF64B5F6, 0xFFF48FB1,
     ).map { Color(it) }
+    // 打开设置页时读一次当前状态（从系统电池设置返回由 Activity 的 onResume 负责刷新）
+    LaunchedEffect(Unit) { vm.refreshBatteryExempt() }
     GoSheet({ vm.showSettings = false }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
+            // ---------- 后台播放 ----------
+            Txt("后台播放", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(if (vm.batteryExempt) go.surfaceHi else go.primary.copy(alpha = 0.12f))
+                    .clickable { vm.openBatterySettings() }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("电池优化白名单", 14, weight = FontWeight.Medium)
+                    Txt(
+                        if (vm.batteryExempt) "已加入：熄屏后不会被系统中断"
+                        else "未加入：熄屏几分钟后播放会停、通知会消失，点这里去设置",
+                        12, color = go.muted,
+                    )
+                }
+                Txt(if (vm.batteryExempt) "✓" else "去设置", 13, color = if (vm.batteryExempt) go.primary else go.primary)
+            }
+            VS(16)
+
             // ---------- 连接 ----------
             Txt("连接", 15, weight = FontWeight.SemiBold)
             VS(8)

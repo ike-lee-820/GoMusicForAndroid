@@ -136,6 +136,11 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .setAudioAttributes(buildAttrs(), true)
             .setHandleAudioBecomingNoisy(true)
+            // 唤醒锁：熄屏几分钟后系统会让 CPU 休眠，正在播放的歌会停住、
+            // 通知也跟着消失（服务被回收）。交给 ExoPlayer 在播放期间持有，
+            // 暂停/播完自动释放，不会白耗电。
+            // 用 WAKE_MODE_NETWORK：我们是边播边缓存，缓冲时要能继续联网。
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
         player = p
 

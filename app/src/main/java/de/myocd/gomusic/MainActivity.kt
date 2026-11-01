@@ -105,6 +105,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 从系统电池优化设置页返回后，重新读一次白名单状态
+        vm.refreshBatteryExempt()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         vm.handleLink(intent.data)

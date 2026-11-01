@@ -4,6 +4,9 @@ import android.Manifest
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
+import android.os.Build
+import android.provider.Settings
+import android.os.PowerManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.BitmapDrawable
@@ -1147,6 +1150,44 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var updateFile by mutableStateOf<java.io.File?>(null); private set
     /** 需要申请「安装未知应用」权限，由 Activity 处理 */
     var needInstallPerm by mutableStateOf(false); private set
+
+    /**
+     * 是否已被系统排除在电池优化之外。
+     *
+     * 没豁免时，熄屏一段时间进入 Doze 后系统会限制网络并回收后台服务 ——
+     * 表现就是「后台放着放着就停了，通知也没了」。国产 ROM 尤其激进。
+     * 这个开关只能在系统设置里由用户手动改，应用无法自己打开。
+     */
+    var batteryExempt by mutableStateOf(true); private set
+
+    /** 重新读一次电池优化状态（设置页打开、从系统设置返回时调） */
+    fun refreshBatteryExempt() {
+        batteryExempt = runCatching {
+            val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (Build.VERSION.SDK_INT >= 23) pm?.isIgnoringBatteryOptimizations(app.packageName) ?: true
+            else true
+        }.getOrDefault(true)
+    }
+
+    /** 打开系统的电池优化设置页（让用户手动加白名单） */
+    fun openBatterySettings() {
+        try {
+            val i = if (Build.VERSION.SDK_INT >= 23) {
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${app.packageName}")
+                }
+            } else {
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            app.startActivity(i)
+        } catch (e: Exception) {
+            try {
+                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .let { app.startActivity(it) }
+            } catch (ignored: Exception) { }
+        }
+    }
     /** 启动检测弹过一次后，本次进程内不再自动弹 */
     private var autoShown = false
 

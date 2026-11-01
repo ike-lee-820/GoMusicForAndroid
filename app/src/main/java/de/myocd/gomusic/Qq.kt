@@ -215,7 +215,16 @@ object Qq {
                     val t = r.body?.string().orEmpty()
                     NmLog.req(url)
                     NmLog.res(url, r.code, t.take(400))
-                    if (!r.isSuccessful || t.isBlank()) return@repeat
+                    if (!r.isSuccessful || t.isBlank()) {
+                        // 502/503 是「上游拒绝」，短暂退避后重试才有机会成功；
+                        // 间隔太短只会再撞一次同样的拒绝
+                        lastServerError = r.code
+                        if (r.code == 502 || r.code == 503) {
+                            try { Thread.sleep(1200) } catch (ignored: Exception) { }
+                        }
+                        return@repeat
+                    }
+                    lastServerError = 0
                     return json.parseToJsonElement(t) as? JsonObject
                 }
             } catch (e: Exception) {
@@ -226,6 +235,10 @@ object Qq {
         NmLog.note("QQ 请求最终失败：$path")
         return null
     }
+
+    /** 最近一次请求的服务端错误码（0 表示无）。用于给用户明确提示，而不是静默空结果 */
+    @Volatile var lastServerError: Int = 0
+        private set
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
@@ -342,7 +355,7 @@ object Qq {
      */
     private fun pageOf(offset: Int, limit: Int) = offset / limit + 1
 
-    fun searchSongs(keywords: String, limit: Int = 20, offset: Int = 0): List<Song> {
+    private fun runSongs(keywords: String, limit: Int = 20, offset: Int = 0): List<Song> {
         if (keywords.isBlank()) return emptyList()
         val r = get(
             "/search",
@@ -358,7 +371,19 @@ object Qq {
         return list
     }
 
-    fun searchAlbums(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
+    fun searchSongs(keywords: String, limit: Int = 20, offset: Int = 0): List<Song> {
+        if (keywords.isBlank()) return emptyList()
+        // 首轮按请求的条数试；拿不到（服务端多为上游 502 拒绝）时
+        // 用文档默认条数 10 再试一次 —— 条数越大越容易被上游拒绝
+        val first = runSongs(keywords, limit, offset)
+        if (first.isNotEmpty() || limit <= 10) return first
+        NmLog.note("QQ 搜索 song 首轮无结果，改用默认条数重试：$keywords")
+        return runSongs(keywords, 10, offset)
+    }
+
+
+
+    private fun runAlbums(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
         if (keywords.isBlank()) return emptyList()
         val r = get(
             "/search",
@@ -400,7 +425,19 @@ object Qq {
         return list
     }
 
-    fun searchArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
+    fun searchAlbums(keywords: String, limit: Int = 20, offset: Int = 0): List<Group> {
+        if (keywords.isBlank()) return emptyList()
+        // 首轮按请求的条数试；拿不到（服务端多为上游 502 拒绝）时
+        // 用文档默认条数 10 再试一次 —— 条数越大越容易被上游拒绝
+        val first = runAlbums(keywords, limit, offset)
+        if (first.isNotEmpty() || limit <= 10) return first
+        NmLog.note("QQ 搜索 album 首轮无结果，改用默认条数重试：$keywords")
+        return runAlbums(keywords, 10, offset)
+    }
+
+
+
+    private fun runArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
         if (keywords.isBlank()) return emptyList()
         val r = get(
             "/search",
@@ -436,6 +473,18 @@ object Qq {
         else "QQ 搜索歌手：$keywords -> ${list.size}")
         return list
     }
+
+    fun searchArtists(keywords: String, limit: Int = 20, offset: Int = 0): List<Group> {
+        if (keywords.isBlank()) return emptyList()
+        // 首轮按请求的条数试；拿不到（服务端多为上游 502 拒绝）时
+        // 用文档默认条数 10 再试一次 —— 条数越大越容易被上游拒绝
+        val first = runArtists(keywords, limit, offset)
+        if (first.isNotEmpty() || limit <= 10) return first
+        NmLog.note("QQ 搜索 singer 首轮无结果，改用默认条数重试：$keywords")
+        return runArtists(keywords, 10, offset)
+    }
+
+
 
     fun hotSearch(): List<String> {
         val r = get("/search/hot") ?: return emptyList()

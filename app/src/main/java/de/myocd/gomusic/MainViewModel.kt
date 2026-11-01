@@ -957,7 +957,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 NmLog.note("搜索完成：歌曲 " + s.size + " / 专辑 " + a.size + " / 歌手 " + ar.size)
                 if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
-                    NmLog.note("网易云三条搜索都为空，请检查登录态与关键词")
+                    // 502 是「上游拒绝」，不等于没有结果；静默显示空列表
+                    // 会让人以为是搜不到，这里明确说出来
+                    val code = Qq.lastServerError
+                    NmLog.note("QQ 搜索三条都为空（服务端错误码=$code）")
+                    if (code == 502 || code == 503) {
+                        toast("QQ 音乐服务端暂时不可用（$code），请稍后重试")
+                    }
                 }
             } catch (e: Throwable) {
                 // 切界面导致的取消属于正常行为，不提示、不报错

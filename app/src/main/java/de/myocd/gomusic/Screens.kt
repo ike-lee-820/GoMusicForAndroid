@@ -785,6 +785,19 @@ fun HomeTab(vm: MainViewModel) {
 }
 
 /** 横向歌手卡片行 */
+/**
+ * 分组列表的稳定 key。
+ *
+ * QQ 的分组用字符串 qqMid 定位，nmId 恒为 0 —— 直接拿 nmId 当 key
+ * 会让多条都是 "nm0"，LazyColumn 要求 key 唯一，重复会直接抛
+ * IllegalArgumentException 崩在测量阶段（日志里那次闪退就是这个）。
+ */
+private fun groupKey(g: Group): String = when {
+    g.qqMid.isNotBlank() -> "qq${g.qqMid}"
+    g.nmId > 0 -> "nm${g.nmId}"
+    else -> "loc${g.title}|${g.artist}|${g.subtitle}"
+}
+
 @Composable
 private fun HomeArtistRow(vm: MainViewModel, list: List<Group>) {
     val go = LocalGo.current
@@ -792,7 +805,7 @@ private fun HomeArtistRow(vm: MainViewModel, list: List<Group>) {
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(list, key = { "nm${it.nmId}" }) { g ->
+        items(list, key = { groupKey(it) }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
                 Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 8.dp, circle = true)
                 VS(6)
@@ -812,7 +825,7 @@ private fun HomeAlbumRow(vm: MainViewModel, list: List<Group>) {
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(list, key = { "nm${it.nmId}" }) { g ->
+        items(list, key = { groupKey(it) }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
                 Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
                 VS(6)
@@ -832,7 +845,7 @@ private fun HomeTopRow(vm: MainViewModel, list: List<Group>) {
         contentPadding = PaddingValues(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(list, key = { "top${it.nmId}" }) { g ->
+        items(list, key = { "top" + groupKey(it) }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
                 Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
                 VS(6)
@@ -1165,7 +1178,7 @@ fun ArtistsTab(vm: MainViewModel) {
     ) {
         items(
             groups,
-            key = { g -> if (g.nmId > 0) "nm" + g.nmId else "loc" + g.title },
+            key = { g -> groupKey(g) },
             contentType = { "artist" },
         ) { g ->
             GroupCard(

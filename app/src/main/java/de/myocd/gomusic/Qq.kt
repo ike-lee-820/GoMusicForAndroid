@@ -1,12 +1,17 @@
 package de.myocd.gomusic
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
@@ -43,6 +48,68 @@ object Qq {
     fun setToken(t: String?) { token = t.orEmpty() }
 
     val loggedIn: Boolean get() = token.isNotBlank()
+
+    // ---------- 会话容器：cookie ----------
+    /**
+     * 登录凭证可能通过 Set-Cookie 下发，而不写在响应体里。
+     *
+     * 共享的 [Api.client] 没有 CookieJar，cookie 会被直接丢掉 ——
+     * 表现就是扫码后服务端说「已授权」，客户端却拿不到任何凭证。
+     * 所以 QQ 这边单独挂一个，把 cookie 存下来并原样回传。
+     */
+    private val jar = object : CookieJar {
+        private val store = ConcurrentHashMap<String, List<Cookie>>()
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            if (cookies.isEmpty()) return
+            store[url.host] = cookies
+            // 顺手记下看起来像凭证的那条，供响应体里没有 token 时兜底
+            cookies.firstOrNull { isCredName(it.name) }?.value
+                ?.takeIf { it.length >= 4 }?.let { cookieCred = it }
+        }
+        override fun loadForRequest(url: HttpUrl): List<Cookie> = store[url.host].orEmpty()
+    }
+
+    /** cookie 里存下来的凭证（响应体没有 token 时的兜底） */
+    @Volatile private var cookieCred: String = ""
+
+    /** 复用共享客户端的连接池与调度器，只补一个 CookieJar */
+    private val client: OkHttpClient = Api.client.newBuilder().cookieJar(jar).build()
+
+    private fun isCredName(n: String): Boolean {
+        val k = n.lowercase().replace("_", "").replace("-", "")
+        return k in setOf(
+            "token", "session", "sessionid", "sessiontoken", "accesstoken",
+            "credential", "ticket", "logintoken", "authtoken", "auth", "skey", "sid",
+        )
+    }
+
+    /**
+     * 在整棵 JSON 里找凭证。
+     *
+     * 不同部署把凭证放在不同层级（顶层 / data / data.user …），字段名也不统一，
+     * 只按固定路径取会漏掉。这里逐层找名字像凭证的字符串字段。
+     */
+    private fun findCred(e: JsonElement?, depth: Int = 0): String? {
+        if (e == null || depth > 6) return null
+        when (e) {
+            is JsonObject -> {
+                // 先在本层找，找不到再往下钻一层
+                for ((k, v) in e) {
+                    if (!isCredName(k)) continue
+                    val t = (v as? JsonPrimitive)?.content?.trim()
+                    if (!t.isNullOrBlank() && t.length >= 4 && t != "null") return t
+                }
+                for ((_, v) in e) findCred(v, depth + 1)?.let { return it }
+            }
+            is JsonArray -> e.forEach { findCred(it, depth + 1)?.let { return it } }
+            else -> {}
+        }
+        return null
+    }
+
+    /** 当前可用的凭证：显式 token 优先，其次 cookie */
+    fun currentCredential(): String? =
+        token.takeIf { it.isNotBlank() } ?: cookieCred.takeIf { it.length >= 4 }
 
     /** 音质档位：与 /getMusicPlay 的 quality 参数一致 */
     val LEVELS = listOf("128", "320", "flac", "ape", "m4a")
@@ -130,7 +197,7 @@ object Qq {
                 val b = Request.Builder().url(url)
                 if (token.isNotBlank()) b.addHeader("X-QQ-Session", token)
                 val req = b.build()
-                Api.client.newCall(req).execute().use { r ->
+                client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
                     NmLog.req(url)
                     NmLog.res(url, r.code, t.take(400))
@@ -168,7 +235,7 @@ object Qq {
                 .addHeader("X-QQ-Session", token)
                 .addHeader("Content-Type", "application/json")
                 .post(body.toRequestBody(JSON_MT))
-            Api.client.newCall(b.build()).execute().use { r ->
+            client.newCall(b.build()).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.req("POST " + url + " " + body.take(200))
                 NmLog.res(url, r.code, t.take(400))
@@ -500,10 +567,9 @@ object Qq {
     fun qrCheck(key: String): QrStatus {
         val r = get("/login/qr/check", "key" to key) ?: return QrStatus(0, null, null)
         val code = r.num("code")?.toInt() ?: 0
-        // 会话 token 可能直接给，也可能包在 data 里
-        val tk = r.str("token")
-            ?: r.obj("data")?.str("token")
-            ?: if (code == 803) r.obj("data")?.str("session", "sessionToken") else null
+        // 凭证层级与字段名各部署不统一：先在整棵响应里找，
+        // 找不到再看 cookie（可能是 Set-Cookie 下发的）
+        val tk = findCred(r) ?: currentCredential()
         val msg = r.str("message", "msg")
             ?: r.obj("data")?.str("failureHint", "message")
             ?: r.obj("data")?.let { d ->

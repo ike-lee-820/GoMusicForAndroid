@@ -321,11 +321,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val st = runCatching { Qq.qrCheck(key) }.getOrNull() ?: continue
                 when (st.code) {
                     803 -> {
-                        val tk = st.token
+                        // 凭证可能在响应体的任意层级，也可能只在 cookie 里。
+                        // 都拿不到时再主动问一次服务端要（此时 cookie 已保存），
+                        // 三处都没有才算真的失败
+                        var tk = st.token?.takeIf { it.isNotBlank() } ?: Qq.currentCredential()
+                        if (tk.isNullOrBlank()) {
+                            runCatching { Qq.status() }
+                            tk = Qq.currentCredential()
+                        }
                         withContext(Dispatchers.Main) {
                             if (tk.isNullOrBlank()) {
-                                nmQrTip = "授权完成但未拿到登录凭证，请重新扫码"
-                                toast("登录未完成，请重新扫码")
+                                nmQrTip = "授权完成但未拿到登录凭证，点此重新扫码"
+                                toast("登录未完成：服务端未返回凭证")
                             } else {
                                 nmQr = null
                                 onQqLogin(tk)

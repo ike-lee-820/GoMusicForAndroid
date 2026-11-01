@@ -324,6 +324,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         // 凭证可能在响应体的任意层级，也可能只在 cookie 里。
                         // 都拿不到时再主动问一次服务端要（此时 cookie 已保存），
                         // 三处都没有才算真的失败
+                        // 顺序：响应体 → 会话 cookie（qqmusic_session）→ 再问一次 /login/status
+                        // 最后一步不是多余：Node/Docker 下凭证可能在 status 这次请求里才下发
                         var tk = st.token?.takeIf { it.isNotBlank() } ?: Qq.currentCredential()
                         if (tk.isNullOrBlank()) {
                             runCatching { Qq.status() }
@@ -720,6 +722,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toast("已退出 QQ 音乐")
     }
 
+    /** 会话到期时间（0 = 未知；仅用于判断是否需要续期） */
+    private var qqExpiresAt: Long = 0L
+
+    /** 距到期不足约 6 小时时续期一次（文档要求；无意义地频繁续期会被限流） */
+    private fun maybeRefreshQqSession() {
+        if (!nmReady || qqExpiresAt <= 0L || !Qq.needsRefresh(qqExpiresAt)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = runCatching { Qq.refresh() }.getOrNull() ?: return@launch
+            withContext(Dispatchers.Main) {
+                // rotated 时必须存新 token，否则之后所有请求都拿旧凭证被拒
+                if (!r.token.isNullOrBlank() && r.rotated) {
+                    prefs.qqToken = r.token
+                    Qq.setToken(r.token)
+                }
+                qqExpiresAt = r.expiresAt
+                NmLog.note("QQ 会话续期：rotated=${r.rotated}")
+            }
+        }
+    }
+
     /** 校验会话是否还有效，失效则清空登录态 */
     fun refreshQqAccount() {
         if (prefs.qqToken.isBlank()) { qqUser = null; return }
@@ -735,6 +757,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } else {
                     prefs.qqAccount = name
                     qqUser = name
+                    maybeRefreshQqSession()
                     // 会话有效：自动同步一次歌单，云端新增的歌单也能看到
                     syncQqPlaylists()
                 }

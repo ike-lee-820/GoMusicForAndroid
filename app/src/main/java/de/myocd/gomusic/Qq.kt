@@ -67,6 +67,7 @@ object Qq {
                 ?.takeIf { it.length >= 4 }?.let { cookieCred = it }
         }
         override fun loadForRequest(url: HttpUrl): List<Cookie> = store[url.host].orEmpty()
+        fun allCookies(): List<Cookie> = store.values.flatten()
     }
 
     /** cookie 里存下来的凭证（响应体没有 token 时的兜底） */
@@ -77,10 +78,23 @@ object Qq {
 
     private fun isCredName(n: String): Boolean {
         val k = n.lowercase().replace("_", "").replace("-", "")
-        return k in setOf(
-            "token", "session", "sessionid", "sessiontoken", "accesstoken",
-            "credential", "ticket", "logintoken", "authtoken", "auth", "skey", "sid",
-        )
+        // 包含匹配：不同部署的字段名带各种前缀（qqmusic_session 就是一个例子），
+        // 写成精确集合会漏掉文档里明确给出的那一个
+        return k.contains("token") || k.contains("session") || k.contains("credential")
+            || k.contains("ticket") || k.contains("skey")
+    }
+
+    /** 文档指定的会话 cookie 名：Node / Docker 环境下凭证通过它下发 */
+    const val SESSION_COOKIE = "qqmusic_session"
+
+    /** 读指定名字的 cookie（HttpOnly 也能读到：那只限制 JS，不限制 HTTP 客户端） */
+    fun cookieValue(name: String): String? =
+        jar.allCookies().firstOrNull { it.name == name }?.value?.takeIf { it.isNotBlank() }
+
+    /** 会话 cookie 里的凭证 */
+    private fun credFromCookie(): String? {
+        cookieValue(SESSION_COOKIE)?.takeIf { it.length >= 4 }?.let { return it }
+        return jar.allCookies().firstOrNull { isCredName(it.name) }?.value?.takeIf { it.length >= 4 }
     }
 
     /**
@@ -109,7 +123,7 @@ object Qq {
 
     /** 当前可用的凭证：显式 token 优先，其次 cookie */
     fun currentCredential(): String? =
-        token.takeIf { it.isNotBlank() } ?: cookieCred.takeIf { it.length >= 4 }
+        token.takeIf { it.isNotBlank() } ?: credFromCookie() ?: cookieCred.takeIf { it.length >= 4 }
 
     /** 音质档位：与 /getMusicPlay 的 quality 参数一致 */
     val LEVELS = listOf("128", "320", "flac", "ape", "m4a")
@@ -569,13 +583,14 @@ object Qq {
         val code = r.num("code")?.toInt() ?: 0
         // 凭证层级与字段名各部署不统一：先在整棵响应里找，
         // 找不到再看 cookie（可能是 Set-Cookie 下发的）
-        val tk = findCred(r) ?: currentCredential()
-        val msg = r.str("message", "msg")
-            ?: r.obj("data")?.str("failureHint", "message")
-            ?: r.obj("data")?.let { d ->
-                // 失败时优先给可展示的提示
-                listOfNotNull(d.str("failureHint"), d.str("failureReason")).firstOrNull()
-            }
+        // 顺序：响应体（可能直接给 token）→ 会话 cookie（Node/Docker 走这条）
+        val tk = findCred(r) ?: credFromCookie() ?: cookieCred.takeIf { it.length >= 4 }
+        if (code == 803) {
+            NmLog.note("QQ 扫码成功：响应体凭证=${if (findCred(r) != null) "有" else "无"}，" +
+                "cookie=${cookieValue(SESSION_COOKIE)?.let { "有(${it.length}字符)" } ?: "无"}")
+        }
+        val d = r.obj("data")
+        val msg = d?.str("failureHint") ?: d?.str("failureReason") ?: r.str("message", "msg")
         return QrStatus(code, tk, msg)
     }
 
@@ -589,15 +604,36 @@ object Qq {
         val r = get("/login/status") ?: return null
         if (r.num("code")?.toInt() != 200) return null
         val d = r.obj("data") ?: r
-        val name = d.str("nickname", "nick", "name", "userName")
-        return if (d.num("loggedIn", "login")?.toInt() == 1 || !name.isNullOrBlank()) name else null
+        // 会话 cookie 可能在这一步才下发：拿到就记下来，别只依赖扫码那次
+        if (token.isBlank()) credFromCookie()?.let { setToken(it) }
+        val name = d.str("nickname", "nick", "name", "userName", "username")
+        val on = d.num("loggedIn", "login", "isLogin")?.toInt() == 1
+        if (!on && name.isNullOrBlank()) return null
+        return name ?: "QQ 音乐用户"
     }
 
     /** 会话续期：距离到期不足约 6 小时才需要 */
-    fun refresh(): String? {
+    /**
+     * 会话续期。文档：仅在距到期不足约 6 小时时尝试；
+     * `rotated: true` 时必须保存新 token，否则下一次请求会用旧凭证被拒。
+     */
+    data class RefreshResult(val token: String?, val rotated: Boolean, val expiresAt: Long)
+
+    fun refresh(): RefreshResult? {
         val r = post("/login/refresh", "{}") ?: return null
-        return r.obj("data")?.str("token") ?: r.str("token")
+        if (r.num("code")?.toInt() != 200) return null
+        val d = r.obj("data") ?: r
+        val tk = d.str("token") ?: findCred(r)
+        val rotated = d.num("rotated")?.toInt() == 1 || d.str("rotated") == "true"
+        val exp = d.num("expiresAt")?.toLong() ?: 0L
+        // 换了新 token 就立刻用新的
+        if (!tk.isNullOrBlank() && rotated) setToken(tk)
+        return RefreshResult(tk, rotated, exp)
     }
+
+    /** 距到期不足约 6 小时才需要续期（文档要求，避免无意义地频繁续期） */
+    fun needsRefresh(expiresAt: Long): Boolean =
+        expiresAt > 0 && expiresAt - System.currentTimeMillis() < 6 * 60 * 60 * 1000L
 
     fun logout() {
         runCatching { get("/logout") }

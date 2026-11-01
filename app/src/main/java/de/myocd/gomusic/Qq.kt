@@ -205,11 +205,17 @@ object Qq {
             params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
         }
         val url = sb.toString().trimEnd('&', '?')
+        // 凭证优先用显式 token，其次取 cookie 里的那条。
+        // 之前这里只看 token：扫码成功但响应体里没给 token 时，
+        // 后续搜索、取歌词就全成了匿名请求（日志里能直接看到）
+        if (token.isBlank()) credFromCookie()?.let { setToken(it) }
+        val cred = currentCredential()
+        NmLog.note("QQ 请求：$path  凭证=${if (cred.isNullOrBlank()) "无（匿名）" else "有"}")
         // 失败重试一次即可：QQ 接口偶发抖动，但重试太多会把切歌拖慢
         repeat(2) { attempt ->
             try {
                 val b = Request.Builder().url(url)
-                if (token.isNotBlank()) b.addHeader("X-QQ-Session", token)
+                if (!cred.isNullOrBlank()) b.addHeader("X-QQ-Session", cred)
                 val req = b.build()
                 client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
@@ -252,14 +258,16 @@ object Qq {
     private val JSON_MT by lazy { "application/json; charset=utf-8".toMediaType() }
 
     private fun post(path: String, body: String): JsonObject? {
-        if (token.isBlank()) {
+        if (token.isBlank()) credFromCookie()?.let { setToken(it) }
+        val cred = currentCredential()
+        if (cred.isNullOrBlank()) {
             NmLog.note("QQ 写入接口未登录：$path")
             return null
         }
         val url = BASE + path
         return try {
             val b = Request.Builder().url(url)
-                .addHeader("X-QQ-Session", token)
+                .addHeader("X-QQ-Session", cred)
                 .addHeader("Content-Type", "application/json")
                 .post(body.toRequestBody(JSON_MT))
             client.newCall(b.build()).execute().use { r ->

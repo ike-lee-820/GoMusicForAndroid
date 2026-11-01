@@ -957,6 +957,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 NmLog.note("搜索完成：歌曲 " + s.size + " / 专辑 " + a.size + " / 歌手 " + ar.size)
                 if (s.isEmpty() && a.isEmpty() && ar.isEmpty()) {
+                    // 同时记下服务端错误码与凭证状态：
+                    // 前者区分「上游拒绝(502)」与「真的没有结果」，
+                    // 后者确认这次搜索是不是匿名发出的
+                    NmLog.note(
+                        "搜索全空：关键词=$kw 类型=$kind " +
+                            "服务端错误码=${Qq.lastServerError} " +
+                            "凭证=${if (Qq.currentCredential().isNullOrBlank()) "无（匿名）" else "有"}"
+                    )
                     // 502 是「上游拒绝」，不等于没有结果；静默显示空列表
                     // 会让人以为是搜不到，这里明确说出来
                     val code = Qq.lastServerError

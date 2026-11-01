@@ -409,7 +409,7 @@ object Qq {
             "page" to pageOf(offset, limit).toString(),
             "limit" to limit.coerceAtMost(20).toString(),
         ) ?: return emptyList()
-        return itemsOf(r, "items", "singers", "artists", "list").mapNotNull { e ->
+        val list = itemsOf(r, "items", "singers", "artists", "list").mapNotNull { e ->
             val o = e.asObj() ?: return@mapNotNull null
             // 歌手条目的标识可能是 singerMid / mid / singer_mid，
             // 也可能只有数字 id —— 只认一种会让整列歌手解析不出来
@@ -430,6 +430,11 @@ object Qq {
                 qqMid = mid,
             )
         }.distinctBy { it.qqMid }
+
+        NmLog.note(if (list.isEmpty())
+            "QQ 搜索歌手无结果：$keywords 原始=${r.toString().take(300)}"
+        else "QQ 搜索歌手：$keywords -> ${list.size}")
+        return list
     }
 
     fun hotSearch(): List<String> {
@@ -519,7 +524,9 @@ object Qq {
             NmLog.note("QQ 取到播放地址 mid=$mid quality=$quality")
         } else {
             urlMiss[k] = System.currentTimeMillis()
-            NmLog.note("QQ 无播放地址 mid=$mid quality=$quality")
+            // 记录原始响应：到底是空 url、还是结构对不上、还是接口报错，
+            // 只看「无播放地址」无法区分
+            NmLog.note("QQ 无播放地址 mid=$mid quality=$quality 原始=${r?.toString()?.take(400) ?: "响应为 null"}")
         }
         return url
     }

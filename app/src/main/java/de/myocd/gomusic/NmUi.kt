@@ -40,13 +40,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** 网易云登录 / 注册弹层：二维码登录 或 短信验证码登录注册 */
+/**
+ * QQ 音乐登录弹层：扫码登录。
+ *
+ * 通道只有「手机 QQ」和「微信」两个 —— 文档里的 `qqmusic`
+ * （QQ 音乐 App 扫码）走 MQTT、需要长连接中继，在手机上不可靠，已禁用。
+ * 未登录时不能使用 QQ 音乐功能（搜索、播放、歌单同步都要求有效会话）。
+ */
 @Composable
-fun NmLoginSheet(vm: MainViewModel) {
+fun QqLoginSheet(vm: MainViewModel) {
     val go = LocalGo.current
-    var tab by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) { vm.loadQrChannels() }
     GoSheet({
-        vm.setNmLogin(false)
+        vm.setQqLogin(false)
         vm.stopQrLogin()
     }) {
         Column(
@@ -54,21 +60,26 @@ fun NmLoginSheet(vm: MainViewModel) {
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt("网易云账号", 16, Modifier.weight(1f), FontWeight.SemiBold)
+                Txt("登录 QQ 音乐", 16, Modifier.weight(1f), FontWeight.SemiBold)
                 IconBtn(Icons.Outlined.Close, "关闭") {
-                    vm.setNmLogin(false)
+                    vm.setQqLogin(false)
                     vm.stopQrLogin()
                 }
             }
-            Txt("登录后才会搜索网易云曲库；未登录时只使用本站曲库", 12, color = go.muted)
+            Txt("登录后才能使用 QQ 音乐曲库：搜索、播放与个人歌单同步", 12, color = go.muted)
             Spacer(Modifier.height(12.dp))
+            // 通道切换：手机 QQ / 微信
             Row {
-                GoButton("扫码登录", primary = tab == 0) { tab = 0 }
-                Spacer(Modifier.width(8.dp))
-                GoButton("短信登录 / 注册", primary = tab == 1) { tab = 1 }
+                if ("qq" in vm.qrChannels) {
+                    GoButton("手机 QQ 扫码", primary = vm.qrChannel == "qq") { vm.startQrLogin("qq") }
+                    Spacer(Modifier.width(8.dp))
+                }
+                if ("wechat" in vm.qrChannels) {
+                    GoButton("微信扫码", primary = vm.qrChannel == "wechat") { vm.startQrLogin("wechat") }
+                }
             }
             Spacer(Modifier.height(14.dp))
-            if (tab == 0) QrLogin(vm) else PhoneLogin(vm)
+            QrLogin(vm)
             Spacer(Modifier.height(16.dp))
         }
     }

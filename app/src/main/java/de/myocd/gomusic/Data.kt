@@ -57,6 +57,11 @@ data class Song(
      */
     val songMid: String = "",
     /**
+     * QQ 音乐的 songid（数字，与 [songMid] 成对出现）。
+     * 歌单增删歌曲接口要求数字 id，只认 songid 不认 mid。
+     */
+    val songId: Long = 0,
+    /**
      * QQ 音乐的 MV vid（字符串，空串 = 没有 MV）。
      * QQ 的 MV 标识是 vid（如 "a0033..."），不是数字，不能复用 [mvId]。
      */

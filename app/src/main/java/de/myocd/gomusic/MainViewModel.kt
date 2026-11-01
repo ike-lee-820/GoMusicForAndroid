@@ -188,7 +188,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 实际上搜索、取歌、取地址未登录也能用（只是音质档位少一些），
      * 只有「同步我的歌单 / 我喜欢的音乐」这类个人数据才真的需要登录。
      */
-    val nmReady: Boolean get() = nmOn
+    /**
+     * QQ 音乐功能是否可用。
+     *
+     * 必须已登录：个人歌单、高音质播放链接都要求有效会话，
+     * 匿名时服务端返回空，与其让用户看到一堆「没音源」，不如直接要求登录。
+     */
+    val nmReady: Boolean get() = nmOn && qqUser != null
     var nmSearching by mutableStateOf(false); private set
     var nmLoadingMore by mutableStateOf(false); private set
     /** 歌曲是否还有下一页（滑到底继续加载） */
@@ -282,55 +288,102 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var nmQr by mutableStateOf<String?>(null); private set
     var nmQrTip by mutableStateOf("正在获取二维码"); private set
     var nmBusy by mutableStateOf(false); private set
+    /** 当前二维码的 key：离开登录页时用来取消 */
+    private var qrKey: String? = null
 
-    fun startQrLogin() {
+    /**
+     * 扫码登录 QQ 音乐。
+     *
+     * 通道只允许 `qq`（手机 QQ）与 `wechat`（微信）——
+     * `qqmusic` 通道走 MQTT、需要长连接中继，在手机上不可靠，已禁用。
+     */
+    fun startQrLogin(channel: String = "qq") {
         qrJob?.cancel()
         nmQr = null
         nmQrTip = "正在获取二维码"
+        qrChannel = channel
         qrJob = viewModelScope.launch(Dispatchers.IO) {
-            val key = runCatching { Netease.qrKey() }.getOrNull()
+            val key = runCatching { Qq.qrKey(channel) }.getOrNull()
             if (key.isNullOrBlank()) {
-                withContext(Dispatchers.Main) { nmQrTip = "获取二维码失败，请检查网络" }
+                withContext(Dispatchers.Main) { nmQrTip = "获取二维码失败，请检查网络或点此重试" }
                 return@launch
             }
-            val img = runCatching { Netease.qrImage(key) }.getOrNull()
+            qrKey = key
+            val img = runCatching { Qq.qrImage(key) }.getOrNull()
+            val tip = if (channel == "wechat") "用微信扫码" else "用手机 QQ 扫码"
             withContext(Dispatchers.Main) {
                 nmQr = img
-                nmQrTip = if (img == null) "获取二维码失败" else "用网易云音乐 App 扫码"
+                nmQrTip = if (img == null) "获取二维码失败，点此重试" else tip
             }
             if (img == null) return@launch
             while (true) {
                 delay(1500)
-                val st = runCatching { Netease.qrCheck(key) }.getOrNull() ?: continue
+                val st = runCatching { Qq.qrCheck(key) }.getOrNull() ?: continue
                 when (st.code) {
                     803 -> {
-                        // 授权成功：拿到凭证就立刻写入，不再依赖后续刷新
-                        val ck = st.cookie
+                        val tk = st.token
                         withContext(Dispatchers.Main) {
-                            if (ck.isNullOrBlank()) {
+                            if (tk.isNullOrBlank()) {
                                 nmQrTip = "授权完成但未拿到登录凭证，请重新扫码"
                                 toast("登录未完成，请重新扫码")
                             } else {
                                 nmQr = null
-                                nmLogin(ck, null)
+                                onQqLogin(tk)
                             }
                         }
                         return@launch
                     }
-                    800 -> {
-                        withContext(Dispatchers.Main) { nmQrTip = "二维码已过期，点此重新获取" }
-                        return@launch
-                    }
+                    800 -> withContext(Dispatchers.Main) {
+                        // 失败原因优先显示服务端给的可读提示
+                        nmQrTip = st.message?.takeIf { it.isNotBlank() } ?: "二维码已过期，点此重新获取"
+                    }.let { return@launch }
                     802 -> withContext(Dispatchers.Main) { nmQrTip = "已扫码，请在手机上确认" }
-                    801 -> withContext(Dispatchers.Main) { nmQrTip = "用网易云音乐 App 扫码" }
+                    801 -> withContext(Dispatchers.Main) {
+                        nmQrTip = if (channel == "wechat") "用微信扫码" else "用手机 QQ 扫码"
+                    }
                 }
             }
+        }
+    }
+
+    /** 拿到 token：保存会话、读昵称、关弹层 */
+    private fun onQqLogin(token: String) {
+        prefs.qqToken = token
+        Qq.setToken(token)
+        showQqLogin = false
+        homeLoaded = false
+        viewModelScope.launch(Dispatchers.IO) {
+            val n = runCatching { Qq.status() }.getOrNull()?.takeIf { it.isNotBlank() } ?: "QQ 音乐用户"
+            prefs.qqAccount = n
+            withContext(Dispatchers.Main) {
+                qqUser = n
+                toast("已登录 QQ 音乐：$n")
+            }
+            // 登录后把本地歌单挂到 QQ 云端
+            withContext(Dispatchers.Main) { syncAllPlaylistsToQq() }
+        }
+    }
+
+    /** 可用的扫码通道（手机 QQ / 微信） */
+    var qrChannels by mutableStateOf(listOf("qq", "wechat")); private set
+    var qrChannel by mutableStateOf("qq"); private set
+
+    fun loadQrChannels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = runCatching { Qq.channels() }.getOrDefault(listOf("qq", "wechat"))
+            withContext(Dispatchers.Main) { qrChannels = c }
         }
     }
 
     fun stopQrLogin() {
         qrJob?.cancel()
         nmQr = null
+        // 通知服务端取消这个二维码，别让它一直留着
+        val k = qrKey
+        if (!k.isNullOrBlank()) {
+            viewModelScope.launch(Dispatchers.IO) { runCatching { Qq.qrCancel(k) } })
+        }
+        qrKey = null
     }
 
     /** 发送短信验证码 */
@@ -619,24 +672,65 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
 
     // ================= 外部曲库（QQ 音乐）=================
-    // 强制开启：不再需要登录，也不再展示登录入口
+    /** QQ 音乐账号昵称，null = 未登录 */
+    var qqUser by mutableStateOf(prefs.qqAccount.ifBlank { null }); private set
+
+    /** 登录弹层：未登录时用到 QQ 音乐功能就会弹出 */
+    var showQqLogin by mutableStateOf(false); private set
+
     init {
         Netease.cookie = prefs.nmCookie
+        // 恢复上次登录的会话；失效会在 refreshQqAccount 里被发现并清空
+        Qq.setToken(prefs.qqToken)
         nmOn = true
         prefs.nmEnabled = true
     }
 
-    /**
-     * 外部曲库开关。
-     *
-     * 现在强制开启、且不再需要登录：搜索、播放、歌词走 QQ 音乐，
-     * 匿名即可用（高音质取决于账号，但这里不再有登录入口）。
-     * 老歌单里的网易云歌曲仍按原来的方式请求，与这个开关无关。
-     */
+    /** 外部曲库开关：强制开启（关闭入口已取消） */
     fun setNmEnabled(on: Boolean) {
         nmOn = true
         prefs.nmEnabled = true
-        Netease.cookie = prefs.nmCookie
+    }
+
+    fun setQqLogin(v: Boolean) { showQqLogin = v }
+
+    /** 用到 QQ 音乐功能前先确认登录，未登录就弹登录页 */
+    fun ensureQqLogin(): Boolean {
+        if (nmReady) return true
+        showQqLogin = true
+        return false
+    }
+
+    fun qqLogout() {
+        Qq.logout()
+        prefs.qqToken = ""
+        prefs.qqAccount = ""
+        qqUser = null
+        nmSongs = emptyList()
+        nmAlbums = emptyList()
+        nmArtists = emptyList()
+        homeLoaded = false
+        toast("已退出 QQ 音乐")
+    }
+
+    /** 校验会话是否还有效，失效则清空登录态 */
+    fun refreshQqAccount() {
+        if (prefs.qqToken.isBlank()) { qqUser = null; return }
+        viewModelScope.launch(Dispatchers.IO) {
+            val name = runCatching { Qq.status() }.getOrNull()
+            withContext(Dispatchers.Main) {
+                if (name.isNullOrBlank()) {
+                    prefs.qqToken = ""
+                    prefs.qqAccount = ""
+                    Qq.setToken(null)
+                    qqUser = null
+                    toast("QQ 音乐登录已失效，请重新扫码")
+                } else {
+                    prefs.qqAccount = name
+                    qqUser = name
+                }
+            }
+        }
     }
 
     /** 打开/关闭登录弹层 */
@@ -731,12 +825,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmHasMore = false
         nmAlbumsHasMore = false
         nmArtistsHasMore = false
-        if (!nmReady || kw.isEmpty()) {
+        if (kw.isEmpty()) {
             nmSearching = false
             nmLoadingMore = false
             nmSongs = emptyList()
             nmAlbums = emptyList()
             nmArtists = emptyList()
+            return
+        }
+        // 强制登录：未登录不能搜 QQ 音乐，弹登录页而不是静默空结果
+        if (!nmReady) {
+            nmSearching = false
+            nmSongs = emptyList()
+            nmAlbums = emptyList()
+            nmArtists = emptyList()
+            showQqLogin = true
             return
         }
         val gen = ++nmGen
@@ -2171,6 +2274,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         keepForPlaylist(songsByIds(ids))
         val p = Playlist(UUID.randomUUID().toString(), name.trim(), ids, cover)
         savePl(playlists + p)
+        // 立刻在 QQ 音乐建一张同名的，之后这个歌单的所有改动都跟着走
+        createQqPlaylist(p)
         return p
     }
 
@@ -2264,6 +2369,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             if (q.id == id) q.copy(songs = (q.songs + ssids).distinct()) else q
         })
         syncNmAdd(p, ssids)
+        // QQ 音乐歌单：同步加歌（网易云那份由 syncNmAdd 处理）
+        if (p.qqTid.isNotBlank()) pushQq("add", p.qqTid, songs = songsByIds(ssids))
         toast("已加入歌单")
     }
 
@@ -2327,6 +2434,65 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return true
     }
 
+    // ================= QQ 音乐歌单同步 =================
+    /**
+     * 把本地歌单的改动推到 QQ 云端。
+     *
+     * 策略是「本地先改、云端随后」：本地操作立即生效（离线也能用），
+     * 云端写入在后台异步进行，失败只提示不回滚 —— 文档要求写入不自动重试，
+     * 重试可能造成重复添加，所以失败就让用户自己再点一次。
+     */
+    private fun pushQq(op: String, tid: String, songs: List<Song> = emptyList(), value: String = "") {
+        if (tid.isBlank() || !nmReady) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val r = runCatching {
+                when (op) {
+                    "rename" -> Qq.renamePlaylist(tid, value)
+                    "delete" -> Qq.deletePlaylist(tid)
+                    "add" -> Qq.playlistTracks(tid, "add", songs)
+                    "del" -> Qq.playlistTracks(tid, "del", songs)
+                    else -> Qq.WriteResult(false, false, "未知操作")
+                }
+            }.getOrNull()
+            withContext(Dispatchers.Main) {
+                if (r?.ok != true) {
+                    NmLog.note("QQ 歌单同步失败 op=$op tid=$tid msg=${r?.message}")
+                    toast("QQ 歌单同步失败${r?.message?.let { "：$it" } ?: ""}")
+                }
+            }
+        }
+    }
+
+    /** 本地歌单在 QQ 云端建一张同名的，并把已有歌曲加进去 */
+    private fun createQqPlaylist(p: Playlist) {
+        if (!nmReady) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val tid = runCatching { Qq.createPlaylist(p.name) }.getOrNull()
+            if (tid.isNullOrBlank()) {
+                withContext(Dispatchers.Main) { toast("在 QQ 音乐创建歌单失败（本地已保存）") }
+                return@launch
+            }
+            savePl(playlists.map { if (it.id == p.id) it.copy(qqTid = tid) else it })
+            // 建好再把已有歌曲灌进去；空歌单不用发这次请求
+            val songs = songsByIds(p.songs)
+            if (songs.isNotEmpty()) {
+                val r = runCatching { Qq.playlistTracks(tid, "add", songs) }.getOrNull()
+                withContext(Dispatchers.Main) {
+                    if (r?.ok != true) toast("歌单已创建，但已有歌曲未同步到 QQ 音乐")
+                }
+            }
+        }
+    }
+
+    /** 登录后补建：把还没有 qqTid 的本地歌单都建到云端 */
+    fun syncAllPlaylistsToQq() {
+        if (!nmReady) return
+        val todo = playlists.filter { it.qqTid.isBlank() }
+        if (todo.isEmpty()) return
+        NmLog.note("补建 QQ 歌单 ${todo.size} 张")
+        todo.forEach { createQqPlaylist(it) }
+    }
+
     /** 名字已被占用时追加 (2)(3)…，保证不覆盖已有歌单 */
     private fun uniqueName(base: String): String {
         val used = playlists.map { it.name }.toHashSet()
@@ -2340,6 +2506,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val p = playlists.firstOrNull { it.id == id } ?: return
         val n = name.trim()
         savePl(playlists.map { if (it.id == id) it.copy(name = n) else it })
+        // QQ 音乐歌单：改名回写云端
+        if (p.qqTid.isNotBlank()) pushQq("rename", p.qqTid, value = n)
         // 网易云歌单：改名回写云端
         if (p.nmId > 0L && prefs.nmCookie.isNotBlank()) {
             viewModelScope.launch(Dispatchers.IO) {
@@ -2349,7 +2517,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun deletePlaylist(id: String) = savePl(playlists.filter { it.id != id })
+    fun deletePlaylist(id: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        // QQ 音乐歌单：先记着 tid 再删本地（删掉后就查不到了）
+        if (p.qqTid.isNotBlank()) pushQq("delete", p.qqTid)
+        savePl(playlists.filter { it.id != id })
+    }
 
     fun movePl(id: String, from: Int, to: Int) {
         savePl(playlists.map { p ->
@@ -2366,6 +2539,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val p = playlists.firstOrNull { it.id == id } ?: return
         savePl(playlists.map { q -> if (q.id == id) q.copy(songs = q.songs - ssid) else q })
         syncNmRemove(p, listOf(ssid))
+        // QQ 音乐歌单：同步删歌
+        if (p.qqTid.isNotBlank()) pushQq("del", p.qqTid, songs = songsByIds(listOf(ssid)))
     }
 
     /**

@@ -30,6 +30,12 @@ data class Playlist(
      * 否则每次同步都会新建一份重名的歌单。
      */
     val nmId: Long = 0L,
+    /**
+     * 关联的 QQ 音乐歌单 tid（空 = 只存在于本地）。
+     * 文档里 tid 用字符串表示（如 "70001"），所以不能复用 [nmId]。
+     * 有了它，新建/改名/加歌/删歌才能定位到云端那一张歌单。
+     */
+    val qqTid: String = "",
 )
 
 /** 对应网页端 localStorage：play_counts / user_playlists / play_mode / quality / theme_color */
@@ -129,6 +135,16 @@ class Prefs(ctx: Context) {
     var fontWght: Int
         get() = sp.getInt("font_wght", 450).coerceIn(250, 900)
         set(v) { sp.edit().putInt("font_wght", v.coerceIn(250, 900)).apply() }
+
+    /** QQ 音乐登录会话 token（扫码成功后保存，随请求以 X-QQ-Session 带上） */
+    var qqToken: String
+        get() = sp.getString("qq_token", "") ?: ""
+        set(v) { sp.edit().putString("qq_token", v).apply() }
+
+    /** QQ 音乐账号昵称 */
+    var qqAccount: String
+        get() = sp.getString("qq_account", "") ?: ""
+        set(v) { sp.edit().putString("qq_account", v).apply() }
 
     var nmAccount: String
         get() = sp.getString("nm_account", "") ?: ""

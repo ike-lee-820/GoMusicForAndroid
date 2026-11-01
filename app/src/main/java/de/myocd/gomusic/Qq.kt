@@ -6,7 +6,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
@@ -27,6 +29,20 @@ import java.util.concurrent.ConcurrentHashMap
 object Qq {
 
     const val BASE = "https://qq.mapi.myocd.de5.net"
+
+    /**
+     * 登录会话 token。
+     *
+     * 扫码成功后拿到，之后**所有**请求都通过 `X-QQ-Session` 头带上 ——
+     * 个人歌单、取高音质播放链接都要求有效会话，匿名拿不到。
+     * 由 [MainViewModel] 登录后写入，退出时清空。
+     */
+    var token: String = ""
+        private set
+
+    fun setToken(t: String?) { token = t.orEmpty() }
+
+    val loggedIn: Boolean get() = token.isNotBlank()
 
     /** 音质档位：与 /getMusicPlay 的 quality 参数一致 */
     val LEVELS = listOf("128", "320", "flac", "ape", "m4a")
@@ -111,7 +127,9 @@ object Qq {
         // 失败重试一次即可：QQ 接口偶发抖动，但重试太多会把切歌拖慢
         repeat(2) { attempt ->
             try {
-                val req = Request.Builder().url(url).build()
+                val b = Request.Builder().url(url)
+                if (token.isNotBlank()) b.addHeader("X-QQ-Session", token)
+                val req = b.build()
                 Api.client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
                     NmLog.req(url)
@@ -129,6 +147,42 @@ object Qq {
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+
+    /**
+     * POST JSON。
+     *
+     * 歌单写入接口（创建/改名/删除/增删歌曲）全是 POST + JSON。
+     * 文档强调「写入不自动重试」，所以这里**只发一次**，
+     * 失败交给调用方决定，避免重复写入造成脏数据。
+     */
+    private val JSON_MT by lazy { "application/json; charset=utf-8".toMediaType() }
+
+    private fun post(path: String, body: String): JsonObject? {
+        if (token.isBlank()) {
+            NmLog.note("QQ 写入接口未登录：$path")
+            return null
+        }
+        val url = BASE + path
+        return try {
+            val b = Request.Builder().url(url)
+                .addHeader("X-QQ-Session", token)
+                .addHeader("Content-Type", "application/json")
+                .post(body.toRequestBody(JSON_MT))
+            Api.client.newCall(b.build()).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.req("POST " + url + " " + body.take(200))
+                NmLog.res(url, r.code, t.take(400))
+                if (!r.isSuccessful || t.isBlank()) null
+                else json.parseToJsonElement(t) as? JsonObject
+            }
+        } catch (e: Exception) {
+            NmLog.note("QQ POST 失败：$path -> ${e.message}")
+            null
+        }
+    }
+
+    /** code == 200 才算成功（写入接口用 changed 标记是否真的有变化） */
+    private fun JsonObject.ok(): Boolean = num("code")?.toInt() == 200
 
     // ---------- 歌曲解析 ----------
     /**
@@ -148,6 +202,7 @@ object Qq {
         val albumMid = alb?.str("mid", "albumMid", "pmid")
         val albumName = alb?.str("name", "title")
         val mvVid = o.obj("mv")?.str("vid")
+        val songId = o.num("id")?.toLong() ?: 0L
         return Song(
             ssid = QQ_PREFIX + mid,
             title = name.trim(),
@@ -156,6 +211,7 @@ object Qq {
             coverUrl = coverUrl("album", albumMid),
             source = SRC_QQ,
             songMid = mid,
+            songId = songId,
             mvVid = mvVid ?: "",
         )
     }
@@ -392,6 +448,169 @@ object Qq {
             if (!u.isNullOrBlank() && u.startsWith("http")) return u
         }
         return r.obj("data")?.str("url")?.takeIf { it.startsWith("http") }
+    }
+
+    // ---------- 登录（扫码）----------
+    /**
+     * 可用的登录通道。
+     *
+     * 只保留 `qq`（手机 QQ）和 `wechat`（微信）两个通道 ——
+     * `qqmusic`（QQ 音乐 App 扫码）走 MQTT、需要宿主提供长连接中继，
+     * 在手机上不可靠，直接禁用。
+     */
+    fun channels(): List<String> {
+        val r = get("/login/channels") ?: return listOf("qq", "wechat")
+        val arr = itemsOf(r, "channels", "data", "list")
+        val out = arr.mapNotNull { e ->
+            val o = e.asObj() ?: return@mapNotNull null
+            (o.str("channel", "id", "name") ?: (e as? JsonPrimitive)?.content)
+                ?.takeIf { it == "qq" || it == "wechat" }
+        }.distinct()
+        return out.ifEmpty { listOf("qq", "wechat") }
+    }
+
+    /** 第一步：取二维码标识 unikey（未登录也能取，所以不带会话头校验） */
+    fun qrKey(channel: String = "qq"): String? {
+        val r = get("/login/qr/key", "channel" to channel) ?: return null
+        return r.obj("data")?.str("unikey", "key") ?: r.str("unikey", "key")
+    }
+
+    /**
+     * 第二步：取二维码图片。
+     *
+     * 文档明确要求「按 data URL 的实际 MIME 类型显示，不要固定假设为 PNG」，
+     * 所以这里原样返回服务端给的 data URI。
+     */
+    fun qrImage(key: String): String? {
+        val r = get("/login/qr/create", "key" to key) ?: return null
+        val img = r.obj("data")?.str("qrimg") ?: r.str("qrimg")
+        if (img.isNullOrBlank()) return null
+        return if (img.startsWith("data:")) img else "data:image/png;base64,$img"
+    }
+
+    /** 扫码结果：状态码 + 成功后的会话 token + 提示 */
+    data class QrStatus(val code: Int, val token: String?, val message: String?)
+
+    /** 第三步：轮询。801 等待扫码 802 待确认 803 成功 800 过期或失败 */
+    fun qrCheck(key: String): QrStatus {
+        val r = get("/login/qr/check", "key" to key) ?: return QrStatus(0, null, null)
+        val code = r.num("code")?.toInt() ?: 0
+        // 会话 token 可能直接给，也可能包在 data 里
+        val tk = r.str("token")
+            ?: r.obj("data")?.str("token")
+            ?: if (code == 803) r.obj("data")?.str("session", "sessionToken") else null
+        val msg = r.str("message", "msg")
+            ?: r.obj("data")?.str("failureHint", "message")
+            ?: r.obj("data")?.let { d ->
+                // 失败时优先给可展示的提示
+                listOfNotNull(d.str("failureHint"), d.str("failureReason")).firstOrNull()
+            }
+        return QrStatus(code, tk, msg)
+    }
+
+    /** 取消这个二维码（离开登录页时调用，别让服务端一直轮询） */
+    fun qrCancel(key: String) {
+        get("/login/qr/cancel", "key" to key)
+    }
+
+    /** 登录状态：已登录返回用户昵称，否则 null */
+    fun status(): String? {
+        val r = get("/login/status") ?: return null
+        if (r.num("code")?.toInt() != 200) return null
+        val d = r.obj("data") ?: r
+        val name = d.str("nickname", "nick", "name", "userName")
+        return if (d.num("loggedIn", "login")?.toInt() == 1 || !name.isNullOrBlank()) name else null
+    }
+
+    /** 会话续期：距离到期不足约 6 小时才需要 */
+    fun refresh(): String? {
+        val r = post("/login/refresh", "{}") ?: return null
+        return r.obj("data")?.str("token") ?: r.str("token")
+    }
+
+    fun logout() {
+        runCatching { get("/logout") }
+        setToken(null)
+    }
+
+    // ---------- 个人歌单 ----------
+    /** 自建与收藏歌单：tid 用字符串（QQ 的歌单 id 可能很大） */
+    fun userPlaylists(): List<Group> {
+        val r = get("/user/playlist") ?: return emptyList()
+        return itemsOf(r, "playlists", "list", "items").mapNotNull { e ->
+            val o = e.asObj() ?: return@mapNotNull null
+            val tid = o.str("tid", "dissid", "id") ?: return@mapNotNull null
+            val name = o.str("title", "name", "dissname") ?: return@mapNotNull null
+            Group(
+                title = name.trim(),
+                subtitle = o.str("intro", "desc").orEmpty(),
+                cover = o.str("cover", "picUrl", "logo", "imgurl"),
+                songs = emptyList(),
+                source = SRC_QQ,
+                nmKind = "qqplaylist",
+                qqMid = tid,
+            )
+        }
+    }
+
+    /** 歌单详情（本人自建，含不公开歌单） */
+    fun playlistDetail(tid: String): Pair<String, List<Song>>? {
+        if (tid.isBlank()) return null
+        val r = get("/user/playlist-detail", "tid" to tid) ?: return null
+        val songs = songsOf(itemsOf(r, "songs", "songlist", "list", "items"))
+        val name = r.str("name", "title", "dissname") ?: ""
+        return name to songs
+    }
+
+    data class WriteResult(val ok: Boolean, val changed: Boolean, val message: String?)
+
+    /** 创建歌单：返回新建歌单的 tid */
+    fun createPlaylist(name: String): String? {
+        val body = buildString {
+            append("{\"name\":\"")
+            append(name.replace("\"", "\\\"").replace("\n", " "))
+            append("\"}")
+        }
+        val r = post("/user/playlist/create", body) ?: return null
+        if (!r.ok()) return null
+        return r.obj("data")?.str("tid", "id") ?: r.str("tid", "id")
+    }
+
+    fun renamePlaylist(tid: String, name: String): WriteResult {
+        val body = buildString {
+            append("{\"tid\":\"").append(tid)
+            append("\",\"name\":\"").append(name.replace("\"", "\\\"").replace("\n", " "))
+            append("\"}")
+        }
+        val r = post("/user/playlist/rename", body)
+            ?: return WriteResult(false, false, "网络失败")
+        return WriteResult(r.ok(), r.num("changed")?.toInt() == 1 || r.obj("data")?.num("changed")?.toInt() == 1,
+            r.str("message"))
+    }
+
+    fun deletePlaylist(tid: String): WriteResult {
+        val r = post("/user/playlist/delete", "{\"tid\":\"$tid\"}")
+            ?: return WriteResult(false, false, "网络失败")
+        return WriteResult(r.ok(), true, r.str("message"))
+    }
+
+    /**
+     * 歌单增删歌曲。
+     *
+     * 文档：每次 1–100 首，只支持普通歌曲类型 0。
+     * 这里需要歌曲的 **songid**（数字），而搜索结果里带的是 id，
+     * 取不到 id 的歌直接跳过 —— 不能猜，猜错了会加到错的歌。
+     */
+    fun playlistTracks(tid: String, op: String, songs: List<Song>): WriteResult {
+        val items = songs.mapNotNull { s ->
+            val id = s.songId.takeIf { it > 0 } ?: return@mapNotNull null
+            "{\"id\":$id,\"type\":0}"
+        }
+        if (items.isEmpty()) return WriteResult(false, false, "没有可同步的歌曲")
+        val body = "{\"tid\":\"$tid\",\"op\":\"$op\",\"songs\":[${items.joinToString(",")}]}"
+        val r = post("/user/playlist/tracks", body)
+            ?: return WriteResult(false, false, "网络失败")
+        return WriteResult(r.ok(), true, r.str("message"))
     }
 
     // ---------- 推荐 / 排行榜 ----------

@@ -356,9 +356,8 @@ fun MainScreen(vm: MainViewModel) {
 
         if (vm.showQueue) QueueSheet(vm)
         if (vm.showSettings) SettingsSheet(vm)
-        // 登录入口已取消：外部曲库（QQ 音乐）匿名即可搜索与播放，
-        // 不再需要网易云扫码 / 验证码登录
-        if (false) NmLoginSheet(vm)
+        // QQ 音乐登录：未登录时使用 QQ 音乐功能（搜索/播放/歌单）会弹出
+        if (vm.showQqLogin) QqLoginSheet(vm)
         if (vm.showHistory) HistorySheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
@@ -3314,11 +3313,11 @@ fun SettingsSheet(vm: MainViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Txt("接入网易云曲库", 14, weight = FontWeight.Medium)
+                    Txt("接入 QQ 音乐曲库", 14, weight = FontWeight.Medium)
                     Txt(
                         if (!vm.nmOn) "关闭：仅使用本站曲库"
-                        else "已开启：QQ 音乐曲库，无需登录即可搜索与播放"
-                        else "已开启：${vm.nmUser}",
+                        else if (vm.qqUser == null) "已开启：需要登录才能使用"
+                        else "已开启：${vm.qqUser}，歌单已同步",
                         12, color = go.muted,
                     )
                 }
@@ -3337,19 +3336,19 @@ fun SettingsSheet(vm: MainViewModel) {
                 VS(8)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Txt(
-                        if (vm.nmUser.isNullOrBlank()) "QQ 音乐曲库：无需登录，搜索与播放照常用"
-                        else "已登录：${vm.nmUser}",
+                        if (vm.qqUser == null) "未登录：QQ 音乐曲库与歌单同步需要先登录"
+                        else "已登录：${vm.qqUser}",
                         12, Modifier.weight(1f), color = go.muted,
                     )
-                    if (vm.nmUser.isNullOrBlank()) {
-                        GoButton("登录 / 注册", primary = true) { vm.toast("已取消登录：QQ 音乐无需登录即可使用") }
-                    } else {
-                        GoButton("退出") { vm.nmLogout() }
+                    {
+                        GoButton(if (vm.qqUser == null) "登录" else "退出登录", primary = true) {
+                            if (vm.qqUser == null) vm.setQqLogin(true) else vm.qqLogout()
+                        }
                     }
                 }
                 VS(6)
                 Txt(
-                    "开启并登录后，搜索会同时展示两套曲库的结果（不合并），网易云结果在名字前带「(网)」",
+                    "登录后搜索只展示 QQ 音乐的结果；新建歌单会自动在 QQ 音乐创建，加歌、改名、删歌实时同步",
                     12, color = go.muted,
                 )
                 VS(6)

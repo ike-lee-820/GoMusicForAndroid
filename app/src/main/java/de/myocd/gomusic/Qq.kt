@@ -411,8 +411,15 @@ object Qq {
         ) ?: return emptyList()
         return itemsOf(r, "items", "singers", "artists", "list").mapNotNull { e ->
             val o = e.asObj() ?: return@mapNotNull null
-            val mid = o.str("mid", "singerMid", "singer_mid") ?: return@mapNotNull null
-            val name = o.str("name", "title", "singerName") ?: return@mapNotNull null
+            // 歌手条目的标识可能是 singerMid / mid / singer_mid，
+            // 也可能只有数字 id —— 只认一种会让整列歌手解析不出来
+            val mid = o.str("mid", "singerMid", "singer_mid", "singerMID")
+                ?: o.num("id", "singerId", "singer_id")?.toLong()?.takeIf { it > 0 }?.toString()
+                ?: o.obj("singerInfo")?.str("mid")
+            if (mid.isNullOrBlank()) return@mapNotNull null
+            val name = o.str("name", "title", "singerName", "singer_name")
+                ?: o.obj("singerInfo")?.str("name")
+            if (name.isNullOrBlank()) return@mapNotNull null
             Group(
                 title = name.trim(),
                 subtitle = "",
@@ -499,7 +506,8 @@ object Qq {
         }
         val r = get("/getMusicPlay/$mid", "quality" to quality, "resType" to "play")
         val data = r?.obj("data")
-        val pu = data?.obj("playUrl") ?: r?.obj("playUrl")
+        // 结构一：data.playUrl 里按 songmid 索引；结构二：data 或顶层直接是对象
+        val pu = data?.obj("playUrl") ?: r?.obj("playUrl") ?: data ?: r
         // 结构一：playUrl 是对象，键为 songmid
         val direct = pu?.get(mid)?.asObj()?.str("url")
             ?: pu?.values?.firstOrNull()?.asObj()?.str("url")

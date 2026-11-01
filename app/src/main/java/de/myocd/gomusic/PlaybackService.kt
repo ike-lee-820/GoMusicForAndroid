@@ -78,10 +78,23 @@ class PlaybackService : MediaSessionService() {
                     val qmid = qqMidOf(ssid)
                     val url = try {
                         if (qmid != null) {
-                            // QQ 音乐：按 songmid 取地址，quality 用当前音质偏好。
-                            // 匿名即可取链（高音质取决于账号），这里不要求登录
-                            Qq.audioUrl(qmid, Qq.qualityOf(q))
-                                ?: throw IOException("QQ 音乐没有可用音源")
+                            // QQ 音乐：按 songmid 取地址。匿名即可取链
+                            // （高音质取决于账号），这里不要求登录。
+                            // 首选档位拿不到时依次降档：账号无权限时高音质会返回
+                            // 空 url，直接放弃整首就播不了了
+                            val wanted = Qq.qualityOf(q)
+                            val order = listOf(wanted) + Qq.LEVELS.filter { it != wanted }
+                            var got: String? = null
+                            for (lv in order) {
+                                got = Qq.audioUrl(qmid, lv)
+                                if (got != null) {
+                                    if (lv != wanted) {
+                                        NmLog.note("QQ 音质 $wanted 无音源，改用 $lv")
+                                    }
+                                    break
+                                }
+                            }
+                            got ?: throw IOException("QQ 音乐没有可用音源")
                         } else if (nid != null) {
                             // 老歌单里可能还有网易云的歌，按原方式请求，避免播不了
                             Netease.cookie = p.nmCookie

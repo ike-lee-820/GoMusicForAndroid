@@ -488,14 +488,29 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 网易云歌曲不在 songs 里，出现过就记一份，播放页/歌词才能取到 */
     private val nmKnown = java.util.concurrent.ConcurrentHashMap<String, Song>()
+    /**
+     * 保留搜索出来的外部曲库歌曲。
+     *
+     * 网易云那份存 [nmKnown]，QQ 那份存 [qqKnown]：
+     * 播放栏要按 ssid 查出标题与封面，而搜索结果切走后就没了，
+     * 不缓存的话 QQ 歌曲播放时播放栏显示不出来。
+     */
     private fun keepNetease(l: List<Song>) {
         val nm = l.filter { it.source == SRC_NETEASE }
-        if (nm.isEmpty()) return
+        val qq = l.filter { it.source == SRC_QQ }
+        if (nm.isEmpty() && qq.isEmpty()) return
         nm.forEach { nmKnown[it.ssid] = it }
+        qq.forEach { qqKnown[it.ssid] = it }
         // 同时落一份快照（持久化），这样切界面 / 重启后历史仍能查到
-        rememberSongs(nm)
+        rememberSongs(nm + qq)
     }
-    val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] ?: nmKnown[it] } }
+
+    /** QQ 音乐歌曲缓存：播放栏、歌词页按 ssid 在这里查 */
+    private val qqKnown = java.util.concurrent.ConcurrentHashMap<String, Song>()
+
+    val currentSong: Song? by derivedStateOf {
+        curSsid?.let { songMap[it] ?: nmKnown[it] ?: qqKnown[it] }
+    }
 
     // ---- MV 可用性：只有确认拿得到地址才显示按钮 ----
     /** ssid -> 有没有 MV（确认过的才在表里） */
@@ -2128,14 +2143,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             counts = m
             prefs.playCounts = m
             pushHistory(id) // 本站与网易云统一记录
-            rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
+            rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: qqKnown[id] ?: snapshots[id]))
         }
-        updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        updateCover((songMap[id] ?: nmKnown[id] ?: qqKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
         // QQ 音乐歌曲：歌词走 QQ 接口；自带翻译按时间轴回填到每一行
         if (isQq(id)) {
             if (count) pushHistory(id)
             val mid = qqMidOf(id)
-            val song = songMap[id] ?: snapshots[id]
+            val song = songMap[id] ?: qqKnown[id] ?: snapshots[id]
             // 有 vid 就是有 MV：QQ 的 vid 在搜索结果里直接给了，
             // 不像网易云那样 id 非 0 也不代表真能播，不用再发请求确认
             if (!song?.mvVid.isNullOrBlank()) mvOk[id] = true

@@ -200,7 +200,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * 个人数据与写入类功能是否可用：我的歌单、歌单同步、收藏。
      *
-     * 文档里 `/user/*` 全部需要登录，写入接口更是必须先有会话，
+     * 文档里 user 系列接口全部需要登录，写入接口更是必须先有会话，
      * 匿名请求只会拿到空或报错，所以这一类仍然强制登录。
      */
     val qqLibReady: Boolean get() = nmOn && qqUser != null

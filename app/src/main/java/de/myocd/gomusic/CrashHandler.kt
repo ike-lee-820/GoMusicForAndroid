@@ -20,7 +20,7 @@ object CrashHandler {
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             runCatching {
                 NmLog.note("进入崩溃处理 线程=${t.name}")
-                NmLog.crash(e, "未捕获异常")
+                NmLog.crash(e, "未捕获异常（线程 ${t.name}）")
             }
             // 交给系统默认处理（弹崩溃对话框）
             old?.uncaughtException(t, e)

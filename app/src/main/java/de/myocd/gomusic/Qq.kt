@@ -315,16 +315,21 @@ object Qq {
      * 只按顶层 key 找会在嵌套时取到空 —— 搜索「什么都不显示」就出在这里。
      * 所以这里做有限深度的递归查找，而不是写死路径。
      */
-    private fun itemsOf(root: JsonObject, vararg keys: String): List<JsonElement> {
+    private fun itemsOf(root: JsonObject, vararg keys: String): List<JsonElement> =
+        itemsOf(root, keys, 0)
+
+    private fun itemsOf(root: JsonObject, keys: Array<out String>, depth: Int): List<JsonElement> {
+        // 深度上限：响应里若出现深层嵌套，无限制的递归会拖慢解析甚至栈溢出
+        if (depth > 4) return emptyList()
         for (k in keys) {
             val v = root[k] as? JsonElement ?: continue
             val a = runCatching { v.jsonArray }.getOrNull() ?: continue
             if (a.isNotEmpty()) return a
         }
-        // 往下钻：只走对象容器，最多三层
+        // 往下钻：只走对象容器
         for ((_, v) in root) {
             val o = v as? JsonObject ?: continue
-            val got = itemsOf(o, *keys)
+            val got = itemsOf(o, keys, depth + 1)
             if (got.isNotEmpty()) return got
         }
         return emptyList()
@@ -362,11 +367,21 @@ object Qq {
             "page" to pageOf(offset, limit).toString(),
             "limit" to limit.coerceAtMost(20).toString(),
         ) ?: return emptyList()
-        return itemsOf(r, "items", "albums", "list").mapNotNull { e ->
+        val arr = itemsOf(r, "items", "albums", "list")
+        val list = arr.mapNotNull { e ->
             val o = e.asObj() ?: return@mapNotNull null
-            val mid = o.str("mid", "albumMid", "album_mid") ?: return@mapNotNull null
-            val name = o.str("name", "title") ?: return@mapNotNull null
-            val singer = o.obj("singer")?.str("name", "title")
+            // 上游条目是原始结构，专辑的标识与名字字段名各类型不同
+            // （albumMid / album_mid / mid，albumName / name / title），
+            // 只认一种会导致整列专辑解析不出来
+            val mid = o.str("albumMid", "album_mid", "mid", "albumMID")
+                ?: o.obj("album")?.str("mid", "albumMid", "album_mid")
+                ?: o.num("albumId", "albumid")?.toLong()?.takeIf { it > 0 }?.toString()?.let { "id$it" }
+            if (mid.isNullOrBlank()) return@mapNotNull null
+            val name = o.str("albumName", "name", "title", "album_title")
+                ?: o.obj("album")?.str("name", "title")
+                ?: return@mapNotNull null
+            val singer = o.str("singerName", "singer_name", "artistName")
+                ?: o.obj("singer")?.str("name", "title")
                 ?: o.arr("singer").mapNotNull { it.asObj()?.str("name") }.firstOrNull()
             Group(
                 title = name.trim(),
@@ -379,6 +394,10 @@ object Qq {
                 qqMid = mid,
             )
         }.distinctBy { it.qqMid }
+        NmLog.note(if (list.isEmpty())
+            "QQ 搜索专辑无结果：$keywords 原始=${r.toString().take(300)}"
+        else "QQ 搜索专辑：$keywords -> ${list.size}")
+        return list
     }
 
     fun searchArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {

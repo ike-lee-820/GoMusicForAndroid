@@ -3252,11 +3252,65 @@ const val TAB_PLAYLISTS = 4
 /** 网易云请求日志的存放路径，设置里显示，方便用户取日志 */
 fun nmLogPath(): String = NmLog.path()
 
+/**
+ * 日志查看页。
+ *
+ * 日志文件写在 Download 目录，不少机型上根本打不开
+ * （Android 11+ 限制访问、或没有文件管理器），
+ * 出问题时拿不到日志就只能猜。这里直接显示内存里的最近日志。
+ */
+@Composable
+fun LogSheet(onClose: () -> Unit) {
+    val go = LocalGo.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var text by remember { mutableStateOf(NmLog.recent()) }
+    var auto by remember { mutableStateOf(true) }
+    // 自动刷新：方便边操作边看日志走到哪一步
+    LaunchedEffect(auto) {
+        while (auto) {
+            kotlinx.coroutines.delay(1000)
+            text = NmLog.recent()
+        }
+    }
+    GoSheet(onClose) {
+        Txt("运行日志", 18, weight = FontWeight.Bold)
+        VS(4)
+        Txt("文件：${nmLogPath()}", 11, color = go.muted)
+        VS(10)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GoButton(if (auto) "暂停刷新" else "自动刷新") { auto = !auto }
+            GoButton("刷新") { text = NmLog.recent() }
+            GoButton("复制") {
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("gomusic log", NmLog.recent()))
+                android.widget.Toast.makeText(ctx, "日志已复制", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            GoButton("清空") { NmLog.clearRecent(); text = "" }
+        }
+        VS(10)
+        Box(
+            Modifier.fillMaxWidth().weight(1f)
+                .clip(RoundedCornerShape(10.dp)).background(go.surfaceHi),
+        ) {
+            val st = rememberScrollState()
+            // 新日志追加在后面，滚到底才看得到最新内容
+            LaunchedEffect(text) { st.animateScrollTo(st.maxValue) }
+            Column(Modifier.fillMaxSize().padding(10.dp).verticalScroll(st)) {
+                Txt(text.ifBlank { "（暂无日志）" }, 10, color = go.on)
+            }
+        }
+        VS(10)
+        GoButton("关闭", primary = true) { onClose() }
+    }
+}
+
 @Composable
 fun SettingsSheet(vm: MainViewModel) {
     val go = LocalGo.current
     var hex by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
+    var showLog by remember { mutableStateOf(false) }
     val presets = listOf(
         0xFFD0BCFF, 0xFFFF8A80, 0xFFFFB74D, 0xFFFFF176,
         0xFF81C784, 0xFF4DD0E1, 0xFF64B5F6, 0xFFF48FB1,
@@ -3351,6 +3405,15 @@ fun SettingsSheet(vm: MainViewModel) {
                 )
                 VS(6)
                 Txt("请求日志：${nmLogPath()}", 11, color = go.muted)
+                VS(6)
+                GoButton("查看日志") { showLog = true }
+                // 上次崩溃的原因直接显示，不用翻文件
+                if (NmLog.lastCrash.isNotBlank()) {
+                    VS(8)
+                    Txt("上次崩溃：", 12, weight = FontWeight.SemiBold, color = go.primary)
+                    Txt(NmLog.lastCrash.take(600), 11, color = go.muted)
+                }
+                if (showLog) LogSheet { showLog = false }
             }
             VS(16)
 

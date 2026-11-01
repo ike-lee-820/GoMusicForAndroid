@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
         ImageCache.init(this)
         NmLog.init(this)
         CrashHandler.install(this)
+        NmLog.note("MainActivity 启动")
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),

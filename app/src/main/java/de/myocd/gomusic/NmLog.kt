@@ -9,6 +9,7 @@ import java.io.File
 import java.io.IOException
 import java.io.OutputStream
 import java.text.SimpleDateFormat
+import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 
@@ -30,6 +31,35 @@ object NmLog {
     private var written = 0L
     private var enabled = false
     private var pathText = "(未初始化)"
+
+    // ---------- 内存缓冲：让日志能在 App 里直接看 ----------
+    /**
+     * 只保存在内存里的最近若干行。
+     *
+     * 日志文件写到 Download 目录，很多机型上用户根本打不开
+     * （Android 11+ 限制访问、或手机没有文件管理器），
+     * 出问题时拿不到日志就只能靠猜。所以这里额外留一份，
+     * 设置页里直接显示，崩溃时也能看到闪退前最后做了什么。
+     */
+    private const val RING_MAX = 800
+    private val ring = ArrayDeque<String>(RING_MAX + 1)
+    private val lock = Any()
+
+    /** 最近日志（供界面显示） */
+    fun recent(): String = synchronized(lock) { ring.joinToString("") }
+
+    /** 清空内存缓冲（文件日志不受影响） */
+    fun clearRecent() = synchronized(lock) { ring.clear() }
+
+    /** 写文件同时也留一份到内存缓冲 */
+    private fun remember(line: String) = synchronized(lock) {
+        ring.addLast(line)
+        while (ring.size > RING_MAX) ring.removeFirst()
+    }
+
+    /** 崩溃单独存一份，便于下次打开时回顾（文件日志会被新的覆盖） */
+    @Volatile var lastCrash: String = ""
+        private set
 
     /** 在 Activity / Service 启动时调用一次 */
     fun init(ctx: Context) {
@@ -90,6 +120,7 @@ object NmLog {
             return
         }
         try {
+            remember(line)
             raw(line)
             written += data.size
         } catch (e: Exception) {
@@ -165,10 +196,22 @@ object NmLog {
         w("[说明] ${now()}  $s\n")
     }
 
-    /** 崩溃：写完整堆栈，用于定位闪退原因 */
+    /**
+     * 崩溃：写完整堆栈，并单独保存一份。
+     *
+     * 单独存是因为普通日志每次启动都换文件，崩溃后重启就看不到上一次的了；
+     * 留一份在内存变量里，界面可以直接显示「上次崩溃原因」。
+     */
     fun crash(t: Throwable, where: String = "") {
         val sw = java.io.StringWriter()
         t.printStackTrace(java.io.PrintWriter(sw))
+        lastCrash = buildString {
+            append("时间：${now()}")
+            if (where.isNotBlank()) append("  位置：$where")
+            append("\n")
+            append("${t.javaClass.name}: ${t.message}\n")
+            append(sw.toString())
+        }
         w(buildString {
             append("\n[崩溃] ${now()}")
             if (where.isNotBlank()) append("  位置：$where")

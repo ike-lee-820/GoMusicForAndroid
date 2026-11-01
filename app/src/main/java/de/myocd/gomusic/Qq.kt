@@ -302,11 +302,24 @@ object Qq {
         arr.mapNotNull { it.asObj()?.let(::toSong) }.distinctBy { it.songMid }
 
     /** 歌曲所在的容器：不同接口放在不同字段下 */
+    /**
+     * 取列表：先看本层，找不到再往下钻一层。
+     *
+     * 各接口的包裹层数不统一（`data` / `response` / `data.song.list` …），
+     * 只按顶层 key 找会在嵌套时取到空 —— 搜索「什么都不显示」就出在这里。
+     * 所以这里做有限深度的递归查找，而不是写死路径。
+     */
     private fun itemsOf(root: JsonObject, vararg keys: String): List<JsonElement> {
         for (k in keys) {
             val v = root[k] as? JsonElement ?: continue
             val a = runCatching { v.jsonArray }.getOrNull() ?: continue
             if (a.isNotEmpty()) return a
+        }
+        // 往下钻：只走对象容器，最多三层
+        for ((_, v) in root) {
+            val o = v as? JsonObject ?: continue
+            val got = itemsOf(o, *keys)
+            if (got.isNotEmpty()) return got
         }
         return emptyList()
     }
@@ -328,7 +341,9 @@ object Qq {
             "limit" to limit.coerceAtMost(20).toString(),
         ) ?: return emptyList()
         val list = songsOf(itemsOf(r, "items", "songs", "list"))
-        NmLog.note("QQ 搜索歌曲：$keywords -> ${list.size}")
+        // 空结果时把原始响应记下来：字段结构对不上时一眼能看出数据在哪
+        NmLog.note(if (list.isEmpty()) "QQ 搜索歌曲无结果：$keywords 原始=${r.toString().take(300)}"
+        else "QQ 搜索歌曲：$keywords -> ${list.size}")
         return list
     }
 

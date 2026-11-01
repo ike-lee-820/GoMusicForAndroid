@@ -273,9 +273,15 @@ object Qq {
      * 字段取不到就用空串，不因为个别字段缺失丢掉整首歌。
      */
     private fun toSong(o: JsonObject): Song? {
-        val mid = o.str("mid", "songmid", "song_mid")
+        // 搜索结果里的条目是上游原始结构，字段名随类型而变：
+        // mid 可能写作 songmid / song_mid，歌名可能是 name / title / songname。
+        // 只认一种会在某些类型上整列解析失败，所以这里都列出来
+        val mid = o.str("mid", "songmid", "song_mid", "songMid")
+            ?: o.num("id")?.toLong()?.takeIf { it > 0 }?.toString()?.let { "id$it" }
         if (mid.isNullOrBlank()) return null
-        val name = o.str("name", "title", "songname") ?: return null
+        val name = o.str("name", "title", "songname", "songName", "albumName")
+        // 歌名取不到也不能丢整首：用空串会让列表出现空白条目，不如保留可播的条目
+        if (name.isNullOrBlank() && o.str("subtitle").isNullOrBlank()) return null
         val singers = o.arr("singer")
             .mapNotNull { it.asObj()?.str("name", "title") }
             .filter { it.isNotBlank() }
@@ -286,7 +292,7 @@ object Qq {
         val songId = o.num("id")?.toLong() ?: 0L
         return Song(
             ssid = QQ_PREFIX + mid,
-            title = name.trim(),
+            title = name?.trim()?.takeIf { it.isNotBlank() } ?: mid,
             artist = singers.distinct().joinToString("/"),
             album = albumName?.trim().orEmpty(),
             coverUrl = coverUrl("album", albumMid),

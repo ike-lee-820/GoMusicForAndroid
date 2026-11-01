@@ -189,12 +189,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 只有「同步我的歌单 / 我喜欢的音乐」这类个人数据才真的需要登录。
      */
     /**
-     * QQ 音乐功能是否可用。
+     * QQ 音乐「浏览类」功能是否可用：搜索、首页、歌词、播放。
      *
-     * 必须已登录：个人歌单、高音质播放链接都要求有效会话，
-     * 匿名时服务端返回空，与其让用户看到一堆「没音源」，不如直接要求登录。
+     * 这些接口按文档是「登录可选 / 不需要登录」，匿名同样有结果
+     * （只是音质以账号权限为准）。所以这里只看曲库开关，不再要求登录 ——
+     * 把浏览也挡在登录后面，登录一旦不顺利就会整片空白。
      */
-    val nmReady: Boolean get() = nmOn && qqUser != null
+    val nmReady: Boolean get() = nmOn
+
+    /**
+     * 个人数据与写入类功能是否可用：我的歌单、歌单同步、收藏。
+     *
+     * 文档里 `/user/*` 全部需要登录，写入接口更是必须先有会话，
+     * 匿名请求只会拿到空或报错，所以这一类仍然强制登录。
+     */
+    val qqLibReady: Boolean get() = nmOn && qqUser != null
     var nmSearching by mutableStateOf(false); private set
     var nmLoadingMore by mutableStateOf(false); private set
     /** 歌曲是否还有下一页（滑到底继续加载） */
@@ -705,7 +714,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 用到 QQ 音乐功能前先确认登录，未登录就弹登录页 */
     fun ensureQqLogin(): Boolean {
-        if (nmReady) return true
+        if (qqLibReady) return true
         showQqLogin = true
         return false
     }
@@ -727,7 +736,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 距到期不足约 6 小时时续期一次（文档要求；无意义地频繁续期会被限流） */
     private fun maybeRefreshQqSession() {
-        if (!nmReady || qqExpiresAt <= 0L || !Qq.needsRefresh(qqExpiresAt)) return
+        if (!qqLibReady || qqExpiresAt <= 0L || !Qq.needsRefresh(qqExpiresAt)) return
         viewModelScope.launch(Dispatchers.IO) {
             val r = runCatching { Qq.refresh() }.getOrNull() ?: return@launch
             withContext(Dispatchers.Main) {
@@ -2478,7 +2487,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 重试可能造成重复添加，所以失败就让用户自己再点一次。
      */
     private fun pushQq(op: String, tid: String, songs: List<Song> = emptyList(), value: String = "") {
-        if (tid.isBlank() || !nmReady) return
+        if (tid.isBlank() || !qqLibReady) return
         viewModelScope.launch(Dispatchers.IO) {
             val r = runCatching {
                 when (op) {
@@ -2508,7 +2517,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 已认领过的（qqTid 相同）只同步名字，不重复建。
      */
     fun pullQqPlaylists() {
-        if (!nmReady) return
+        if (!qqLibReady) return
         viewModelScope.launch(Dispatchers.IO) {
             val list = runCatching { Qq.userPlaylists() }.getOrDefault(emptyList())
             if (list.isEmpty()) {
@@ -2542,14 +2551,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 登录成功后：先认领云端已有歌单，再把本地独有的补建到云端 */
     fun syncQqPlaylists() {
-        if (!nmReady) return
+        if (!qqLibReady) return
         pullQqPlaylists()
         syncAllPlaylistsToQq()
     }
 
     /** 本地歌单在 QQ 云端建一张同名的，并把已有歌曲加进去 */
     private fun createQqPlaylist(p: Playlist) {
-        if (!nmReady) return
+        if (!qqLibReady) return
         viewModelScope.launch(Dispatchers.IO) {
             val tid = runCatching { Qq.createPlaylist(p.name) }.getOrNull()
             if (tid.isNullOrBlank()) {
@@ -2570,7 +2579,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 登录后补建：把还没有 qqTid 的本地歌单都建到云端 */
     fun syncAllPlaylistsToQq() {
-        if (!nmReady) return
+        if (!qqLibReady) return
         val todo = playlists.filter { it.qqTid.isBlank() }
         if (todo.isEmpty()) return
         NmLog.note("补建 QQ 歌单 ${todo.size} 张")

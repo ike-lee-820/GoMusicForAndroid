@@ -359,8 +359,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 qqUser = n
                 toast("已登录 QQ 音乐：$n")
             }
-            // 登录后把本地歌单挂到 QQ 云端
-            withContext(Dispatchers.Main) { syncAllPlaylistsToQq() }
+            // 登录后双向同步：认领云端歌单 + 补建本地独有的
+            withContext(Dispatchers.Main) { syncQqPlaylists() }
         }
     }
 
@@ -381,7 +381,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 通知服务端取消这个二维码，别让它一直留着
         val k = qrKey
         if (!k.isNullOrBlank()) {
-            viewModelScope.launch(Dispatchers.IO) { runCatching { Qq.qrCancel(k) } })
+            viewModelScope.launch(Dispatchers.IO) { runCatching { Qq.qrCancel(k) } }
         }
         qrKey = null
     }
@@ -728,6 +728,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } else {
                     prefs.qqAccount = name
                     qqUser = name
+                    // 会话有效：自动同步一次歌单，云端新增的歌单也能看到
+                    syncQqPlaylists()
                 }
             }
         }
@@ -1094,7 +1096,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return when {
             k == "qqalbum" -> Qq.albumSongs(g.qqMid)?.second ?: emptyList()
             k == "qqsinger" -> Qq.singerSongs(g.qqMid, limit, offset)
-            k == "qqplaylist" -> Qq.playlistSongs(g.qqMid)?.second ?: emptyList()
+            // 本人歌单走 /user/playlist-detail（按 tid，能读到不公开歌单），
+            // 拿不到再按 disstid 走公开歌单接口
+            k == "qqplaylist" -> (Qq.playlistDetail(g.qqMid) ?: Qq.playlistSongs(g.qqMid))?.second
+                ?: emptyList()
             k == "qqtoplist" -> Qq.topListSongs(g.nmId)
             else -> runCatching { Netease.songsOf(k, g.nmId, limit, offset) }.getOrDefault(emptyList())
         }
@@ -2097,15 +2102,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             if (!song?.mvVid.isNullOrBlank()) mvOk[id] = true
             qualities = if (offline) downloadedQualities(id).ifEmpty { Qq.LEVELS } else Qq.LEVELS
             lyricJob = viewModelScope.launch {
-                val lrc = withTimeoutOrNull(lyricTimeoutMs) {
-                    withContext(Dispatchers.IO) { runCatching { Qq.lyric(mid ?: "") }.getOrDefault("") }
-                } ?: ""
-                // 翻译是独立的一段 LRC，行与原文按时间对应（常常比原文少几行）
-                val tr = if (lrc.isNotBlank() && mid != null) {
-                    withTimeoutOrNull(lyricTimeoutMs) {
-                        withContext(Dispatchers.IO) { runCatching { Qq.lyricTrans(mid) }.getOrDefault("") }
-                    } ?: ""
-                } else ""
+                // 一次请求拿主歌词 + 自带翻译：每首歌都尝试取翻译，
+                // 但只发一次请求，不因翻译把取歌词的时间翻倍
+                val pair = withTimeoutOrNull(lyricTimeoutMs) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { Qq.lyricWithTrans(mid ?: "") }.getOrDefault("" to "")
+                    }
+                } ?: ("" to "")
+                val lrc = pair.first
+                val tr = pair.second
                 if (curSsid == id) {
                     lyric = lyricLines(lrc)
                     if (tr.isNotBlank()) fillQqTrans(id, lyricLines(lrc), lyricLines(tr))
@@ -2461,6 +2466,55 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /**
+     * 从 QQ 音乐拉取「我的歌单」，在本地建对应的条目。
+     *
+     * 只建条目、不拉歌曲：歌单多的时候逐个拉歌会打出十几个请求，
+     * 而用户未必会打开每一张 —— 歌曲留给打开歌单时按需取
+     * （见 [songsOfGroup]）。这里只认领 tid，让本地与云端对上号。
+     *
+     * 已认领过的（qqTid 相同）只同步名字，不重复建。
+     */
+    fun pullQqPlaylists() {
+        if (!nmReady) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = runCatching { Qq.userPlaylists() }.getOrDefault(emptyList())
+            if (list.isEmpty()) {
+                NmLog.note("QQ 音乐没有返回歌单（未登录或接口无数据）")
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                val merged = playlists.toMutableList()
+                var added = 0
+                for (g in list) {
+                    val tid = g.qqMid
+                    if (tid.isBlank()) continue
+                    val i = merged.indexOfFirst { it.qqTid == tid }
+                    if (i >= 0) {
+                        // 云端改名了，本地跟着改，避免两边名字不一致
+                        if (merged[i].name != g.title) merged[i] = merged[i].copy(name = g.title)
+                    } else {
+                        merged.add(
+                            Playlist(
+                                UUID.randomUUID().toString(), g.title, emptyList(), g.cover, qqTid = tid
+                            )
+                        )
+                        added++
+                    }
+                }
+                savePl(merged)
+                NmLog.note("QQ 歌单同步：云端 ${list.size} 张，新增本地 $added 张")
+            }
+        }
+    }
+
+    /** 登录成功后：先认领云端已有歌单，再把本地独有的补建到云端 */
+    fun syncQqPlaylists() {
+        if (!nmReady) return
+        pullQqPlaylists()
+        syncAllPlaylistsToQq()
     }
 
     /** 本地歌单在 QQ 云端建一张同名的，并把已有歌曲加进去 */

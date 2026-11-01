@@ -3340,10 +3340,8 @@ fun SettingsSheet(vm: MainViewModel) {
                         else "已登录：${vm.qqUser}",
                         12, Modifier.weight(1f), color = go.muted,
                     )
-                    {
-                        GoButton(if (vm.qqUser == null) "登录" else "退出登录", primary = true) {
-                            if (vm.qqUser == null) vm.setQqLogin(true) else vm.qqLogout()
-                        }
+                    GoButton(if (vm.qqUser == null) "登录" else "退出登录", primary = true) {
+                        if (vm.qqUser == null) vm.setQqLogin(true) else vm.qqLogout()
                     }
                 }
                 VS(6)

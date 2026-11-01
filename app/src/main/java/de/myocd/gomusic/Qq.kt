@@ -327,24 +327,30 @@ object Qq {
         }.getOrDefault(t)
     }
 
-    fun lyric(mid: String): String {
-        if (mid.isBlank()) return ""
+    fun lyric(mid: String): String = lyricWithTrans(mid).first
+
+    /**
+     * 一次请求同时拿到主歌词与自带翻译。
+     *
+     * 文档：`/getLyric?trans=1` 会在同一份响应里带上翻译，
+     * 分两次请求等于把歌词请求量翻倍 —— 而每首歌都要尝试取翻译，
+     * 这个翻倍会直接拖慢切歌。所以合并成一次。
+     */
+    fun lyricWithTrans(mid: String): Pair<String, String> {
+        if (mid.isBlank()) return "" to ""
         val r = get("/getLyric", "songmid" to mid, "trans" to "1", "isFormat" to "1")
-            ?: return ""
+            ?: return "" to ""
         val resp = r.obj("response") ?: r
         val lrc = decodeLrc(resp.str("lyric", "lrc"))
+        // 每首歌都尝试取翻译：取不到是常态（并非所有歌都有），
+        // 只记日志，不影响主歌词
         if (lrc.isBlank()) NmLog.note("QQ 歌词为空 mid=$mid")
-        return lrc
+        val tr = decodeLrc(resp.str("trans", "translyric", "translyric_lrc"))
+        return lrc to tr
     }
 
     /** 自带翻译（LRC），没有就返回空串 */
-    fun lyricTrans(mid: String): String {
-        if (mid.isBlank()) return ""
-        val r = get("/getLyric", "songmid" to mid, "trans" to "1", "isFormat" to "1")
-            ?: return ""
-        val resp = r.obj("response") ?: r
-        return decodeLrc(resp.str("trans", "translyric"))
-    }
+    fun lyricTrans(mid: String): String = lyricWithTrans(mid).second
 
     // ---------- 播放链接 ----------
     /** 播放地址缓存：同一首歌短时间内重复解析不再发请求 */
@@ -392,9 +398,8 @@ object Qq {
     fun prefetchAudioUrl(mid: String, quality: String) {
         val k = "$mid|$quality"
         if (urlCache.containsKey(k) || urlMiss.containsKey(k)) return
-        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching { audioUrl(mid, quality) }
-        }
+        // 预取不该阻塞调用方：开一个后台线程慢慢取
+        Thread { runCatching { audioUrl(mid, quality) } }.apply { isDaemon = true }.start()
     }
 
     // ---------- 专辑 / 歌手 / 歌单 ----------

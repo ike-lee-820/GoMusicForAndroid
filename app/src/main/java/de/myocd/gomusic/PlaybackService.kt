@@ -75,11 +75,15 @@ class PlaybackService : MediaSessionService() {
                     spec.withUri(local)
                 } else {
                     val nid = neteaseIdOf(ssid)
+                    val qmid = qqMidOf(ssid)
                     val url = try {
-                        if (nid != null) {
-                            // 未登录也要走网易云取地址：只是拿不到高音质档位，
-                            // 但仍能播。之前要求 cookie 非空，未登录的网易云
-                            // 歌曲会掉到本站接口去取，结果取不到直接播不了
+                        if (qmid != null) {
+                            // QQ 音乐：按 songmid 取地址，quality 用当前音质偏好。
+                            // 匿名即可取链（高音质取决于账号），这里不要求登录
+                            Qq.audioUrl(qmid, Qq.qualityOf(q))
+                                ?: throw IOException("QQ 音乐没有可用音源")
+                        } else if (nid != null) {
+                            // 老歌单里可能还有网易云的歌，按原方式请求，避免播不了
                             Netease.cookie = p.nmCookie
                             Netease.audioUrl(nid, q, nl.takeIf { it.isNotBlank() })
                                 ?: throw IOException("网易云没有可用音源")
@@ -96,7 +100,8 @@ class PlaybackService : MediaSessionService() {
                     // 网易云 CDN 校验 Referer / UA，缺了会返回 403
                     // —— 这就是「拿到正确 url 却播不了」的常见原因
                     val isNm = nid != null && p.nmCookie.isNotBlank()
-                    NmLog.note("解析到播放地址：$url -> $safe（${if (isNm) "网易云" else "本站"}）")
+                    val tag = when { qmid != null -> "QQ音乐"; isNm -> "网易云"; else -> "本站" }
+                    NmLog.note("解析到播放地址：$url -> $safe（$tag）")
                     // 交给 CacheDataSource：边播边缓存，播完即整首落盘。
                     // 切歌或换音质时 PlayCache.noteUrl 会清掉上一份
                     PlayCache.noteUrl(safe)

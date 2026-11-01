@@ -49,6 +49,18 @@ data class Song(
      * 本站曲库没有 MV 数据源，默认 0。
      */
     val mvId: Long = 0,
+    /**
+     * QQ 音乐的 songmid（source = [SRC_QQ] 时有效）。
+     *
+     * QQ 用字符串 mid 标识歌曲（如 0039MnYb0qxYhV），不是数字，
+     * 所以不能复用 [nmId]。播放链接与歌词接口都按它取。
+     */
+    val songMid: String = "",
+    /**
+     * QQ 音乐的 MV vid（字符串，空串 = 没有 MV）。
+     * QQ 的 MV 标识是 vid（如 "a0033..."），不是数字，不能复用 [mvId]。
+     */
+    val mvVid: String = "",
 )
 
 @Serializable

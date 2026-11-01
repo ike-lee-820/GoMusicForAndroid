@@ -356,7 +356,9 @@ fun MainScreen(vm: MainViewModel) {
 
         if (vm.showQueue) QueueSheet(vm)
         if (vm.showSettings) SettingsSheet(vm)
-        if (vm.showNmLogin) NmLoginSheet(vm)
+        // 登录入口已取消：外部曲库（QQ 音乐）匿名即可搜索与播放，
+        // 不再需要网易云扫码 / 验证码登录
+        if (false) NmLoginSheet(vm)
         if (vm.showHistory) HistorySheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
@@ -982,8 +984,11 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
                 localMatch(it.album, q, zhMode)
         }
     }
-    // 两套曲库不合并（不去重），按规则交错展示
-    val list = remember(local, vm.nmSongs) { vm.mix(local, vm.nmSongs) }
+    // 搜索时只显示 QQ 音乐的结果：不再混本站曲库，
+    // 没有关键词（浏览本地曲库）时才两套交错展示
+    val list = remember(local, vm.nmSongs, q) {
+        if (q.isEmpty()) vm.mix(local, vm.nmSongs) else vm.nmSongs
+    }
     // tab 也作为 key：切标签进页面时必定重新发起搜索
     LaunchedEffect(vm.tab, q, vm.nmReady) {
         NmLog.note("界面触发搜索 tab=${vm.tab} q=$q")
@@ -1079,7 +1084,7 @@ fun AlbumsTab(vm: MainViewModel, state: LazyListState) {
     }
     // 去重：同名专辑可能属于不同歌手，key 必须唯一，否则 Lazy 会因重复 key 崩溃
     val groups = remember(local, vm.nmAlbums) {
-        vm.mix(local, vm.nmAlbums)
+        (if (q.isEmpty()) vm.mix(local, vm.nmAlbums) else vm.nmAlbums)
             .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title + "|" + it.artist }
     }
     // tab 也作为 key：切标签进页面时必定重新发起搜索
@@ -1130,7 +1135,8 @@ fun ArtistsTab(vm: MainViewModel) {
     }
     // 去重：key 必须唯一，否则 Lazy 会因重复 key 崩溃
     val groups = remember(local, vm.nmArtists) {
-        vm.mix(local, vm.nmArtists).distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
+        (if (q.isEmpty()) vm.mix(local, vm.nmArtists) else vm.nmArtists)
+            .distinctBy { if (it.qqMid.isNotBlank()) "qq" + it.qqMid else if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
     }
     // tab 也作为 key：切标签进页面时必定重新发起搜索
     LaunchedEffect(vm.tab, q, vm.nmReady) {
@@ -1226,7 +1232,7 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                     exporting = true
                 }
                 Spacer(Modifier.width(8.dp))
-                GoButton("同步网易云", icon = Icons.Outlined.Refresh) { vm.syncNmPlaylists() }
+                // 歌单同步已取消（原本同步的是网易云歌单）
             }
         }
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
@@ -3311,7 +3317,7 @@ fun SettingsSheet(vm: MainViewModel) {
                     Txt("接入网易云曲库", 14, weight = FontWeight.Medium)
                     Txt(
                         if (!vm.nmOn) "关闭：仅使用本站曲库"
-                        else if (vm.nmUser.isNullOrBlank()) "已开启：搜索与播放可直接用，登录后才能同步我的歌单"
+                        else "已开启：QQ 音乐曲库，无需登录即可搜索与播放"
                         else "已开启：${vm.nmUser}",
                         12, color = go.muted,
                     )
@@ -3331,12 +3337,12 @@ fun SettingsSheet(vm: MainViewModel) {
                 VS(8)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Txt(
-                        if (vm.nmUser.isNullOrBlank()) "未登录：搜索与播放照常用，仅同步歌单需要登录"
+                        if (vm.nmUser.isNullOrBlank()) "QQ 音乐曲库：无需登录，搜索与播放照常用"
                         else "已登录：${vm.nmUser}",
                         12, Modifier.weight(1f), color = go.muted,
                     )
                     if (vm.nmUser.isNullOrBlank()) {
-                        GoButton("登录 / 注册", primary = true) { vm.setNmLogin(true) }
+                        GoButton("登录 / 注册", primary = true) { vm.toast("已取消登录：QQ 音乐无需登录即可使用") }
                     } else {
                         GoButton("退出") { vm.nmLogout() }
                     }

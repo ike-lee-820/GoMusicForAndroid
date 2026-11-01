@@ -87,8 +87,10 @@ object NmIcon {
 }
 
 /**
- * 带来源角标的封面：网易云来源在右下角叠一个 10% 大小的图标，
- * 其余来源按普通封面显示。
+ * 封面（保留这个函数是为了不动调用方）。
+ *
+ * 之前网易云来源会在右下角叠一个角标图标区分曲库，
+ * 现在外部曲库统一为 QQ 音乐、无须分辨，直接按普通封面显示。
  */
 @Composable
 fun CoverWithSource(
@@ -98,20 +100,6 @@ fun CoverWithSource(
     circle: Boolean = false,
     source: String = SRC_LOCAL,
 ) {
-    if (source != SRC_NETEASE) {
-        Cover(cover, modifier, radius, circle)
-        return
-    }
-    val bmp = NmIcon.rememberBitmap()
-    Box(modifier) {
-        Cover(cover, Modifier.fillMaxSize(), radius, circle)
-        if (bmp != null) {
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "网易云曲库",
-                // 占封面 20%（原 10% 的两倍）
-                modifier = Modifier.align(Alignment.BottomEnd).fillMaxSize(0.20f),
-            )
-        }
-    }
+    // 不再叠来源角标：外部曲库统一走 QQ 音乐，不需要靠右下角图标分辨来源
+    Cover(cover, modifier, radius, circle)
 }

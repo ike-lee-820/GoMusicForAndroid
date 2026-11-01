@@ -79,6 +79,8 @@ data class Group(
     val nmId: Long = 0,
     /** 网易云专辑 / 歌手，用于取歌曲列表 */
     val nmKind: String = "",
+    /** QQ 音乐专辑 / 歌手的 mid（字符串，取歌曲列表用） */
+    val qqMid: String = "",
 )
 
 data class PickRequest(val ssids: List<String>, val name: String, val cover: String?)
@@ -465,9 +467,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun mvAvailable(s: Song?): Boolean {
         mvVersion // 读一次：确认结果回来时这里会重新算
-        val id = s?.mvId ?: return false
+        if (s == null) return false
+        // QQ：搜索结果直接给了 vid，有就是有，不用再发请求确认
+        if (isQq(s.ssid)) return s.mvVid.isNotBlank()
+        val id = s.mvId
         if (id <= 0L) return false
-        return mvOk[s!!.ssid] ?: false
+        return mvOk[s.ssid] ?: false
     }
     // ===================================================================
     // 歌词翻译
@@ -613,22 +618,25 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
 
 
-    // ================= 网易云曲库 =================
-    init { Netease.cookie = prefs.nmCookie }
-
-    fun setNmEnabled(on: Boolean) {
-        nmOn = on
-        prefs.nmEnabled = on
+    // ================= 外部曲库（QQ 音乐）=================
+    // 强制开启：不再需要登录，也不再展示登录入口
+    init {
         Netease.cookie = prefs.nmCookie
-        if (!on) {
-            nmSongs = emptyList()
-            nmAlbums = emptyList()
-            nmArtists = emptyList()
-        } else if (nmUser.isNullOrBlank()) {
-            showNmLogin = true
-        } else {
-            refreshNmAccount()
-        }
+        nmOn = true
+        prefs.nmEnabled = true
+    }
+
+    /**
+     * 外部曲库开关。
+     *
+     * 现在强制开启、且不再需要登录：搜索、播放、歌词走 QQ 音乐，
+     * 匿名即可用（高音质取决于账号，但这里不再有登录入口）。
+     * 老歌单里的网易云歌曲仍按原来的方式请求，与这个开关无关。
+     */
+    fun setNmEnabled(on: Boolean) {
+        nmOn = true
+        prefs.nmEnabled = true
+        Netease.cookie = prefs.nmCookie
     }
 
     /** 打开/关闭登录弹层 */
@@ -749,11 +757,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 var a: List<Group> = emptyList()
                 var ar: List<Group> = emptyList()
                 when (kind) {
-                    1 -> a = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, 0) }
+                    1 -> a = withContext(Dispatchers.IO) { Qq.searchAlbums(kw, NM_PAGE_SIZE, 0) }
                         .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
-                    2 -> ar = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, 0) }
+                    2 -> ar = withContext(Dispatchers.IO) { Qq.searchArtists(kw, NM_PAGE_SIZE, 0) }
                         .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
-                    else -> s = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, 0) }
+                    else -> s = withContext(Dispatchers.IO) { Qq.searchSongs(kw, NM_PAGE_SIZE, 0) }
                         .distinctBy { it.ssid }
                 }
                 // 分类型记日志：便于确认到底是哪一路没返回
@@ -837,7 +845,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 when (kind) {
                     1 -> {
-                        val add = withContext(Dispatchers.IO) { Netease.searchAlbums(kw, NM_PAGE_SIZE, off) }
+                        val add = withContext(Dispatchers.IO) { Qq.searchAlbums(kw, NM_PAGE_SIZE, off) }
                             .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
                         if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
                         val seen = nmAlbums.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
@@ -848,7 +856,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         NmLog.note("专辑翻页完成 offset=$off 新增 " + real.size)
                     }
                     2 -> {
-                        val add = withContext(Dispatchers.IO) { Netease.searchArtists(kw, NM_PAGE_SIZE, off) }
+                        val add = withContext(Dispatchers.IO) { Qq.searchArtists(kw, NM_PAGE_SIZE, off) }
                             .distinctBy { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }
                         if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
                         val seen = nmArtists.map { if (it.nmId > 0) "nm" + it.nmId else "loc" + it.title }.toHashSet()
@@ -859,7 +867,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         NmLog.note("歌手翻页完成 offset=$off 新增 " + real.size)
                     }
                     else -> {
-                        val add = withContext(Dispatchers.IO) { Netease.searchSongs(kw, NM_PAGE_SIZE, off) }
+                        val add = withContext(Dispatchers.IO) { Qq.searchSongs(kw, NM_PAGE_SIZE, off) }
                             .distinctBy { it.ssid }
                         if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
                         keepNetease(add)
@@ -902,7 +910,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 详情没给专辑 id 时，用专辑名搜一次
         viewModelScope.launch {
             val g = withContext(Dispatchers.IO) {
-                Netease.searchAlbums("$s.artist ${s.album}", 5).firstOrNull()
+                Qq.searchAlbums("$s.artist ${s.album}", 5).firstOrNull()
             }
             if (g != null) openNmGroup(g) else toast("没有找到这张专辑")
         }
@@ -925,7 +933,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            val g = withContext(Dispatchers.IO) { Netease.searchArtists(s.artist, 5).firstOrNull() }
+            val g = withContext(Dispatchers.IO) { Qq.searchArtists(s.artist, 5).firstOrNull() }
             if (g != null) openNmGroup(g) else toast("没有找到这个歌手")
         }
     }
@@ -971,6 +979,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** [push] = false 时只更新内容，不往栈里加页面（返回上层时用） */
+    /**
+     * 按分组取歌曲列表，按来源路由到 QQ 或网易云。
+     *
+     * QQ 的专辑/歌手/歌单各自是独立接口，且用字符串 mid 定位，
+     * 所以不能沿用网易云那个 songsOf(kind, id)。
+     * 老歌单里可能还有网易云的分组，走 else 分支保持原样。
+     */
+    private fun songsOfGroup(g: Group, limit: Int, offset: Int): List<Song> {
+        val k = g.nmKind
+        return when {
+            k == "qqalbum" -> Qq.albumSongs(g.qqMid)?.second ?: emptyList()
+            k == "qqsinger" -> Qq.singerSongs(g.qqMid, limit, offset)
+            k == "qqplaylist" -> Qq.playlistSongs(g.qqMid)?.second ?: emptyList()
+            k == "qqtoplist" -> Qq.topListSongs(g.nmId)
+            else -> runCatching { Netease.songsOf(k, g.nmId, limit, offset) }.getOrDefault(emptyList())
+        }
+    }
+
     private fun openNmGroup(g: Group, push: Boolean) {
         if (push) stack.add(Screen.NmSongs(g.nmKind, g.nmId, g.title, g.cover, g.artist))
         nmPage = g
@@ -1005,12 +1031,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             val l = withContext(Dispatchers.IO) {
-                runCatching { Netease.songsOf(kind, id, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
+                runCatching { songsOfGroup(g, NM_PAGE_SIZE, 0) }.getOrDefault(emptyList())
             }
             keepNetease(l)
             nmPageSongs = l
             nmPageSongOffset = NM_PAGE_SIZE
-            nmPageSongsHasMore = kind == "artist" && l.size >= NM_PAGE_SIZE
+            nmPageSongsHasMore = (kind == "artist" || kind == "qqsinger") && l.size >= NM_PAGE_SIZE
             nmPageLoading = false
             if (kind != "artist") {
                 nmPageCache[ck] = l to emptyList()
@@ -1056,7 +1082,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val g = nmPage ?: return
         if (nmPageLoadingMore) return
         val songMode = kind == 0
-        if (songMode && (!nmPageSongsHasMore || g.nmKind != "artist")) return
+        if (songMode && (!nmPageSongsHasMore || (g.nmKind != "artist" && g.nmKind != "qqsinger"))) return
         if (!songMode && !nmPageAlbumsHasMore) return
         val off = if (songMode) nmPageSongOffset else nmPageAlbumOffset
         val kindStr = g.nmKind
@@ -1067,7 +1093,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 if (songMode) {
                     val add = withContext(Dispatchers.IO) {
-                        runCatching { Netease.songsOf(kindStr, id, NM_PAGE_SIZE, off) }.getOrDefault(emptyList())
+                        runCatching { songsOfGroup(g, NM_PAGE_SIZE, off) }.getOrDefault(emptyList())
                     }
                     keepNetease(add)
                     val seen = nmPageSongs.map { it.ssid }.toHashSet()
@@ -1420,21 +1446,32 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         homeLoading = true
         homeJob = viewModelScope.launch {
             try {
-                val dR = async(Dispatchers.IO) { Netease.recommendSongs() }
-                val dN = async(Dispatchers.IO) { Netease.topSongs(newSongType) }
-                val dH = async(Dispatchers.IO) { Netease.hotSearch() }
-                val dA = async(Dispatchers.IO) { Netease.topArtists(30, 0) }
-                val dAl = async(Dispatchers.IO) { Netease.newestAlbums(30) }
+                val dR = async(Dispatchers.IO) {
+                    runCatching { Qq.newSongs() }.getOrDefault(emptyList())
+                }
+                // 新歌区用榜单第一张的歌曲：只多一次请求。
+                // 之前这里要拉 12 张推荐歌单再逐张取歌，等于十几个请求，太慢
+                val dN = async(Dispatchers.IO) { emptyList<Song>() }
+                val dH = async(Dispatchers.IO) { runCatching { Qq.hotSearch() }.getOrDefault(emptyList()) }
+                // QQ 的歌手榜单接口需要分类参数，首页先不展示热门歌手
+                val dA = async(Dispatchers.IO) { emptyList<Group>() }
+                val dAl = async(Dispatchers.IO) {
+                    runCatching { Qq.newAlbums() }.getOrDefault(emptyList<Group>())
+                }
                 // 显式写空列表类型：runCatching + getOrDefault(emptyList()) 推不出元素类型
                 val dT = async(Dispatchers.IO) {
-                    runCatching { Netease.topList() }.getOrDefault(emptyList<Group>())
+                    runCatching { Qq.topLists() }.getOrDefault(emptyList<Group>())
                 }
                 val r = dR.await()
-                val n = dN.await()
                 val h = dH.await()
                 val artists = dA.await()
                 val albums = dAl.await()
                 val tops = dT.await()
+                val n = tops.firstOrNull()?.let {
+                    withContext(Dispatchers.IO) {
+                        runCatching { Qq.topListSongs(it.nmId) }.getOrDefault(emptyList())
+                    }
+                } ?: emptyList()
                 keepNetease(r + n)
                 homeRecommend = r
                 homeNewSongs = n
@@ -1607,10 +1644,33 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 只取这一首，不连带后面几首：预取本身也是十几个请求，
      * 一次预取三首等于把请求量翻三倍，反而把当前这首歌的起播拖慢。
      */
+    /**
+     * 把 QQ 自带译文按时间回填到译文缓存。
+     *
+     * 译文缓存 [transCache] 是按「逻辑行顺序」对齐的（[buildLyricRows] 用它
+     * 给每一行填 [LyricRow.trans]），所以这里先按 timeMs 建索引，
+     * 再按主歌词的顺序拉平 —— 译文行数比原文少时，缺的那几行留空。
+     */
+    private fun fillQqTrans(id: String, main: List<LrcLine>, trans: List<LrcLine>) {
+        val map = HashMap<Long, String>()
+        for (l in trans) if (l.text.isNotBlank()) map[l.timeMs] = l.text
+        val list = main.map { map[it.timeMs] ?: "" }
+        if (list.all { it.isBlank() }) return
+        transCache = transCache + (id to list)
+        prefs.lyricTrans = transCache
+    }
+
+
     private fun prefetchCurrent(list: List<Song>, index: Int) {
         val p = Prefs(app)
         Netease.cookie = p.nmCookie
-        val nid = neteaseIdOf(list[index.coerceIn(0, list.lastIndex)].ssid) ?: return
+        val ssid = list[index.coerceIn(0, list.lastIndex)].ssid
+        val qmid = qqMidOf(ssid)
+        if (qmid != null) {
+            Qq.prefetchAudioUrl(qmid, Qq.qualityOf(quality))
+            return
+        }
+        val nid = neteaseIdOf(ssid) ?: return
         Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
     }
 
@@ -1924,6 +1984,35 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
         }
         updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        // QQ 音乐歌曲：歌词走 QQ 接口；自带翻译按时间轴回填到每一行
+        if (isQq(id)) {
+            if (count) pushHistory(id)
+            val mid = qqMidOf(id)
+            val song = songMap[id] ?: snapshots[id]
+            // 有 vid 就是有 MV：QQ 的 vid 在搜索结果里直接给了，
+            // 不像网易云那样 id 非 0 也不代表真能播，不用再发请求确认
+            if (!song?.mvVid.isNullOrBlank()) mvOk[id] = true
+            qualities = if (offline) downloadedQualities(id).ifEmpty { Qq.LEVELS } else Qq.LEVELS
+            lyricJob = viewModelScope.launch {
+                val lrc = withTimeoutOrNull(lyricTimeoutMs) {
+                    withContext(Dispatchers.IO) { runCatching { Qq.lyric(mid ?: "") }.getOrDefault("") }
+                } ?: ""
+                // 翻译是独立的一段 LRC，行与原文按时间对应（常常比原文少几行）
+                val tr = if (lrc.isNotBlank() && mid != null) {
+                    withTimeoutOrNull(lyricTimeoutMs) {
+                        withContext(Dispatchers.IO) { runCatching { Qq.lyricTrans(mid) }.getOrDefault("") }
+                    } ?: ""
+                } else ""
+                if (curSsid == id) {
+                    lyric = lyricLines(lrc)
+                    if (tr.isNotBlank()) fillQqTrans(id, lyricLines(lrc), lyricLines(tr))
+                    lyricLoading = false
+                    lyricSsid = id
+                }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
+            }
+            return
+        }
         // 网易云歌曲：歌词走网易云接口，优先级高于本站
         if (isNetease(id)) {
             if (count) pushHistory(id)
@@ -2323,14 +2412,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun playMv() {
         val s = currentSong
         if (s == null) { toast("暂无歌曲"); return }
+        val vid = if (isQq(s.ssid)) s.mvVid else ""
         val id = s.mvId
-        if (id <= 0L) { toast("这首歌没有 MV"); return }
+        if (vid.isBlank() && id <= 0L) { toast("这首歌没有 MV"); return }
         if (mvLoading) return
         mvLoading = true
         // 视频自带声音，先把音频停掉，否则两个声音会混在一起
         runCatching { controller?.pause() }
         viewModelScope.launch(Dispatchers.IO) {
-            val url = runCatching { Netease.mvUrl(id) }.getOrNull()
+            val url = if (vid.isNotBlank()) runCatching { Qq.mvUrl(vid) }.getOrNull()
+                else runCatching { Netease.mvUrl(id) }.getOrNull()
             withContext(Dispatchers.Main) {
                 mvLoading = false
                 if (url.isNullOrBlank()) toast("没有取到 MV 地址")

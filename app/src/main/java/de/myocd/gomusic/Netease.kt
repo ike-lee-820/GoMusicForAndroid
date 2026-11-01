@@ -23,9 +23,13 @@ import okhttp3.OkHttpClient
 /** 曲库来源：本站 / 网易云 */
 const val SRC_LOCAL = "local"
 const val SRC_NETEASE = "netease"
+/** 曲库来源：QQ 音乐 */
+const val SRC_QQ = "qq"
 
 /** 网易云歌曲在本地索引里的 ssid 前缀 */
 const val NM_PREFIX = "nm"
+/** QQ 音乐 ssid 前缀：QQ 用字符串 songmid 作标识，不能塞进 Long */
+const val QQ_PREFIX = "qq"
 
 /** 网易云 API 站 */
 const val NM_BASE = "https://mapi.myocd.de5.net"
@@ -33,6 +37,13 @@ const val NM_BASE = "https://mapi.myocd.de5.net"
 fun isNetease(ssid: String?): Boolean = ssid?.startsWith(NM_PREFIX) == true
 fun neteaseIdOf(ssid: String?): Long? =
     ssid?.takeIf { it.startsWith(NM_PREFIX) }?.removePrefix(NM_PREFIX)?.toLongOrNull()
+
+/** 是否是 QQ 音乐曲库的歌曲 */
+fun isQq(ssid: String?): Boolean = ssid?.startsWith(QQ_PREFIX) == true
+
+/** 取出 QQ 的 songmid（播放、歌词都靠它） */
+fun qqMidOf(ssid: String?): String? =
+    ssid?.takeIf { it.startsWith(QQ_PREFIX) }?.removePrefix(QQ_PREFIX)?.takeIf { it.isNotBlank() }
 
 /** 二维码轮询状态 */
 data class QrStatus(val code: Int, val cookie: String? = null, val message: String? = null)

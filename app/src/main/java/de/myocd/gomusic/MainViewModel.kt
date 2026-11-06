@@ -252,15 +252,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 记录歌曲快照：播放 / 搜索命中时调用，让历史与界面随时能查到 */
-    fun rememberSongs(list: List<Song>) {
+    fun rememberSongs(list: List<Song>, force: Boolean = false) {
         if (list.isEmpty()) return
         val cur = LinkedHashMap<String, Song>(snapshots)
         var changed = false
         for (s in list) {
             if (s.title.isBlank()) continue
             val old = cur[s.ssid]
-            // 有更完整信息（有封面 / 有专辑）就覆盖
-            if (old == null || (old.coverUrl.isNullOrBlank() && !s.coverUrl.isNullOrBlank())) {
+            // 有更完整信息（有封面 / 有专辑）就覆盖。
+            // force 是导入歌单专用：还原字符带来的才是这首歌该显示的信息，
+            // 旧快照里同 ssid 的记录可能是别的专辑/歌手，不覆盖就会串歌。
+            if (force || old == null || (old.coverUrl.isNullOrBlank() && !s.coverUrl.isNullOrBlank())) {
                 cur.remove(s.ssid) // 重新插到末尾，保持「最近」顺序
                 cur[s.ssid] = s
                 changed = true
@@ -424,7 +426,38 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 同时落一份快照（持久化），这样切界面 / 重启后历史仍能查到
         rememberSongs(nm)
     }
-    val currentSong: Song? by derivedStateOf { curSsid?.let { songMap[it] ?: nmKnown[it] } }
+    /** 当前播放队列（按 ssid 索引）：播放器显示的歌必须是队列里那一条 */
+    var queueSongs: Map<String, Song> by mutableStateOf(emptyMap()); private set
+
+    /**
+     * 当前正在播放的歌。
+     *
+     * 优先取播放队列里的那一条 —— 还原字符导入的歌单经常不在主曲库
+     * （songs / songMap）里，只查 songMap 会拿到碰巧同 ssid 的另一条记录，
+     * 于是播放器上的歌手 / 专辑名对了，点进去却跳到不相干的专辑页。
+     * 找不到再依次退回主曲库、网易云缓存、快照、下载记录。
+     */
+    val currentSong: Song? by derivedStateOf {
+        val id = curSsid ?: return@derivedStateOf null
+        val base = queueSongs[id]
+            ?: songMap[id]
+            ?: nmKnown[id]
+            ?: snapshots[id]
+            ?: downloads.firstOrNull { it.ssid == id }?.let {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+            ?: return@derivedStateOf null
+        // 详情接口后来补全的 id 类字段，补回队列里的那条，保证跳转精准
+        val full = nmKnown[id] ?: return@derivedStateOf base
+        base.copy(
+            nmId = base.nmId.takeIf { it > 0 } ?: full.nmId,
+            nmAlbumId = base.nmAlbumId.takeIf { it > 0 } ?: full.nmAlbumId,
+            nmArtistId = base.nmArtistId.takeIf { it > 0 } ?: full.nmArtistId,
+            mvId = base.mvId.takeIf { it > 0 } ?: full.mvId,
+            coverUrl = base.coverUrl ?: full.coverUrl,
+            source = if (base.source == SRC_LOCAL && full.source == SRC_NETEASE) SRC_NETEASE else base.source,
+        )
+    }
 
     // ---- MV 可用性：只有确认拿得到地址才显示按钮 ----
     /** ssid -> 有没有 MV（确认过的才在表里） */
@@ -1015,10 +1048,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             )
             return
         }
-        // 详情没给专辑 id 时，用专辑名搜一次
+        // 老还原字符没带专辑 id 时才用名字搜，且必须真的对得上：
+        // 直接 firstOrNull() 会跳到搜索结果里第一张不相干的专辑
         viewModelScope.launch {
             val g = withContext(Dispatchers.IO) {
-                Netease.searchAlbums("$s.artist ${s.album}", 5).firstOrNull()
+                val hits = Netease.searchAlbums("$s.artist ${s.album}", 10)
+                hits.firstOrNull { h ->
+                    h.title.isNotBlank() && (
+                    h.title.equals(s.album, ignoreCase = true) ||
+                        h.title.contains(s.album, ignoreCase = true) ||
+                        s.album.contains(h.title, ignoreCase = true))
+                }
             }
             if (g != null) openNmGroup(g) else toast("没有找到这张专辑")
         }
@@ -1041,7 +1081,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch {
-            val g = withContext(Dispatchers.IO) { Netease.searchArtists(s.artist, 5).firstOrNull() }
+            val names = s.artist.split(Regex("[/,&、]")).map { it.trim() }
+                .filter { it.isNotBlank() }.ifEmpty { listOf(s.artist) }
+            val g = withContext(Dispatchers.IO) {
+                Netease.searchArtists(s.artist, 10).firstOrNull { h ->
+                    h.title.isNotBlank() && names.any { n ->
+                        h.title.equals(n, ignoreCase = true) ||
+                            h.title.contains(n, ignoreCase = true) ||
+                            n.contains(h.title, ignoreCase = true)
+                    }
+                }
+            }
             if (g != null) openNmGroup(g) else toast("没有找到这个歌手")
         }
     }
@@ -1686,6 +1736,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 专辑 / 歌手页用：以主曲库为准；主曲库里没有这张专辑 / 这个歌手时
+     * （还原字符导入的歌、播放队列里的歌常常不在当前曲库），
+     * 再从队列 / 网易云缓存 / 快照 / 下载记录里补齐，
+     * 否则点进去是空页，看着就像「跳到了别的专辑」。
+     */
+    fun songsForGroup(artist: String, album: String? = null): List<Song> {
+        if (artist.isBlank() || (album != null && album.isBlank())) return emptyList()
+        val match: (Song) -> Boolean = {
+            it.artist == artist && (album == null || it.album == album)
+        }
+        val inLib = songs.filter(match)
+        if (inLib.isNotEmpty()) return inLib
+        val pool = queueSongs.values + nmKnown.values + snapshots.values +
+            downloads.map {
+                Song(it.ssid, it.title, it.artist, it.album, it.cover.ifBlank { null })
+            }
+        return pool.filter(match).distinctBy { it.ssid }
+    }
+
     /** 把一批歌曲记进快照，保证加进歌单后随时能查到 */
     fun keepForPlaylist(l: List<Song>) {
         if (l.isEmpty()) return
@@ -1722,6 +1792,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun playSongs(list: List<Song>, index: Int) {
         if (list.isEmpty()) return
+        // 先记下整份队列：导入歌单里的歌可能不在主曲库，
+        // 播放器与「点封面/歌手」都要以这一份为准
+        queueSongs = list.associateBy { it.ssid }
         keepNetease(list)
         val c = controller
         if (c == null) {
@@ -1780,6 +1853,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 把一首歌追加到播放列表末尾（只加这一首，不动队列里已有的歌） */
     fun addToQueue(s: Song) {
+        queueSongs = queueSongs + (s.ssid to s)
         keepNetease(listOf(s))
         val c = controller
         if (c == null) {
@@ -2364,10 +2438,25 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             toast("这个歌单里没有歌曲")
             return false
         }
-        // 记进快照，保证导入后歌单里能查到歌名信息
-        rememberSongs(snap.songs.map {
-            Song(it.ssid, it.title, it.artist, it.album, it.cover, source = it.source)
-        })
+        // 还原成完整 Song：新版还原字符带网易云 id，老版没有的字段
+        // 用本地已有快照补齐（点封面/歌手就不会退化成按名字模糊搜）。
+        // force = true：导入的信息才是这个歌单该显示的，旧快照同 ssid 的
+        // 记录可能是另一张专辑 / 另一个歌手，不覆盖就会串歌。
+        rememberSongs(snap.songs.map { item ->
+            val old = snapshots[item.ssid]
+            Song(
+                ssid = item.ssid,
+                title = item.title,
+                artist = item.artist,
+                album = item.album,
+                coverUrl = item.cover,
+                source = item.source,
+                nmId = item.nmId.takeIf { v -> v > 0 } ?: old?.nmId ?: 0,
+                nmAlbumId = item.nmAlbumId.takeIf { v -> v > 0 } ?: old?.nmAlbumId ?: 0,
+                nmArtistId = item.nmArtistId.takeIf { v -> v > 0 } ?: old?.nmArtistId ?: 0,
+                mvId = item.mvId.takeIf { v -> v > 0 } ?: old?.mvId ?: 0,
+            )
+        }, force = true)
         val ids = snap.songs.map { it.ssid }.distinct()
         // 与已有歌单重名时，给导入的这个改名，不动原有歌单
         val p = Playlist(UUID.randomUUID().toString(), uniqueName(snap.name.ifBlank { "导入的歌单" }), ids)

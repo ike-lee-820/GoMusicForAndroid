@@ -1462,7 +1462,11 @@ fun ActionRow(vm: MainViewModel, songs: List<Song>, name: String, cover: String?
 @Composable
 fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
     val go = LocalGo.current
-    val list = remember(vm.songs, s) { vm.songs.filter { it.artist == s.artist && it.album == s.album } }
+    // 主曲库之外还要看队列 / 快照：还原字符导入的歌可能不在当前曲库，
+    // 只按 vm.songs 过滤会跳出一个空页，看着像跳到了别的专辑
+    val list = remember(vm.songs, vm.snapshots, vm.queueSongs, s) {
+        vm.songsForGroup(s.artist, s.album)
+    }
     val cover = list.firstNotNullOfOrNull { it.coverUrl }
     Column(Modifier.fillMaxSize()) {
         TopBar(vm)
@@ -1500,7 +1504,9 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
 @Composable
 fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
     val go = LocalGo.current
-    val list = remember(vm.songs, s) { vm.songs.filter { it.artist == s.name } }
+    val list = remember(vm.songs, vm.snapshots, vm.queueSongs, s) {
+        vm.songsForGroup(s.name)
+    }
     val albums = remember(list) { vm.albums(list) }
     val info = vm.artistInfo[s.name]
     val img = info?.image?.takeIf { it.isNotBlank() } ?: list.firstNotNullOfOrNull { it.coverUrl }

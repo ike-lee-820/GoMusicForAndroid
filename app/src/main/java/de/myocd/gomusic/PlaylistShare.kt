@@ -36,6 +36,12 @@ object PlaylistShare {
         val album: String = "",
         val cover: String? = null,
         val source: String = SRC_LOCAL,
+        /** 网易云的真实 id。带上它们，导入后点封面/歌手能直接按 id 打开，
+         *  不用拿名字去模糊搜（搜出来的第一张专辑/第一个歌手常常不是这首歌的）。 */
+        val nmId: Long = 0,
+        val nmAlbumId: Long = 0,
+        val nmArtistId: Long = 0,
+        val mvId: Long = 0,
     )
 
     /** 把歌单编码成还原字符 */
@@ -43,7 +49,10 @@ object PlaylistShare {
         val snap = Snapshot(
             name = p.name,
             songs = songs.map {
-                Item(it.ssid, it.title, it.artist, it.album, it.coverUrl, it.source)
+                Item(
+                    it.ssid, it.title, it.artist, it.album, it.coverUrl, it.source,
+                    it.nmId, it.nmAlbumId, it.nmArtistId, it.mvId,
+                )
             },
         )
         val raw = json.encodeToString(snap).toByteArray(Charsets.UTF_8)

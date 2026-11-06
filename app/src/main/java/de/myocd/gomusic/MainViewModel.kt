@@ -44,6 +44,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 private const val MODE_LIST_LOOP = 0
@@ -542,6 +544,120 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 toast("已翻译 ${res.count { it.isNotBlank() }}/${order.size} 句")
             }
         }
+    }
+
+    // -------------------------------------------------------------------
+    // 下载时补译文 / 离线播放时调取
+    // -------------------------------------------------------------------
+    /** 多批下载并行时，翻译任务串行跑，避免同时打一堆 AI 请求 */
+    private val transMutex = Mutex()
+
+    /**
+     * 播放一首歌时：缓存里没有译文就从随下载保存的文件里调回来。
+     *
+     * 译文缓存放在应用缓存目录，系统「清除缓存」会清掉；下载目录里那份
+     * 是跟着歌曲一起保存的，离线播放或清过缓存后都还能显示。
+     */
+    private fun loadLocalTransIfNeeded(id: String) {
+        if (transCache[id]?.any { it.isNotBlank() } == true) return
+        val ref = downloads.firstOrNull { it.ssid == id && it.trans.isNotBlank() }?.trans
+            ?: return
+        viewModelScope.launch {
+            val lines = withContext(Dispatchers.IO) { LocalLib.readTrans(app, ref) }
+            if (lines.any { it.isNotBlank() } &&
+                transCache[id]?.any { it.isNotBlank() } != true
+            ) {
+                transCache = transCache + (id to lines)
+                prefs.lyricTrans = transCache
+                NmLog.note("已从下载文件调取译文：$id")
+            }
+        }
+    }
+
+    /** 一批下载结束后统一补译文（不阻塞下载队列本身） */
+    private suspend fun ensureTranslations(done: List<Pair<Song, DownloadRecord>>) {
+        transMutex.withLock {
+            done.forEach { (s, rec) ->
+                // 不能用 runCatching：它的 block 不是 suspend，里面调不了协程函数
+                try {
+                    ensureTranslated(s, rec)
+                } catch (e: Exception) {
+                    NmLog.note("下载补译文失败：${s.ssid} ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * 下载一首歌后：能拿到译文就默认获取，并随下载一起保存。
+     *
+     * 「已经获取时跳过」有两层：
+     * - 下载目录里已有译文文件 → 不再获取，只把引用和缓存补齐；
+     * - 缓存里已有译文（之前点过翻译按钮）→ 不再请求接口，但仍写进下载目录。
+     *
+     * 歌词自带译文（同时间戳双行）本来就在 .lrc 里，天然随下载保存；
+     * 纯中文歌 / 外语句子不足 10% 的也不去麻烦 AI。
+     */
+    private suspend fun ensureTranslated(s: Song, rec: DownloadRecord) {
+        val id = s.ssid
+        // 1. 已有译文文件：跳过获取
+        val existing = prefs.downloads.firstOrNull { it.ssid == id && it.trans.isNotBlank() }
+        if (existing != null) {
+            val lines = withContext(Dispatchers.IO) { LocalLib.readTrans(app, existing.trans) }
+            withContext(Dispatchers.Main) {
+                // 同一首歌每个音质记录都记同一个引用：删到只剩一条才删文件
+                val l = prefs.downloads.map {
+                    if (it.ssid == id) it.copy(trans = existing.trans) else it
+                }
+                prefs.downloads = l
+                downloads = l
+                if (lines.any { it.isNotBlank() } &&
+                    transCache[id]?.any { it.isNotBlank() } != true
+                ) {
+                    transCache = transCache + (id to lines)
+                    prefs.lyricTrans = transCache
+                }
+            }
+            return
+        }
+        // 2. 缓存里已有译文：跳过接口请求，但照样一起保存
+        val cached = transCache[id]?.takeIf { it.any { v -> v.isNotBlank() } }
+        if (cached != null) { saveTrans(id, s, cached); return }
+        // 3. 取歌词（以随下载保存的那份为准，保证离线时行序一致）
+        var lrc = withContext(Dispatchers.IO) { LocalLib.readText(app, rec.lyric) }
+        if (lrc.isBlank()) {
+            lrc = withContext(Dispatchers.IO) {
+                val nid = neteaseIdOf(id)
+                if (nid != null) runCatching { Netease.lyric(nid) }.getOrDefault("")
+                else runCatching { Api.lyrics(id) }.getOrDefault("")
+            }
+        }
+        if (lrc.isBlank()) return
+        val rows = buildLyricRows(lyricLines(lrc))
+        if (rows.any { !it.trans.isNullOrBlank() }) return  // 歌词自带译文
+        if (!lyricNeedsTranslation(rows)) return            // 纯中文 / 外文太少
+        val order = computeTransTargets(rows).sorted()
+        if (order.isEmpty()) return
+        val got = Translate.all(order.map { rows[it].text })
+        val res = MutableList(rows.size) { "" }
+        got.forEachIndexed { k, v -> if (k < order.size) res[order[k]] = v }
+        // 翻不出来就不保存 —— 「可以获取翻译」时才一起保存
+        if (res.all { it.isBlank() }) return
+        saveTrans(id, s, res)
+    }
+
+    /** 把译文写进下载目录，并更新记录与缓存（在线播放也能立刻用） */
+    private suspend fun saveTrans(id: String, s: Song, lines: List<String>) {
+        val ref = withContext(Dispatchers.IO) { LocalLib.writeTrans(app, s, lines) }
+        if (ref.isBlank()) return
+        withContext(Dispatchers.Main) {
+            val l = prefs.downloads.map { if (it.ssid == id) it.copy(trans = ref) else it }
+            prefs.downloads = l
+            downloads = l
+            transCache = transCache + (id to lines)
+            prefs.lyricTrans = transCache
+        }
+        NmLog.note("译文已随下载保存：$id（${lines.count { it.isNotBlank() }} 句）")
     }
 
     val lyricIndex: Int by derivedStateOf {
@@ -1924,6 +2040,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
         }
         updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+        // 缓存里没有译文时，从随下载保存的文件里调回来（离线播放尤其需要）
+        loadLocalTransIfNeeded(id)
         // 网易云歌曲：歌词走网易云接口，优先级高于本站
         if (isNetease(id)) {
             if (count) pushHistory(id)
@@ -2443,6 +2561,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 逐个顺序下载：速度才是当前这一首的真实速度，通知与进度条也才对得上
         viewModelScope.launch(Dispatchers.IO) {
             var ok = 0
+            val done = ArrayList<Pair<Song, DownloadRecord>>()
             todo.forEachIndexed { i, s ->
                 noti.progress(s.title, i + 1, todo.size, -1, "", "")
                 withContext(Dispatchers.Main) {
@@ -2479,6 +2598,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         prefs.downloads = l
                         downloads = l
                         if (offline) songs = LocalLib.songs(l)
+                        done += s to rec
                         ok++
                         noti.done("${s.title} 下载完成")
                         toast("已下载：${s.title}（${qualityLabel(rec.quality)}）")
@@ -2494,6 +2614,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 批量下载结束时再给一次汇总提示，避免只看到单首的 toast
                 if (todo.size > 1) toast("下载结束：成功 $ok 首，失败 ${todo.size - ok} 首")
             }
+            // 汇总提示之后再补译文：AI 整篇翻译可能较慢，
+            // 既不能挡住下一首歌的下载进度，也不该把「下载结束」拖到翻译完才显示
+            if (done.isNotEmpty()) ensureTranslations(done)
         }
     }
 

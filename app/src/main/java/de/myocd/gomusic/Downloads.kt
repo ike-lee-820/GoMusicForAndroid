@@ -22,6 +22,8 @@ data class DownloadRecord(
     val audio: String = "",
     val cover: String = "",
     val lyric: String = "",
+    /** 译文：Download/GoMusic/翻译 下的 JSON 文件（按逻辑行对齐） */
+    val trans: String = "",
     val meta: String = "",
     val time: Long = 0L,
 )
@@ -32,6 +34,8 @@ object LocalLib {
     const val AUDIO_DIR = "音乐"
     const val COVER_DIR = "封面"
     const val LYRIC_DIR = "歌词"
+    /** 歌词译文随下载一起保存，离线播放时从这里调取 */
+    const val TRANS_DIR = "翻译"
     const val META_DIR = "歌曲信息"
     /** MV 视频单独放一个目录：和音频不是一个东西，混在「音乐」里不好找 */
     const val MV_DIR = "MV"
@@ -234,6 +238,50 @@ object LocalLib {
             )
         }
 
+    /**
+     * 把译文按「逻辑行顺序」存成一份 JSON 文件，随下载一起保存。
+     *
+     * 不写进 .lrc：译文是按逻辑行对齐的，而 LRC 是按时间轴逐行的，
+     * 硬塞回去会让自带译文（同时间戳双行）与接口译文混在一起错位。
+     * 独立文件 + 在下载记录里留引用，离线播放时读回来按同一份歌词对齐。
+     */
+    fun writeTrans(ctx: Context, song: Song, lines: List<String>): String {
+        if (lines.isEmpty() || lines.all { it.isBlank() }) return ""
+        val body = buildString {
+            append('[')
+            lines.forEachIndexed { i, v -> if (i > 0) append(','); append(quote(v)) }
+            append(']')
+        }
+        val base = safe("${song.artist} - ${song.title}")
+        return write(ctx, TRANS_DIR, "$base.trans.json", "application/json", body.toByteArray())
+    }
+
+    /** 读取随下载保存的译文；文件丢失或格式不对时返回空列表 */
+    fun readTrans(ctx: Context, ref: String): List<String> {
+        val t = readText(ctx, ref)
+        if (t.isBlank()) return emptyList()
+        return runCatching {
+            val arr = Api.json.parseToJsonElement(t) as? kotlinx.serialization.json.JsonArray
+            arr?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
+    /** JSON 字符串转义：译文里可能有引号、换行 */
+    private fun quote(s: String): String {
+        val sb = StringBuilder(s.length + 8).append('"')
+        for (c in s) when {
+            c == '"' -> sb.append("\\\"")
+            c == '\\' -> sb.append("\\\\")
+            c == '\n' -> sb.append("\\n")
+            c == '\r' -> sb.append("\\r")
+            c == '\t' -> sb.append("\\t")
+            c < ' ' -> sb.append("\\u%04x".format(c.code))
+            else -> sb.append(c)
+        }
+        return sb.append('"').toString()
+    }
+
     /** 读取本地歌词 / 信息文本 */
     fun readText(ctx: Context, ref: String): String {
         if (ref.isBlank()) return ""
@@ -258,9 +306,11 @@ object LocalLib {
     fun deleteRecord(ctx: Context, rec: DownloadRecord) {
         val others = Prefs(ctx).downloads.filter { it.ssid == rec.ssid && it.quality != rec.quality }
         listOf(rec.audio, rec.meta).forEach { ref -> deleteRef(ctx, ref) }
-        listOf(rec.cover, rec.lyric).forEach { ref ->
+        // 译文是整首歌共用的：同一 ssid 的每条下载记录都记着同一个引用，
+        // 删到只剩这一条时才真的删文件
+        listOf(rec.cover, rec.lyric, rec.trans).forEach { ref ->
             if (ref.isBlank()) return@forEach
-            if (others.none { it.cover == ref || it.lyric == ref }) deleteRef(ctx, ref)
+            if (others.none { it.cover == ref || it.lyric == ref || it.trans == ref }) deleteRef(ctx, ref)
         }
     }
 

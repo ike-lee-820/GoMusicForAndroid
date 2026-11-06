@@ -1690,15 +1690,18 @@ fun FullPlayer(vm: MainViewModel) {
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
         // 控制条默认收起，点最右侧箭头展开 / 收起
         var ctrlOpen by remember { mutableStateOf(false) }
-        // 横屏把控制条扒下来后，静置 3 秒自动收起，不挡着歌词。
-        // 期间在控制条上继续操作（点按钮、点空白处）会重新计时，
-        // 免得正要点什么它就缩回去了。竖屏不自动收起。
-        var ctrlTouch by remember { mutableIntStateOf(0) }
-        LaunchedEffect(wide, ctrlOpen, ctrlTouch) {
-            if (wide && ctrlOpen) {
-                delay(3_000)
-                ctrlOpen = false
-            }
+        // 横屏扒下控制条后，只要 0.5 秒没点控制条区域就立刻收起。
+        // 用绝对截止时间而不是「每次点击重启 LaunchedEffect」：协程只轮询
+        // AtomicLong，不读 Compose State，也不会因为点击被反复重置而一直不收。
+        // 在区域里点一下就把截止往后推 0.5 秒；点区域外（歌词）不推，照常收。
+        val ctrlDeadline = remember { java.util.concurrent.atomic.AtomicLong(0L) }
+        LaunchedEffect(wide, ctrlOpen) {
+            if (!wide || !ctrlOpen) return@LaunchedEffect
+            val d = ctrlDeadline
+            d.set(System.currentTimeMillis() + 500)
+            while (System.currentTimeMillis() < d.get()) delay(25)
+            ctrlOpen = false
+            d.set(0L)
         }
         // ---------- 内容区：始终占满整屏 ----------
         // 操作栏不再参与这一层的布局（见下面的浮层），所以展开 / 收起
@@ -1727,12 +1730,14 @@ fun FullPlayer(vm: MainViewModel) {
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp)
                 // 只观察「刚按下」这一帧，不消费事件：控制条里的按钮
-                // 照常响应点击，同时把 3 秒从最后一次操作重新算起
+                // 照常响应点击，同时把收起时间往后推 0.5 秒
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
                             val e = awaitPointerEvent(PointerEventPass.Initial)
-                            if (e.changes.any { it.pressed && !it.previousPressed }) ctrlTouch++
+                            if (e.changes.any { it.pressed && !it.previousPressed }) {
+                                ctrlDeadline.set(System.currentTimeMillis() + 500)
+                            }
                         }
                     }
                 },

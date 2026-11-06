@@ -131,6 +131,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -1689,6 +1691,16 @@ fun FullPlayer(vm: MainViewModel) {
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
         // 控制条默认收起，点最右侧箭头展开 / 收起
         var ctrlOpen by remember { mutableStateOf(false) }
+        // 横屏把控制条扒下来后，静置 3 秒自动收起，不挡着歌词。
+        // 期间在控制条上继续操作（点按钮、点空白处）会重新计时，
+        // 免得正要点什么它就缩回去了。竖屏不自动收起。
+        var ctrlTouch by remember { mutableIntStateOf(0) }
+        LaunchedEffect(wide, ctrlOpen, ctrlTouch) {
+            if (wide && ctrlOpen) {
+                delay(3_000)
+                ctrlOpen = false
+            }
+        }
         // ---------- 内容区：始终占满整屏 ----------
         // 操作栏不再参与这一层的布局（见下面的浮层），所以展开 / 收起
         // 都不会改变专辑与歌词可用的高度 —— 之前操作栏和拦截层都在 Column 里，
@@ -1714,7 +1726,17 @@ fun FullPlayer(vm: MainViewModel) {
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp)
+                // 只观察「刚按下」这一帧，不消费事件：控制条里的按钮
+                // 照常响应点击，同时把 3 秒从最后一次操作重新算起
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val e = awaitPointerEvent(PointerEventPass.Initial)
+                            if (e.changes.any { it.pressed && !it.previousPressed }) ctrlTouch++
+                        }
+                    }
+                },
         ) {
             Column {
                 Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {

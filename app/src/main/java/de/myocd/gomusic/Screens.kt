@@ -3280,6 +3280,23 @@ fun SettingsSheet(vm: MainViewModel) {
                 }
                 Txt(if (vm.batteryExempt) "✓" else "去设置", 13, color = if (vm.batteryExempt) go.primary else go.primary)
             }
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(go.surfaceHi)
+                    .clickable { vm.openAppDetails() }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("自启动 / 后台运行", 14, weight = FontWeight.Medium)
+                    Txt(
+                        "小米、华为、OPPO、vivo 等还需在这里放行自启动并锁定后台，否则仍可能被清掉",
+                        12, color = go.muted,
+                    )
+                }
+                Txt("去设置", 13, color = go.primary)
+            }
             VS(16)
 
             // ---------- 连接 ----------

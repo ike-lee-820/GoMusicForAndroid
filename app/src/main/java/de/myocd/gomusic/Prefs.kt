@@ -67,6 +67,30 @@ class Prefs(ctx: Context) {
             sp.edit().putString("song_snapshots", json.encodeToString(trimmed)).apply()
         }
 
+    // -------------------------------------------------------------------
+    // 播放队列快照：服务被系统回收后重建时，靠它把队列和进度找回来
+    // -------------------------------------------------------------------
+    /**
+     * 队列快照（JSON 数组，每项含 ssid / uri / 标题 / 歌手 / 封面）。
+     *
+     * 前台服务被系统杀掉后 media3 会重建，但新 player 的队列是空的 ——
+     * 表现就是「后台放着放着停了，通知也没了」。存一份快照让重建时能复原。
+     * 只存轻量元数据，不含音频数据；解析在 [PlaybackService] 里做。
+     */
+    var lastQueue: String
+        get() = sp.getString("last_queue", "") ?: ""
+        set(v) { sp.edit().putString("last_queue", v).apply() }
+
+    /** 快照里当前播到第几首 */
+    var lastQueueIndex: Int
+        get() = sp.getInt("last_queue_index", 0)
+        set(v) { sp.edit().putInt("last_queue_index", v).apply() }
+
+    /** 快照里的播放位置（毫秒） */
+    var lastQueuePos: Long
+        get() = sp.getLong("last_queue_pos", 0L)
+        set(v) { sp.edit().putLong("last_queue_pos", v).apply() }
+
     /** [FOCUS_NORMAL] / [FOCUS_CALL_ONLY] / [FOCUS_ALWAYS] */
     var playFocus: Int
         get() = sp.getInt("play_focus", FOCUS_NORMAL)

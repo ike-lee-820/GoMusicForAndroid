@@ -1304,6 +1304,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             } catch (ignored: Exception) { }
         }
     }
+
+    /**
+     * 打开应用详情页。
+     *
+     * 国产 ROM（小米 / 华为 / OPPO / vivo 等）在电池白名单之外，
+     * 还有「自启动」「后台运行」「锁定最近任务」几道开关，没有统一接口，
+     * 只能把用户送到应用详情页自己找。
+     */
+    fun openAppDetails() {
+        try {
+            val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${app.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            app.startActivity(i)
+        } catch (e: Exception) {
+            runCatching { openBatterySettings() }
+        }
+    }
+
     /** 启动检测弹过一次后，本次进程内不再自动弹 */
     private var autoShown = false
 

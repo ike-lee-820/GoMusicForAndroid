@@ -1,9 +1,16 @@
 package de.myocd.gomusic
 
 import android.Manifest
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
+import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import androidx.annotation.OptIn
@@ -11,7 +18,13 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
@@ -53,6 +66,42 @@ class PlaybackService : MediaSessionService() {
 
     private var callListener: PhoneStateListener? = null
     private var pausedByCall = false
+
+    // ---- 后台保活 ----
+    private val handler = Handler(Looper.getMainLooper())
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var connectivityManager: ConnectivityManager? = null
+
+    /** 播放状态变化时把队列 / 进度存成快照，服务被回收重建时靠它复原 */
+    private val stateListener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            // CPU 唤醒锁由 ExoPlayer 的 WAKE_MODE_NETWORK 管，但 WiFi 射频
+            // 在熄屏后还可能自己进省电态：边播边缓存会在缓冲中途断流。
+            if (isPlaying) acquireWifiLock() else releaseWifiLock()
+            savePlaybackState()
+        }
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) { savePlaybackState() }
+        override fun onMediaItemTransition(item: MediaItem?, reason: Int) { savePlaybackState() }
+        override fun onPlaybackStateChanged(playbackState: Int) { savePlaybackState() }
+    }
+
+    /** 定期存一次进度：切歌 / 暂停等事件之间被强杀时，位置不至于差太多 */
+    private val stateSaver = object : Runnable {
+        override fun run() {
+            if ((player?.mediaItemCount ?: 0) > 0) savePlaybackState()
+            handler.postDelayed(this, 15_000L)
+        }
+    }
+
+    /** Doze 断网又恢复后，播放器可能卡在错误 / IDLE，主动重新准备一次 */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            handler.post { retryIfStalled() }
+        }
+        override fun onLost(network: Network) {
+            NmLog.note("网络断开，恢复后重试播放")
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -144,14 +193,148 @@ class PlaybackService : MediaSessionService() {
             .build()
         player = p
 
-        session = MediaSession.Builder(this, p).setCallback(Cb()).build()
+        // 点通知回应用（media3 默认只带 launcher intent，部分 ROM 会跳到空白页）
+        val openApp = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        p.addListener(stateListener)
+        session = MediaSession.Builder(this, p)
+            .setCallback(Cb())
+            .setSessionActivity(openApp)
+            .build()
         applyFocus()
+        // 服务若是被系统回收后重建的，新 player 队列是空的 —— 通知会直接消失。
+        // 从快照恢复队列（保持暂停），让前台通知和播放栏都回来。
+        restoreQueue(p)
+        // 监听网络恢复 + 定期存进度
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            connectivityManager = cm
+            cm?.registerDefaultNetworkCallback(networkCallback, handler)
+        }
+        handler.postDelayed(stateSaver, 15_000L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val r = super.onStartCommand(intent, flags, startId)
+        super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACTION_APPLY_FOCUS) applyFocus()
-        return r
+        // 被系统回收后让系统重建服务：onCreate 会从队列快照复原，
+        // 否则进程一没，前台通知也随之消失
+        return START_STICKY
+    }
+
+    /** 划掉最近任务时，正在播放就别跟着停（国产 ROM 特别喜欢连服务一起收） */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val p = player
+        if (p != null && p.mediaItemCount > 0 && (p.isPlaying || p.playWhenReady)) {
+            NmLog.note("任务卡片被划掉：保持前台播放服务")
+            return
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    // -------------------------------------------------------------------
+    // 后台保活：WiFi 锁 / 网络恢复重连 / 队列快照
+    // -------------------------------------------------------------------
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        runCatching {
+            if (wifiLock == null) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                wifiLock = wm?.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GoMusic:playback",
+                )
+            }
+            wifiLock?.let { if (!it.isHeld) it.acquire() }
+        }
+    }
+
+    private fun releaseWifiLock() {
+        runCatching { wifiLock?.let { if (it.isHeld) it.release() } }
+    }
+
+    /** 网络回来后，播放器若停在错误 / IDLE，重新准备一次 */
+    private fun retryIfStalled() {
+        val p = player ?: return
+        if (p.mediaItemCount == 0) return
+        runCatching {
+            when {
+                p.playerError != null -> {
+                    NmLog.note("网络恢复：播放器出错，重新准备")
+                    p.prepare()
+                }
+                p.playbackState == Player.STATE_IDLE -> {
+                    NmLog.note("网络恢复：重新准备播放器")
+                    p.prepare()
+                }
+                // STATE_BUFFERING 时 ExoPlayer 自己会重试，不额外干预
+                else -> Unit
+            }
+        }
+    }
+
+    /** 把当前队列与进度写成快照，服务重建时读回来 */
+    private fun savePlaybackState() {
+        val p = player ?: return
+        runCatching {
+            val arr = JsonArray((0 until p.mediaItemCount).map { i ->
+                val m = p.getMediaItemAt(i)
+                val meta = m.mediaMetadata
+                JsonObject(
+                    mapOf(
+                        "s" to JsonPrimitive(m.mediaId),
+                        "u" to JsonPrimitive(m.localConfiguration?.uri?.toString() ?: ""),
+                        "t" to JsonPrimitive(meta.title?.toString() ?: ""),
+                        "a" to JsonPrimitive(meta.artist?.toString() ?: ""),
+                        "c" to JsonPrimitive(meta.artworkUri?.toString() ?: ""),
+                    ),
+                )
+            })
+            val pr = Prefs(applicationContext)
+            pr.lastQueue = arr.toString()
+            pr.lastQueueIndex = p.currentMediaItemIndex.coerceAtLeast(0)
+            pr.lastQueuePos = p.currentPosition.coerceAtLeast(0L)
+        }
+    }
+
+    /** 服务重建后复原队列：只放回去，不自动出声，用户点播放继续 */
+    private fun restoreQueue(p: ExoPlayer) {
+        val pr = Prefs(applicationContext)
+        val raw = pr.lastQueue
+        if (raw.isBlank()) return
+        val arr = runCatching { Api.json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
+            ?: return
+        val items = arr.mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
+            val id = (o["s"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            val uri = (o["u"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+                ?: "gomusic:///$id"
+            val title = (o["t"] as? JsonPrimitive)?.content.orEmpty()
+            val artist = (o["a"] as? JsonPrimitive)?.content.orEmpty()
+            val cover = (o["c"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+            MediaItem.Builder()
+                .setMediaId(id)
+                .setUri(uri)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(title)
+                        .setArtist(artist)
+                        .setArtworkUri(cover?.let { runCatching { Uri.parse(it) }.getOrNull() })
+                        .build(),
+                )
+                .build()
+        }
+        if (items.isEmpty()) return
+        val idx = pr.lastQueueIndex.coerceIn(0, items.lastIndex)
+        val pos = pr.lastQueuePos.coerceAtLeast(0L)
+        p.setMediaItems(items, idx, pos)
+        p.playWhenReady = false
+        savePlaybackState()
+        NmLog.note("服务重建：已恢复队列 ${items.size} 首，停在 ${pos}ms")
     }
 
     private fun buildAttrs(): AudioAttributes = AudioAttributes.Builder()
@@ -233,6 +416,13 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         stopCallWatch()
+        handler.removeCallbacks(stateSaver)
+        runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
+        releaseWifiLock()
+        player?.let {
+            runCatching { savePlaybackState() }
+            it.removeListener(stateListener)
+        }
         // 释放 SimpleCache（边播边缓存用的）
         runCatching { PlayCache.release() }
         session?.run {

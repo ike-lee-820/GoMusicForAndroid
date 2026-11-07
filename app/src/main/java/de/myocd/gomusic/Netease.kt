@@ -1142,7 +1142,7 @@ object Netease {
 
     private fun msgOf(r: JsonObject): String? = r.str("message", "msg")
 
-    /** 只有「换取登录凭证」的接口才精简参数；/login/qr/*、/login/status 等仍走常规形式 */
+    /** 只有「换取登录凭证」的接口才精简参数；扫码类与 login/status 等仍走常规形式 */
     private fun isCredentialPath(path: String): Boolean =
         path == "/login/cellphone" || path == "/register/cellphone" ||
             path.startsWith("/captcha/")

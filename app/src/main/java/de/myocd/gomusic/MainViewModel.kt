@@ -345,7 +345,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun clearNmRisk() { nmRiskTip = ""; nmRiskUrl = null }
 
     /** 命中风控：明确提示 + 给出验证页入口，并保持登录弹层打开 */
-    private fun showNmRisk(r: Netease.LoginResult) {
+    private fun showNmRisk(r: LoginResult) {
         nmRiskUrl = r.verifyUrl ?: r.redirectUrl
         nmRiskTip = (r.message?.takeIf { it.isNotBlank() })
             ?: "当前登录存在安全风险，请先完成验证后再登录"
@@ -378,7 +378,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmBusy = true
         viewModelScope.launch(Dispatchers.IO) {
             val r = runCatching { Netease.sendCaptcha(phone) }
-                .getOrElse { e -> Netease.LoginResult(message = e.message ?: "网络异常") }
+                .getOrElse { e -> LoginResult(message = e.message ?: "网络异常") }
             withContext(Dispatchers.Main) {
                 nmBusy = false
                 when {

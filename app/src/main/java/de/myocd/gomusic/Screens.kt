@@ -143,6 +143,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1681,11 +1682,18 @@ fun FullPlayer(vm: MainViewModel) {
     val cfg = LocalConfiguration.current
     // 横屏（宽 > 高）或屏幕足够宽时，用「左播放器 / 右旋转歌词」的双栏布局
     val wide = cfg.screenWidthDp > cfg.screenHeightDp || cfg.screenWidthDp >= 720
-    val bgModel = remember(s?.coverUrl) { imageModel(s?.coverUrl) }
+    // 优先读已落盘的封面缓存，避免大图再走一次网络
+    val bgModel = remember(s?.coverUrl) {
+        imageModel(ImageCache.cached(s?.coverUrl) ?: s?.coverUrl)
+    }
     Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures { } }) {
         // 背景：模糊放大的专辑封面
         if (bgModel != null) {
-            AsyncImage(bgModel, null, Modifier.fillMaxSize().blur(40.dp), contentScale = ContentScale.Crop)
+            AsyncImage(
+                bgModel, null, Modifier.fillMaxSize().blur(40.dp),
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
+            )
         }
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
         // 控制条默认收起，点最右侧箭头展开 / 收起
@@ -3150,10 +3158,17 @@ fun LyricsList(vm: MainViewModel) {
 fun LyricsPage(vm: MainViewModel) {
     val go = LocalGo.current
     val s = vm.currentSong
-    val bgModel = remember(s?.coverUrl) { imageModel(s?.coverUrl) }
+    // 优先读已落盘的封面缓存，避免大图再走一次网络
+    val bgModel = remember(s?.coverUrl) {
+        imageModel(ImageCache.cached(s?.coverUrl) ?: s?.coverUrl)
+    }
     Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures { } }) {
         if (bgModel != null) {
-            AsyncImage(bgModel, null, Modifier.fillMaxSize().blur(40.dp), contentScale = ContentScale.Crop)
+            AsyncImage(
+                bgModel, null, Modifier.fillMaxSize().blur(40.dp),
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
+            )
         }
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {

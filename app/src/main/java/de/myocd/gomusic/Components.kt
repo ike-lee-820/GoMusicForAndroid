@@ -78,6 +78,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.text.KeyboardActions
@@ -278,7 +279,13 @@ fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle
     Box(modifier.clip(shape).background(go.surfaceHi), contentAlignment = Alignment.Center) {
         Icon(Icons.Outlined.MusicNote, null, tint = go.muted.copy(alpha = 0.5f), modifier = Modifier.size(24.dp))
         if (model != null) {
-            AsyncImage(model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            // FilterQuality.High：源图比控件小或需要放大时用更平滑的采样，
+            // Coil 默认是 Low（双线性），大封面放大后会明显发糊。
+            AsyncImage(
+                model, null, Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
+            )
         }
     }
 }

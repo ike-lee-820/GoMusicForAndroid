@@ -447,6 +447,39 @@ fun guessCoverUrl(s: Song): String? {
     return "$BASE/api/proxy/raw/$repo/$encAlbum/cover.webp?o=$encOwner"
 }
 
+/**
+ * 封面高清化。
+ *
+ * 之前所有网易云封面统一拼 `?param=300y300`：列表小图够用，但播放器/专辑页
+ * 的大封面在 3x 高分屏上要 900px 以上，300px 被放大三倍就明显发糊。
+ * 更糟的是上游有些接口返回的 picUrl 自带 `?param=100y100`，旧逻辑遇到「已带 ?」
+ * 就原样保留，等于把小图直接端上来 —— 这就是「所有封面都模糊」的主因。
+ *
+ * 现在统一强制升到 [size]（默认 1000）：
+ * - 去掉已有的 param / thumbnail / imageView2 / imageMogr2 缩略参数
+ * - 网易云图床（126.net）补 `param=宽y高`；其它图床只在原本带 param 时才补
+ * - QQ 音乐路径里的 `T003R500x500M000...` 同步升级
+ * - 本地路径 / data: URI / 其它业务参数（如本站 cover.webp 的 o=）原样保留
+ *
+ * 只影响 URL，不改变缓存逻辑：URL 变了，旧的 300y300 缓存不会命中，
+ * 会自动重新下一张高清图，无需手动清缓存。
+ */
+fun hdCoverUrl(u: String?, size: Int = 1000): String? {
+    if (u.isNullOrBlank()) return null
+    if (!u.startsWith("http")) return u
+    val i = u.indexOf('?')
+    val base = if (i < 0) u else u.substring(0, i)
+    val query = if (i < 0) "" else u.substring(i + 1)
+    val kept = query.split("&").filterNot { p ->
+        p.isEmpty() || p.startsWith("param=") || p.startsWith("thumbnail") ||
+            p.startsWith("imageView2") || p.startsWith("imageMogr2")
+    }.toMutableList()
+    val isNm = base.contains("126.net")
+    if (isNm || query.contains("param=")) kept.add(0, "param=${size}y${size}")
+    val newBase = Regex("""R\d+x\d+M""").replace(base) { "R${size}x${size}M" }
+    return if (kept.isEmpty()) newBase else "$newBase?${kept.joinToString("&")}"
+}
+
 /** 图片模型：data: URI 解码为字节，本地文件/Uri 直接加载，其余补全为绝对地址 */
 fun imageModel(u: String?): Any? {
     if (u.isNullOrBlank()) return null

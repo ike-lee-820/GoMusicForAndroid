@@ -281,11 +281,16 @@ object Netease {
     private fun JsonObject.code(): Int =
         (this["code"] as? JsonPrimitive)?.content?.toIntOrNull() ?: -1
 
-    /** 封面缩略图：网易云图片支持 ?param=宽y高 */
-    private fun pic(u: String?, size: Int = 300): String? {
+    /**
+     * 封面高清化：网易云图片支持 ?param=宽y高。
+     *
+     * 默认 1000x1000（原来 300），播放器大封面在 3x 屏上不再被放大三倍。
+     * 上游自带的 ?param=100y100 也会被强制覆盖，具体见 [hdCoverUrl]。
+     */
+    private fun pic(u: String?, size: Int = 1000): String? {
         if (u.isNullOrBlank()) return null
         if (!u.startsWith("http")) return null
-        return if (u.contains("?")) u else "$u?param=${size}y$size"
+        return hdCoverUrl(u, size)
     }
 
     /** 从 al / artists / ar 里取歌手名 */

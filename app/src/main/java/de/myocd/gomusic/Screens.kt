@@ -1691,17 +1691,17 @@ fun FullPlayer(vm: MainViewModel) {
         // 控制条默认收起，点最右侧箭头展开 / 收起
         var ctrlOpen by remember { mutableStateOf(false) }
         // 横屏扒下控制条后，只要 0.5 秒没点控制条区域就立刻收起。
-        // 用绝对截止时间而不是「每次点击重启 LaunchedEffect」：协程只轮询
-        // AtomicLong，不读 Compose State，也不会因为点击被反复重置而一直不收。
-        // 在区域里点一下就把截止往后推 0.5 秒；点区域外（歌词）不推，照常收。
-        val ctrlDeadline = remember { java.util.concurrent.atomic.AtomicLong(0L) }
-        LaunchedEffect(wide, ctrlOpen) {
-            if (!wide || !ctrlOpen) return@LaunchedEffect
-            val d = ctrlDeadline
-            d.set(System.currentTimeMillis() + 500)
-            while (System.currentTimeMillis() < d.get()) delay(25)
-            ctrlOpen = false
-            d.set(0L)
+        // 用主线程 Handler 的 postDelayed 做绝对定时：不依赖协程是否被取消、
+        // 也不依赖 Compose 重组，展开那一刻就排好 0.5 秒后必定收起。
+        // 在控制条区域里按一下就重排计时；点区域外（歌词）不重排，照常收。
+        val ctrlHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+        val hideCtrl = remember {
+            object : Runnable { override fun run() { ctrlOpen = false } }
+        }
+        DisposableEffect(wide, ctrlOpen) {
+            ctrlHandler.removeCallbacks(hideCtrl)
+            if (wide && ctrlOpen) ctrlHandler.postDelayed(hideCtrl, 500)
+            onDispose { ctrlHandler.removeCallbacks(hideCtrl) }
         }
         // ---------- 内容区：始终占满整屏 ----------
         // 操作栏不再参与这一层的布局（见下面的浮层），所以展开 / 收起
@@ -1736,7 +1736,8 @@ fun FullPlayer(vm: MainViewModel) {
                         while (true) {
                             val e = awaitPointerEvent(PointerEventPass.Initial)
                             if (e.changes.any { it.pressed && !it.previousPressed }) {
-                                ctrlDeadline.set(System.currentTimeMillis() + 500)
+                                ctrlHandler.removeCallbacks(hideCtrl)
+                                ctrlHandler.postDelayed(hideCtrl, 500)
                             }
                         }
                     }

@@ -73,6 +73,27 @@ fun nmLevelLabel(lv: String): String = when (lv) {
     else -> lv
 }
 
+/**
+ * 音质名归一化：请求发的是英文档位（standard / hires …），服务端返回的
+ * level 可能是英文，也可能是中文音质名。归一到同一套英文 key 才能比对。
+ * 对照：standard=>标准 higher=>较高 exhigh=>极高 lossless=>无损 hires=>Hi-Res
+ * jyeffect=>高清臻音 dolby=>杜比全景声 vivid=>臻音全景声
+ * jymaster=>超清母带 sky=>沉浸环绕声
+ */
+fun nmLevelKey(name: String): String = when (name.trim().lowercase()) {
+    "standard", "标准" -> "standard"
+    "higher", "较高" -> "higher"
+    "exhigh", "极高" -> "exhigh"
+    "lossless", "无损" -> "lossless"
+    "hires", "hi-res" -> "hires"
+    "jyeffect", "高清臻音" -> "jyeffect"
+    "dolby", "杜比全景声" -> "dolby"
+    "vivid", "臻音全景声" -> "vivid"
+    "jymaster", "超清母带" -> "jymaster"
+    "sky", "沉浸环绕声" -> "sky"
+    else -> name.trim().lowercase()
+}
+
 /** 本站音质键 -> 网易云默认档位 */
 fun nmLevelOfQuality(quality: String): String = when (quality) {
     "lossless" -> "lossless"
@@ -88,13 +109,40 @@ object Netease {
     @Volatile
     var cookie: String = ""
         set(v) {
-            field = v
-            if (v.isNotBlank()) NmLog.note("已设置 cookie，包含键：${cookieKeys(v)}（长度 ${v.length}）")
+            // 服务端 /login/cellphone 返回的 cookie 是一整串 Set-Cookie 文本，
+            // 里面夹着 Max-Age / Expires / Path 等属性，还有大量同名重复项。
+            // 直接拼进请求会让整串 cookie 解析失败（登录了却拿不到高音质）。
+            // 统一在这里清洗：只留真正的 key=value，去重，并强制带 os=pc
+            // （网易云按 PC 端才给无损 / Hi-Res 等档位）。
+            field = if (v.isBlank()) "" else normalizeCookie(v)
+            if (field.isNotBlank()) NmLog.note("已设置 cookie，包含键：${cookieKeys(field)}（长度 ${field.length}，os=pc）")
         }
 
     /** 日志里只记 cookie 的键名，不记值，避免泄露登录凭证 */
     private fun cookieKeys(c: String): String =
         c.split(";").map { it.substringBefore("=").trim() }.filter { it.isNotBlank() }.joinToString(",")
+
+    /** Set-Cookie 属性名，不是 cookie 键，必须剔除 */
+    private val COOKIE_ATTRS = setOf(
+        "max-age", "expires", "path", "domain", "secure",
+        "httponly", "samesite", "priority", "partitioned", "version",
+    )
+
+    /** 把原始 cookie 串洗干净，并补上 os=pc 保证能拿到高音质 */
+    private fun normalizeCookie(raw: String): String {
+        val map = LinkedHashMap<String, String>()
+        raw.split(";").forEach { seg ->
+            val t = seg.trim()
+            if (t.isEmpty()) return@forEach
+            val k = t.substringBefore("=").trim()
+            val v = t.substringAfter("=", "").trim()
+            if (k.isEmpty() || k.lowercase() in COOKIE_ATTRS) return@forEach
+            // 同名重复（MUSIC_A_T / MUSIC_R_T 会出现十几次）只留非空值
+            if (v.isNotEmpty() || !map.containsKey(k)) map[k] = v
+        }
+        map["os"] = "pc"
+        return map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
 
     /** 音质：本站质量键 -> 网易云 level（从高到低，逐个尝试直到拿到地址） */
     private fun levels(quality: String): List<String> = when (quality) {
@@ -139,6 +187,11 @@ object Netease {
         // 注意：/song/url/v1 不支持自定义解灰源（会返回 msg 警告并忽略），
         // 这种情况要走 /song/url/match，见 audioUrl 的兜底。
         sb.append("unblock=true&")
+        // 所有网易云 API 请求（含登录、搜索、取地址、歌词）统一带随机国内 IP，
+        // 绕开网易对境外 IP 的 460 cheating。调用方若已显式带则不重复追加。
+        if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
+            sb.append("randomCNIP=true&")
+        }
         if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
@@ -486,7 +539,21 @@ object Netease {
                             (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
                         val u = first?.str("url")
                             ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
-                        return !u.isNullOrBlank()
+                        if (u.isNullOrBlank()) return false
+                        // 关键：请求 hires 时服务端可能降档返回 standard 的地址。
+                        // 以前只要有 url 就算这一档「有音源」，于是菜单把没有的
+                        // 档位也显示成有，切过去听到的其实还是低音质。
+                        // 现在要求返回的音质名与发送的音质名相同才算有；
+                        // 明确不同 = 这一档没有；压根没返回 level = 没探出来
+                        // （返回 null，既不置灰也不冒充有）。
+                        val got = first?.str("level", "levelName", "quality")
+                            ?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
+                        if (got == null) return null
+                        if (got != lv) {
+                            NmLog.note("音质探测 $lv 被降档为 $got，视为无音源")
+                            return false
+                        }
+                        return true
                     }
                     // 只探一次，不重试：7 个档位各重试一次就是 14 个请求，
                     // 而它只是用来给菜单置灰「无音源」，不值得为偶发抖动
@@ -627,6 +694,9 @@ object Netease {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
         sb.append("unblock=true&")
+        if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
+            sb.append("randomCNIP=true&")
+        }
         if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
@@ -658,10 +728,11 @@ object Netease {
      */
     private fun probeLevels(id: Long, levels: List<String>): List<UrlHit> {
         if (levels.isEmpty()) return emptyList()
+        // getOnce 现在统一带 randomCNIP=true，原来专门发一条 randomCNIP 变体
+        // 已经和基础请求完全一样，去掉它，请求量直接少 1/3。
         val jobs = levels.flatMap { lv ->
             listOf(
                 lv to listOf("id" to id.toString(), "level" to lv),
-                lv to listOf("id" to id.toString(), "level" to lv, "randomCNIP" to "true"),
                 lv to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
             )
         }
@@ -672,7 +743,12 @@ object Netease {
                     val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
                     val u = first?.str("url")
                         ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
-                    if (u.isNullOrBlank()) null else UrlHit(lv, u)
+                    if (u.isNullOrBlank()) return@async null
+                    // 服务端降档返回时，实际档位以它返回的为准，
+                    // 否则界面会把 standard 的地址标成 Hi-Res。
+                    val got = first?.str("level", "levelName", "quality")
+                        ?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
+                    UrlHit(if (got.isNullOrBlank()) lv else got, u)
                 }
             }.awaitAll().filterNotNull()
         }
@@ -1029,8 +1105,17 @@ object Netease {
         return s
     }
 
-    private fun cookieOf(r: JsonObject): String? =
-        r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+    /**
+     * 登录凭证：优先取响应里的 cookie 字段（/login/cellphone 返回的是一整串
+     * Set-Cookie 文本，setter 会清洗并补 os=pc）。有些部署 cookie 字段缺失，
+     * 但顶层给了 token，用它构造 MUSIC_U 作为兜底，不至于「登录 200 却没登录态」。
+     */
+    private fun cookieOf(r: JsonObject): String? {
+        val raw = r.str("cookie")?.takeIf { it.contains("=") } ?: findCookie(r)
+        if (!raw.isNullOrBlank()) return raw
+        val tk = r.str("token")?.takeIf { it.isNotBlank() && it.length > 20 }
+        return tk?.let { "MUSIC_U=$it" }
+    }
 
     private fun msgOf(r: JsonObject): String? = r.str("message", "msg")
 
@@ -1061,13 +1146,14 @@ object Netease {
     fun loginByCaptcha(phone: String, captcha: String): LoginResult {
         val p = cleanPhone(phone)
         val c = captcha.trim()
-        // 不同部署对参数的宽容度不一样：先带 countrycode，拿不到登录凭证
-        // 就去掉再试一次；仍不行再试「先 verify 再登录」这条路。
-        // 三条都走完还是失败，才把服务端的 message 报上去。
-        var r = get("/login/cellphone", "phone" to p, "captcha" to c, "countrycode" to "86")
+        // 按实际可用的调用形式来：/login/cellphone?phone=..&captcha=..&randomCNIP=true
+        // 不带 countrycode（部分部署带 86 反而校验失败），验证码本身就是完整凭据。
+        // randomCNIP 已由 get() 统一追加，登录接口尤其需要它。
+        var r = get("/login/cellphone", "phone" to p, "captcha" to c)
         var ck = cookieOf(r)
         if (ck == null) {
-            r = get("/login/cellphone", "phone" to p, "captcha" to c)
+            NmLog.note("验证码登录首轮未拿到凭证（code=${r.code()}），去掉多余参数重试")
+            r = get("/login/cellphone", "phone" to p, "captcha" to c, "countrycode" to "86")
             ck = cookieOf(r)
         }
         val first = LoginResult(ck, r.code(), msgOf(r))
@@ -1079,6 +1165,7 @@ object Netease {
             val ck2 = cookieOf(r2)
             if (ck2 != null) return LoginResult(ck2, r2.code(), msgOf(r2))
         }
+        NmLog.note("验证码登录失败 code=${first.code} msg=${first.message}")
         return first
     }
 

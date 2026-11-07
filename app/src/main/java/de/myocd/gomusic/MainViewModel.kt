@@ -789,8 +789,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             toast("登录失败：没有拿到登录凭证，请重新扫码")
             return
         }
-        prefs.nmCookie = cookie
+        // 先交给 Netease 清洗（去掉 Set-Cookie 属性、去重、补 os=pc），
+        // 再把干净的那份持久化：以前直接存原始串，重启后 cookie 里混着
+        // Max-Age / Path，请求会被判无效，高音质也拿不到。
         Netease.cookie = cookie
+        prefs.nmCookie = Netease.cookie
         homeLoaded = false
         showNmLogin = false
         viewModelScope.launch(Dispatchers.IO) {

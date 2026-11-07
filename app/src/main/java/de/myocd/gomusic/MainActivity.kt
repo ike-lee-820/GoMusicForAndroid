@@ -12,6 +12,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
@@ -129,9 +131,44 @@ private fun StatusBarMode() {
     val act = LocalContext.current as? ComponentActivity ?: return
     val landscape = isLandscape()
     LaunchedEffect(landscape) {
-        WindowCompat.getInsetsController(act.window, act.window.decorView).apply {
-            if (landscape) hide(WindowInsetsCompat.Type.statusBars())
-            else show(WindowInsetsCompat.Type.statusBars())
+        val ctl = WindowCompat.getInsetsController(act.window, act.window.decorView)
+        val type = WindowInsetsCompat.Type.statusBars()
+        if (!landscape) {
+            ctl.show(type)
+            return@LaunchedEffect
+        }
+        ctl.hide(type)
+        // 横屏从顶部「扒下」会临时唤出系统状态栏，系统默认要几秒才自己收。
+        // 这里盯着 window insets：状态栏一露出来就起 0.5 秒表，
+        // 期间状态栏高度还在变（用户还在下拉 / 点通知）就重置，
+        // 稳定 0.5 秒没人碰就主动 hide 把它收起来。
+        // 用轮询而不是 hide 之后就撒手：临时栏被系统再次显示时也能继续收。
+        ctl.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        var idleSince = 0L
+        var lastTop = -1
+        while (true) {
+            delay(50)
+            val ins = ViewCompat.getRootWindowInsets(act.window.decorView) ?: continue
+            val visible = ins.isVisible(type)
+            val top = ins.getInsets(type).top
+            if (!visible || top <= 0) {
+                idleSince = 0L
+                lastTop = -1
+                continue
+            }
+            val now = System.currentTimeMillis()
+            if (top != lastTop) {
+                lastTop = top
+                idleSince = now
+            } else if (idleSince == 0L) {
+                idleSince = now
+            }
+            if (now - idleSince >= 500) {
+                ctl.hide(type)
+                idleSince = 0L
+                lastTop = -1
+            }
         }
     }
 }

@@ -131,7 +131,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -287,10 +286,13 @@ fun MainScreen(vm: MainViewModel) {
     // 横屏（含平板）：底栏挪到左侧竖排、迷你播放器挪到右侧竖排，
     // 中间留给内容 —— 竖屏那两条横栏在横屏下会把内容压得很扁
     val landscape = isLandscape()
-    // 横屏：状态栏隐藏了，在左侧补一条等宽的空白（挖孔/圆角常在这一侧）
+    // 横屏：状态栏隐藏了，左侧要留出挖孔/圆角的空间。
+    // 这个间隔用「内边距」实现：交给左侧导航栏自己消化，让它的 surface
+    // 背景一直铺到屏幕左边缘。以前加在最外层 Box 上（外间距），左边会露出
+    // 一条 bg 纯黑的窄条，和导航栏明显有色差，很难看。
     val sideInset = if (landscape) statusBarHeightDp() else 0.dp
 
-    Box(Modifier.fillMaxSize().background(go.bg).padding(start = sideInset)) {
+    Box(Modifier.fillMaxSize().background(go.bg)) {
         // weight 必须在 Row/Column 作用域里用，所以把内容块做成带 Modifier 的 lambda
         val contentBox: @Composable (Modifier) -> Unit = { mod ->
             Box(mod.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
@@ -329,7 +331,7 @@ fun MainScreen(vm: MainViewModel) {
         }
         if (landscape) {
             Row(Modifier.fillMaxSize()) {
-                NavRail(vm)
+                NavRail(vm, sideInset)
                 contentBox(Modifier.weight(1f))
                 MiniPlayerRail(vm)
             }
@@ -395,7 +397,7 @@ fun statusBarHeightDp(): Dp {
 }
 
 @Composable
-fun NavRail(vm: MainViewModel) {
+fun NavRail(vm: MainViewModel, startInset: Dp = 0.dp) {
     val go = LocalGo.current
     // 顺序：歌曲 / 专辑 / 首页 / 歌手 / 歌单 —— 首页在正中间
     val tabs = listOf(
@@ -407,7 +409,11 @@ fun NavRail(vm: MainViewModel) {
     )
     val w = 76.dp
     Column(
-        Modifier.fillMaxHeight().width(w).background(go.surface)
+        // 宽度把摄像头间隔也算进去，背景先铺满到屏幕最左侧（含挖孔列），
+        // 再用 start padding 把按钮往右推 —— 内边距而非外间距，
+        // 左侧就不会露出一条和导航栏不同色的纯黑窄条。
+        Modifier.fillMaxHeight().width(w + startInset).background(go.surface)
+            .padding(start = startInset)
             .navigationBarsPadding().padding(vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -1682,6 +1688,9 @@ fun FullPlayer(vm: MainViewModel) {
     val cfg = LocalConfiguration.current
     // 横屏（宽 > 高）或屏幕足够宽时，用「左播放器 / 右旋转歌词」的双栏布局
     val wide = cfg.screenWidthDp > cfg.screenHeightDp || cfg.screenWidthDp >= 720
+    // 横屏摄像头间隔：只给「内容」加内边距，黑色背景与模糊封面照旧铺满到
+    // 屏幕最左侧（背景延伸），避免左边留一条和播放页底色不同的窄条。
+    val sideInset = if (isLandscape()) statusBarHeightDp() else 0.dp
     // 优先读已落盘的封面缓存，避免大图再走一次网络
     val bgModel = remember(s?.coverUrl) {
         imageModel(ImageCache.cached(s?.coverUrl) ?: s?.coverUrl)
@@ -1696,26 +1705,18 @@ fun FullPlayer(vm: MainViewModel) {
             )
         }
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
-        // 控制条默认收起，点最右侧箭头展开 / 收起
+        // 控制条默认收起，只由最右侧箭头手动展开 / 收起。
+        // 横屏下不做任何自动收起：展开后一直保持，直到用户自己点箭头收起，
+        // 或退出播放页（组合销毁后状态自然重置）。
         var ctrlOpen by remember { mutableStateOf(false) }
-        // 横屏扒下控制条后，只要 0.5 秒没点控制条区域就立刻收起。
-        // 用主线程 Handler 的 postDelayed 做绝对定时：不依赖协程是否被取消、
-        // 也不依赖 Compose 重组，展开那一刻就排好 0.5 秒后必定收起。
-        // 在控制条区域里按一下就重排计时；点区域外（歌词）不重排，照常收。
-        val ctrlHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
-        val hideCtrl = remember {
-            object : Runnable { override fun run() { ctrlOpen = false } }
-        }
-        DisposableEffect(wide, ctrlOpen) {
-            ctrlHandler.removeCallbacks(hideCtrl)
-            if (wide && ctrlOpen) ctrlHandler.postDelayed(hideCtrl, 500)
-            onDispose { ctrlHandler.removeCallbacks(hideCtrl) }
-        }
         // ---------- 内容区：始终占满整屏 ----------
         // 操作栏不再参与这一层的布局（见下面的浮层），所以展开 / 收起
         // 都不会改变专辑与歌词可用的高度 —— 之前操作栏和拦截层都在 Column 里，
         // 展开时把内容区压掉 100 多 dp，专辑被缩小、歌词中心也被推到偏下。
-        Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 16.dp)) {
+        Box(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                .padding(start = 16.dp + sideInset, end = 16.dp),
+        ) {
             if (s != null) {
                 if (wide) {
                     WidePlayerPane(vm, s, Modifier.fillMaxSize())
@@ -1736,20 +1737,7 @@ fun FullPlayer(vm: MainViewModel) {
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp)
-                // 只观察「刚按下」这一帧，不消费事件：控制条里的按钮
-                // 照常响应点击，同时把收起时间往后推 0.5 秒
-                .pointerInput(Unit) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val e = awaitPointerEvent(PointerEventPass.Initial)
-                            if (e.changes.any { it.pressed && !it.previousPressed }) {
-                                ctrlHandler.removeCallbacks(hideCtrl)
-                                ctrlHandler.postDelayed(hideCtrl, 500)
-                            }
-                        }
-                    }
-                },
+                .padding(start = 16.dp + sideInset, end = 16.dp),
         ) {
             Column {
                 Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3171,7 +3159,12 @@ fun LyricsPage(vm: MainViewModel) {
             )
         }
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        // 背景铺满到左边缘，只把歌词内容往右推，避开横屏挖孔那一列
+        val sideInset = if (isLandscape()) statusBarHeightDp() else 0.dp
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                .padding(start = sideInset),
+        ) {
             Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconBtn(Icons.Outlined.KeyboardArrowDown, "关闭歌词", size = 44.dp) { vm.showLyrics = false }
                 Column(Modifier.weight(1f)) {

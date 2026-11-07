@@ -48,9 +48,19 @@ data class LoginResult(
     val cookie: String? = null,
     val code: Int = -1,
     val message: String? = null,
+    /** 易盾安全验证页（code -462 / data.url），需用户在浏览器完成后重试 */
+    val verifyUrl: String? = null,
+    /** 服务端给的跳转页，例如「当前登录存在安全风险」的 phoneReuse 页 */
+    val redirectUrl: String? = null,
+    /** 命中风控：无论有没有跳转页都要明确提示，不能静默失败 */
+    val risk: Boolean = false,
+    /** 发送验证码用：true 表示短信已下发 */
+    val sent: Boolean = false,
 ) {
     val ok: Boolean get() = !cookie.isNullOrBlank()
+    val blocked: Boolean get() = risk || !verifyUrl.isNullOrBlank() || !redirectUrl.isNullOrBlank()
 }
+
 
 /** 网易云可选音质档位（从低到高） */
 val NM_LEVELS = listOf(
@@ -186,13 +196,17 @@ object Netease {
         // unblock=true：启用解灰（变灰歌曲匹配第三方音源）。
         // 注意：/song/url/v1 不支持自定义解灰源（会返回 msg 警告并忽略），
         // 这种情况要走 /song/url/match，见 audioUrl 的兜底。
-        sb.append("unblock=true&")
+        // 登录 / 发验证码这类「换凭证」的接口按服务端验证过的形式发：
+        // 不带 unblock（解灰参数对登录无意义）、不自动带旧 cookie
+        // （带着旧登录态更容易被判「当前登录存在安全风险」）。
+        val cred = isCredentialPath(path)
+        if (!cred) sb.append("unblock=true&")
         // 所有网易云 API 请求（含登录、搜索、取地址、歌词）统一带随机国内 IP，
         // 绕开网易对境外 IP 的 460 cheating。调用方若已显式带则不重复追加。
         if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
             sb.append("randomCNIP=true&")
         }
-        if (cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
+        if (!cred && cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
         NmLog.req(url)
@@ -209,12 +223,21 @@ object Netease {
                 Api.client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
                     NmLog.res(url, r.code, t)
-                    if (!r.isSuccessful || t.isBlank()) {
-                        throw IOException("HTTP ${r.code} ${if (t.isBlank()) "(空响应)" else ""}")
-                    }
+                    if (t.isBlank()) throw IOException("HTTP ${r.code} (空响应)")
                     val el = runCatching { json.parseToJsonElement(t) }.getOrNull()
-                    if (el is JsonObject) return el
-                    throw IOException("响应不是 JSON 对象")
+                    if (el is JsonObject) {
+                        // HTTP 400/403 常带着完整的业务错误（例如 -462 易盾验证、
+                        // 10004 安全风险）。以前一律当网络错误重试 3 次，body 被丢掉，
+                        // 上层只拿到空对象 → code -1、msg null，既没提示也没跳转。
+                        // 这类是确定性结果，重试只会换一个新的 verifyToken 并白等几秒，
+                        // 直接把 JSON 交给调用方按 code 处理。
+                        if (!r.isSuccessful) {
+                            NmLog.note("接口返回业务错误 HTTP ${r.code} code=${el.code()}，不再重试")
+                        }
+                        return el
+                    }
+                    if (r.isSuccessful) throw IOException("响应不是 JSON 对象")
+                    throw IOException("HTTP ${r.code}")
                 }
             } catch (e: Exception) {
                 last = e
@@ -1119,20 +1142,64 @@ object Netease {
 
     private fun msgOf(r: JsonObject): String? = r.str("message", "msg")
 
+    /** 只有「换取登录凭证」的接口才精简参数；/login/qr/*、/login/status 等仍走常规形式 */
+    private fun isCredentialPath(path: String): Boolean =
+        path == "/login/cellphone" || path == "/register/cellphone" ||
+            path.startsWith("/captcha/")
+
+    /**
+     * 是否命中网易风控。三种形态：
+     * - code -462：易盾滑块，data.url 是验证页，data.verifyToken 是一次性 token
+     * - code 10004 / hitType 800001：「当前登录存在安全风险」，带 redirectUrl
+     * - 顶层直接给了 redirectUrl 或 data 里带 verifyToken
+     */
+    private fun isRisk(r: JsonObject): Boolean {
+        val c = r.code()
+        if (c == -462 || c == 10004) return true
+        if (r.str("redirectUrl")?.startsWith("http") == true) return true
+        val d = r.obj("data") ?: return false
+        return d.containsKey("verifyToken") || d.containsKey("verifyUrl") || d["verifyId"] != null
+    }
+
+    /** 把风控响应解析成可展示的结果：提示文案 + 可打开的验证页 */
+    private fun riskResult(r: JsonObject): LoginResult {
+        val d = r.obj("data")
+        val verify = (d?.str("url") ?: d?.str("verifyUrl") ?: r.str("verifyUrl"))
+            ?.takeIf { it.startsWith("http") }
+        val redirect = r.str("redirectUrl")?.takeIf { it.startsWith("http") }
+        val block = d?.str("blockText")?.trim()?.takeIf { it.isNotBlank() }
+        val msg = msgOf(r) ?: d?.str("message") ?: block
+            ?: "当前登录存在安全风险，请先完成验证后再登录"
+        NmLog.note(
+            "命中网易风控 code=${r.code()} 验证页=${if (verify != null) "有" else "无"} " +
+                "跳转页=${if (redirect != null) "有" else "无"} 提示=$msg",
+        )
+        return LoginResult(
+            code = r.code(), message = msg,
+            verifyUrl = verify, redirectUrl = redirect, risk = true,
+        )
+    }
+
     /**
      * 发送短信验证码。返回 null 表示已发送，否则是失败原因。
      *
      * /captcha/sent 与 /captcha/sent/v1 都能发，不同部署上可用情况不一样
      * （有的只认其中一条），所以第一条失败就换另一条再试一次。
      */
-    fun sendCaptcha(phone: String): String? {
+    fun sendCaptcha(phone: String): LoginResult {
         val p = cleanPhone(phone)
         val r1 = get("/captcha/sent", "phone" to p, "ctcode" to "86")
-        if (r1.code() == 200) return null
+        if (r1.code() == 200) return LoginResult(sent = true, code = 200)
+        // 风控是确定性结果，重试另一条 sent 接口只会再拿一个新 token，别浪费
+        if (isRisk(r1)) return riskResult(r1)
         val r2 = get("/captcha/sent/v1", "phone" to p, "ctcode" to "86")
-        if (r2.code() == 200) return null
-        return (msgOf(r2).takeIf { !it.isNullOrBlank() } ?: msgOf(r1))
-            ?: "发送失败（code ${r1.code()}）"
+        if (r2.code() == 200) return LoginResult(sent = true, code = 200)
+        if (isRisk(r2)) return riskResult(r2)
+        return LoginResult(
+            code = r2.code(),
+            message = (msgOf(r2).takeIf { !it.isNullOrBlank() } ?: msgOf(r1))
+                ?: "发送失败（code ${r1.code()}）",
+        )
     }
 
     /**
@@ -1150,18 +1217,25 @@ object Netease {
         // 不带 countrycode（部分部署带 86 反而校验失败），验证码本身就是完整凭据。
         // randomCNIP 已由 get() 统一追加，登录接口尤其需要它。
         var r = get("/login/cellphone", "phone" to p, "captcha" to c)
+        // 风控立刻返回：绝不能重试，也不能去 /captcha/verify。
+        // 重试会刷掉刚才那个 verifyToken，verify 还会把验证码核销，
+        // 用户验证完回来反而彻底登不上。
+        if (isRisk(r)) return riskResult(r)
         var ck = cookieOf(r)
         if (ck == null) {
-            NmLog.note("验证码登录首轮未拿到凭证（code=${r.code()}），去掉多余参数重试")
+            NmLog.note("验证码登录首轮未拿到凭证（code=${r.code()}），补 countrycode 重试")
             r = get("/login/cellphone", "phone" to p, "captcha" to c, "countrycode" to "86")
+            if (isRisk(r)) return riskResult(r)
             ck = cookieOf(r)
         }
         val first = LoginResult(ck, r.code(), msgOf(r))
         if (first.ok) return first
         // 少数部署要求先 /captcha/verify 再登录（虽然多数会因此核销验证码）
         val v = get("/captcha/verify", "phone" to p, "captcha" to c, "ctcode" to "86")
+        if (isRisk(v)) return riskResult(v)
         if (v.code() == 200) {
             val r2 = get("/login/cellphone", "phone" to p, "captcha" to c)
+            if (isRisk(r2)) return riskResult(r2)
             val ck2 = cookieOf(r2)
             if (ck2 != null) return LoginResult(ck2, r2.code(), msgOf(r2))
         }
@@ -1176,6 +1250,7 @@ object Netease {
             "phone" to cleanPhone(phone), "password" to password,
             "captcha" to captcha.trim(), "nickname" to nickname, "countrycode" to "86",
         )
+        if (isRisk(r)) return riskResult(r)
         return LoginResult(cookieOf(r), r.code(), msgOf(r))
     }
 

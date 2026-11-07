@@ -335,17 +335,57 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmQr = null
     }
 
+    /**
+     * 网易风控：需要用户在浏览器完成安全验证后才能继续登录。
+     * 非空时登录弹层会显示提示卡片和「打开验证页」按钮。
+     */
+    var nmRiskTip by mutableStateOf(""); private set
+    var nmRiskUrl by mutableStateOf<String?>(null); private set
+
+    fun clearNmRisk() { nmRiskTip = ""; nmRiskUrl = null }
+
+    /** 命中风控：明确提示 + 给出验证页入口，并保持登录弹层打开 */
+    private fun showNmRisk(r: Netease.LoginResult) {
+        nmRiskUrl = r.verifyUrl ?: r.redirectUrl
+        nmRiskTip = (r.message?.takeIf { it.isNotBlank() })
+            ?: "当前登录存在安全风险，请先完成验证后再登录"
+        showNmLogin = true
+        toast(nmRiskTip)
+        NmLog.note("登录风控提示：${nmRiskTip}（验证页=${if (nmRiskUrl != null) "有" else "无"}）")
+    }
+
+    /** 用外部浏览器打开验证页（易盾滑块在真实浏览器里才能正常完成） */
+    fun openNmVerify() {
+        val u = nmRiskUrl ?: return
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { app.startActivity(i) }
+            .onFailure { toast("无法打开验证页：${it.message}") }
+    }
+
+    /** 复制链接：方便在电脑浏览器里完成验证 */
+    fun copyNmVerify() {
+        val u = nmRiskUrl ?: return
+        val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText("网易云验证页", u))
+        toast("验证链接已复制")
+    }
+
     /** 发送短信验证码 */
     fun nmSendCode(phone: String) {
         if (phone.isBlank()) { toast("请填写手机号"); return }
         nmBusy = true
         viewModelScope.launch(Dispatchers.IO) {
-            val err = runCatching { Netease.sendCaptcha(phone) }
-                .getOrElse { e -> e.message ?: "网络异常" }
+            val r = runCatching { Netease.sendCaptcha(phone) }
+                .getOrElse { e -> Netease.LoginResult(message = e.message ?: "网络异常") }
             withContext(Dispatchers.Main) {
                 nmBusy = false
-                // 失败原因透传：发得太频繁、号码无效，提示是不一样的
-                toast(if (err == null) "验证码已发送" else "发送失败：$err")
+                when {
+                    r.sent -> { clearNmRisk(); toast("验证码已发送") }
+                    r.blocked -> showNmRisk(r)
+                    else -> toast("发送失败：${r.message ?: "请稍后再试"}")
+                }
             }
         }
     }
@@ -376,8 +416,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             nmBusy = false
             when {
                 r == null -> toast("登录超时或网络异常，请稍后再试")
-                r.ok -> nmLogin(r.cookie!!, null)
+                r.ok -> { clearNmRisk(); nmLogin(r.cookie!!, null) }
+                // 风控必须显式提示并可跳转验证页，不能只 toast 一句就算了
+                r.blocked -> showNmRisk(r)
                 else -> {
+                    clearNmRisk()
                     val m = r.message?.takeIf { it.isNotBlank() }
                     toast(if (m != null) "登录失败：$m" else "登录失败（code ${r.code}）")
                     NmLog.note("验证码登录失败 code=${r.code} msg=${r.message}")

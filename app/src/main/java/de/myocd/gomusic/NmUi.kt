@@ -69,6 +69,37 @@ fun NmLoginSheet(vm: MainViewModel) {
             }
             Spacer(Modifier.height(14.dp))
             if (tab == 0) QrLogin(vm) else PhoneLogin(vm)
+            // 风控提示：紧跟在登录表单下面，失败时立刻能看到原因和验证入口。
+            // -462（易盾滑块）/ 10004（安全风险）以前被 HTTP 400 吞掉，
+            // 只显示「登录失败（code -1）」，也没有任何跳转。
+            if (vm.nmRiskTip.isNotBlank()) {
+                Spacer(Modifier.height(12.dp))
+                Column(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(go.surfaceHi)
+                        .padding(12.dp),
+                ) {
+                    Txt("需要安全验证", 14, weight = FontWeight.SemiBold, color = go.primary)
+                    Spacer(Modifier.height(6.dp))
+                    Txt(vm.nmRiskTip, 12, color = go.on)
+                    Spacer(Modifier.height(6.dp))
+                    Txt(
+                        "在浏览器完成验证后回到这里重新点登录即可；验证码通常仍然有效，先别重新获取",
+                        11, color = go.muted,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (vm.nmRiskUrl != null) {
+                            GoButton("打开验证页", primary = true) { vm.openNmVerify() }
+                            Spacer(Modifier.width(8.dp))
+                            GoButton("复制链接") { vm.copyNmVerify() }
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        GoButton("关闭提示") { vm.clearNmRisk() }
+                    }
+                }
+            }
             Spacer(Modifier.height(16.dp))
         }
     }

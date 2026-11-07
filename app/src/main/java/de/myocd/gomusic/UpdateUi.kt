@@ -131,7 +131,7 @@ fun UpdateScreen(vm: MainViewModel) {
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                Txt("用浏览器打开下载页，经 gh-proxy 加速", 11, color = go.muted)
+                Txt("用浏览器打开下载页，经 v6.gh-proxy 加速", 11, color = go.muted)
             }
             Spacer(Modifier.height(18.dp))
             // 取消

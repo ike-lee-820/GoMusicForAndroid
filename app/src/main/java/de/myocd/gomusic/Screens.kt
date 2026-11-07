@@ -3493,7 +3493,7 @@ fun SettingsSheet(vm: MainViewModel) {
                 }
             }
             VS(8)
-            Txt("更新检查经 gh-proxy.com 加速", 11, color = go.muted)
+            Txt("更新检查经 v6.gh-proxy.com 加速", 11, color = go.muted)
             VS(16)
 
             // ---------- 字体 ----------

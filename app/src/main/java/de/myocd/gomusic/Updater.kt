@@ -13,13 +13,13 @@ import okhttp3.Request
  * 应用更新检查。
  *
  * 从 GitHub Releases 拿最新版本号与当前版本比对；
- * 所有 GitHub 请求都套一层 gh-proxy.com 加速（失败时自动回退直连）。
+ * 所有 GitHub 请求都套一层 v6.gh-proxy.com 加速（失败时自动回退直连）。
  */
 object Updater {
     private const val OWNER = "ike-lee-820"
     private const val REPO = "GoMusicForAndroid"
     /** GitHub 加速前缀 */
-    private const val PROXY = "https://gh-proxy.com/"
+    private const val PROXY = "https://v6.gh-proxy.com/"
     private const val API_LATEST = "https://api.github.com/repos/$OWNER/$REPO/releases/latest"
     /** 发布列表：用来在多个发布里挑版本号最大的那个 */
     private const val API_RELEASES = "https://api.github.com/repos/$OWNER/$REPO/releases?per_page=20"

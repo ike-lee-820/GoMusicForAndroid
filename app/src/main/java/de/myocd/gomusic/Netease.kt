@@ -1396,4 +1396,121 @@ object Netease {
         NmLog.note("登录态检查：${if (ok) "有效" else "无效"}")
         return ok
     }
+
+    // ================= 专辑 / 歌手简介 =================
+
+    /** ugc 简介接口返回的可用信息（字段名按常见写法容错提取） */
+    data class UgcInfo(
+        val desc: String = "",
+        val cover: String? = null,
+        val title: String = "",
+        val artist: String = "",
+        val artistId: Long = 0,
+    )
+
+    /** 歌手详细信息：简述 + 分段介绍 + 相关专栏标题 */
+    data class ArtistDescInfo(
+        val brief: String = "",
+        val sections: List<Pair<String, String>> = emptyList(),
+        val topics: List<String> = emptyList(),
+        val ok: Boolean = false,
+    )
+
+    /** 简介正文可能落在这些键里，不同部署的字段名不完全一致 */
+    private val descKeys = listOf(
+        "description", "desc", "briefDesc", "introduction", "content",
+        "albumDesc", "artistDesc", "descption", "brief", "summary", "detail", "descInfo",
+    )
+
+    /** 把任意 JSON 值转成可显示的纯文本：字符串直接用，数组分段拼，对象取 ti/txt */
+    private fun textOfValue(v: JsonElement?): String = when (v) {
+        is JsonPrimitive -> v.content.takeUnless { it.isBlank() || it == "null" } ?: ""
+        is JsonObject -> {
+            val body = v.str("txt", "text", "content", "description", "desc", "briefDesc").orEmpty()
+            val ti = v.str("ti", "title")
+            if (body.isBlank()) "" else if (ti.isNullOrBlank()) body else "【$ti】\n$body"
+        }
+        else -> runCatching {
+            v?.jsonArray?.mapNotNull { e -> textOfValue(e).takeIf { it.isNotBlank() } }
+                ?.joinToString("\n").orEmpty()
+        }.getOrDefault("")
+    }
+
+    /** 在当前层按优先键找简介，找不到再下钻一层常见容器 */
+    private fun descText(o: JsonObject): String {
+        for (k in descKeys) {
+            val t = textOfValue(o[k])
+            if (t.isNotBlank()) return t.trim()
+        }
+        for (k in listOf("data", "album", "artist", "info", "detail", "ugc", "resource")) {
+            val sub = o[k] as? JsonObject ?: continue
+            val t = descText(sub)
+            if (t.isNotBlank()) return t
+        }
+        return ""
+    }
+
+    private fun artistIdOf(o: JsonObject): Long {
+        val direct = idOf(o, "artistId")
+        if (direct > 0) return direct
+        o.obj("artist")?.let { a -> idOf(a).takeIf { it > 0 }?.let { return it } }
+        for (k in listOf("ar", "artists")) {
+            val first = runCatching { (o[k] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject }
+                .getOrNull()
+            if (first != null) idOf(first).takeIf { it > 0 }?.let { return it }
+        }
+        return 0
+    }
+
+    /** ugc 简介：/ugc/album/get 与 /ugc/artist/get 结构一致，统一解析 */
+    private fun ugc(path: String, id: Long): UgcInfo {
+        if (id <= 0) return UgcInfo()
+        val r = get(path, "id" to id.toString())
+        if (r.code() != 200) {
+            NmLog.note("简介接口 $path 返回 code=${r.code()}")
+            return UgcInfo()
+        }
+        val d = r.obj("data") ?: r
+        val desc = descText(d).ifBlank { descText(r) }
+        val artist = artistsOf(d).ifBlank {
+            d.obj("artist")?.str("name") ?: d.str("artist", "artistName", "singer") ?: ""
+        }
+        NmLog.note("简介接口 $path id=$id 简介长度=${desc.length}")
+        return UgcInfo(
+            desc = desc,
+            cover = pic(d.str("picUrl", "cover", "img1v1Url", "avatar", "pic")),
+            title = d.str("name", "title", "albumName", "artistName") ?: "",
+            artist = artist,
+            artistId = artistIdOf(d),
+        )
+    }
+
+    fun ugcAlbum(id: Long): UgcInfo = ugc("/ugc/album/get", id)
+    fun ugcArtist(id: Long): UgcInfo = ugc("/ugc/artist/get", id)
+
+    /** 歌手详细信息：无论是否登录都能取，失败时返回空结构由 UI 提示 */
+    fun artistDesc(id: Long): ArtistDescInfo {
+        if (id <= 0) return ArtistDescInfo()
+        val r = get("/artist/desc", "id" to id.toString())
+        if (r.code() != 200) {
+            NmLog.note("歌手详情 /artist/desc 返回 code=${r.code()}")
+            return ArtistDescInfo()
+        }
+        val brief = r.str("briefDesc") ?: ""
+        val sections = runCatching {
+            r["introduction"]?.jsonArray?.mapNotNull { e ->
+                val o = e as? JsonObject ?: return@mapNotNull null
+                val txt = o.str("txt") ?: ""
+                if (txt.isBlank()) null else (o.str("ti") ?: "") to txt
+            } ?: emptyList()
+        }.getOrDefault(emptyList())
+        val topics = runCatching {
+            r["topicData"]?.jsonArray?.mapNotNull { e ->
+                val o = e as? JsonObject ?: return@mapNotNull null
+                (o.obj("topic") ?: o).str("mainTitle", "title")
+            } ?: emptyList()
+        }.getOrDefault(emptyList())
+        NmLog.note("歌手详情 id=$id 简述=${brief.length} 分段=${sections.size} 专栏=${topics.size}")
+        return ArtistDescInfo(brief, sections, topics, true)
+    }
 }

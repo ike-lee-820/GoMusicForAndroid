@@ -67,7 +67,32 @@ sealed interface Screen {
     ) : Screen
     /** MV 播放：整屏视频页 */
     data class Video(val title: String, val url: String) : Screen
+    /** 专辑简介：大图 / 标题 / 歌手 / 简介 */
+    data class AlbumIntro(
+        val id: Long, val title: String, val cover: String?, val artist: String = "",
+    ) : Screen
+    /** 歌手简介：大图 / 名字 / 简介 / 详细信息 */
+    data class ArtistIntro(
+        val id: Long, val name: String, val cover: String?,
+    ) : Screen
 }
+
+/** 简介页数据：ugc 简介仅登录可取，歌手详细信息不要求登录 */
+data class IntroState(
+    val kind: String = "",
+    val id: Long = 0,
+    val title: String = "",
+    val cover: String? = null,
+    val artist: String = "",
+    val artistId: Long = 0,
+    val desc: String = "",
+    val descLoading: Boolean = false,
+    val brief: String = "",
+    val sections: List<Pair<String, String>> = emptyList(),
+    val topics: List<String> = emptyList(),
+    val detailLoading: Boolean = false,
+    val detailOk: Boolean = false,
+)
 
 data class Group(
     val title: String,
@@ -2942,6 +2967,173 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     delay(1000)
                 }
             }
+        }
+    }
+
+    // ================= 专辑 / 歌手简介 =================
+
+    /** 是否带登录凭证：ugc 简介接口仅登录时才有内容 */
+    val nmLogged: Boolean get() = Netease.cookie.isNotBlank()
+
+    var intro by mutableStateOf<IntroState?>(null); private set
+
+    /** 进入简介页时加载；同一首页面不重复请求 */
+    fun loadIntro(s: Screen) {
+        val isAlbum = s is Screen.AlbumIntro
+        val id: Long
+        val title: String
+        val cover: String?
+        val artist: String
+        when (s) {
+            is Screen.AlbumIntro -> {
+                id = s.id; title = s.title; cover = s.cover; artist = s.artist
+            }
+            is Screen.ArtistIntro -> {
+                id = s.id; title = s.name; cover = s.cover; artist = ""
+            }
+            else -> return
+        }
+        val kind = if (isAlbum) "album" else "artist"
+        val cur = intro
+        if (cur != null && cur.kind == kind && cur.id == id) {
+            // 登录后重新进来，之前没拿到 ugc 简介就补一次；其余情况直接用缓存
+            val needDesc = nmLogged && cur.desc.isBlank() && !cur.descLoading
+            if (!needDesc) return
+        }
+        intro = IntroState(
+            kind = kind, id = id, title = title, cover = cover, artist = artist,
+            descLoading = nmLogged, detailLoading = !isAlbum,
+        )
+        if (nmLogged && id > 0) {
+            viewModelScope.launch {
+                val info = withContext(Dispatchers.IO) {
+                    runCatching { if (isAlbum) Netease.ugcAlbum(id) else Netease.ugcArtist(id) }
+                        .getOrDefault(Netease.UgcInfo())
+                }
+                intro?.let { c ->
+                    intro = c.copy(
+                        desc = info.desc,
+                        descLoading = false,
+                        cover = info.cover ?: c.cover,
+                        title = info.title.takeIf { it.isNotBlank() } ?: c.title,
+                        artist = info.artist.takeIf { it.isNotBlank() } ?: c.artist,
+                        artistId = info.artistId,
+                    )
+                }
+            }
+        }
+        // 歌手详细信息无论是否登录都取
+        if (!isAlbum && id > 0) {
+            viewModelScope.launch {
+                val d = withContext(Dispatchers.IO) {
+                    runCatching { Netease.artistDesc(id) }.getOrDefault(Netease.ArtistDescInfo())
+                }
+                intro?.let { c ->
+                    intro = c.copy(
+                        brief = d.brief, sections = d.sections, topics = d.topics,
+                        detailLoading = false, detailOk = d.ok,
+                    )
+                }
+            }
+        }
+    }
+
+    fun openAlbumIntro(id: Long, title: String, cover: String?, artist: String) {
+        if (id <= 0) { toast("没有找到这张专辑的信息"); return }
+        stack.add(Screen.AlbumIntro(id, title, cover, artist))
+        loadIntro(stack.last())
+    }
+
+    fun openArtistIntro(id: Long, name: String, cover: String?) {
+        if (id <= 0) { toast("没有找到这个歌手的信息"); return }
+        stack.add(Screen.ArtistIntro(id, name, cover))
+        loadIntro(stack.last())
+    }
+
+    /** 本地按名字分组的专辑页：先用歌里带的网易云专辑 id，没有再严格按名字找 */
+    fun openLocalAlbumIntro(artist: String, album: String, cover: String?, songs: List<Song>) {
+        val known = songs.firstOrNull { it.nmAlbumId > 0 }?.nmAlbumId ?: 0L
+        if (known > 0) { openAlbumIntro(known, album, cover, artist); return }
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) {
+                runCatching {
+                    Netease.searchAlbums("$artist $album", 10).firstOrNull { h ->
+                        h.title.isNotBlank() && (
+                            h.title.equals(album, ignoreCase = true) ||
+                                h.title.contains(album, ignoreCase = true) ||
+                                album.contains(h.title, ignoreCase = true))
+                    }
+                }.getOrNull()
+            }
+            if (g != null) openAlbumIntro(g.nmId, album, cover ?: g.cover, artist)
+            else toast("没有找到这张专辑的信息")
+        }
+    }
+
+    /** 本地按名字分组的歌手页：同上 */
+    fun openLocalArtistIntro(name: String, cover: String?, songs: List<Song>) {
+        val known = songs.firstOrNull { it.nmArtistId > 0 }?.nmArtistId ?: 0L
+        if (known > 0) { openArtistIntro(known, name, cover); return }
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) {
+                runCatching {
+                    Netease.searchArtists(name, 10).firstOrNull { h ->
+                        h.title.isNotBlank() && (
+                            h.title.equals(name, ignoreCase = true) ||
+                                h.title.contains(name, ignoreCase = true) ||
+                                name.contains(h.title, ignoreCase = true))
+                    }
+                }.getOrNull()
+            }
+            if (g != null) openArtistIntro(g.nmId, name, cover ?: g.cover)
+            else toast("没有找到这个歌手的信息")
+        }
+    }
+
+    /** 专辑简介页点歌手名：优先用接口给的歌手 id，否则按名字严格找 */
+    fun openArtistByName(name: String) {
+        if (name.isBlank()) return
+        val fixed = intro?.artistId ?: 0L
+        if (fixed > 0) {
+            openNmGroup(
+                Group(name, "网易云歌手", null, emptyList(), artist = name,
+                    source = SRC_NETEASE, nmId = fixed, nmKind = "artist")
+            )
+            return
+        }
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) {
+                runCatching {
+                    Netease.searchArtists(name, 10).firstOrNull { h ->
+                        h.title.isNotBlank() && (
+                            h.title.equals(name, ignoreCase = true) ||
+                                h.title.contains(name, ignoreCase = true) ||
+                                name.contains(h.title, ignoreCase = true))
+                    }
+                }.getOrNull()
+            }
+            if (g != null) openNmGroup(g) else stack.add(Screen.Artist(name))
+        }
+    }
+
+    /** 长按复制整段简介 / 详情 */
+    fun copyText(text: String) {
+        if (text.isBlank()) return
+        runCatching {
+            val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("GoMusic 简介", text))
+            toast("已复制")
+        }.onFailure { toast("复制失败：${it.message}") }
+    }
+
+    /** 长按大图选择下载：存到 Download/GoMusic/图片 */
+    fun saveIntroImage(url: String?, name: String) {
+        if (url.isNullOrBlank()) { toast("没有可下载的图片"); return }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { LocalLib.saveImage(app, name, url); true }.getOrDefault(false)
+            }
+            toast(if (ok) "图片已保存到 Download/GoMusic/图片" else "图片下载失败")
         }
     }
 }

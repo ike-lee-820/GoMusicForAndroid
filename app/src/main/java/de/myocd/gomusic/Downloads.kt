@@ -110,6 +110,23 @@ object LocalLib {
         return uriText(u, f)
     }
 
+    /** 简介页长按大图：把图片存到 Download/GoMusic/图片，返回文件位置 */
+    fun saveImage(ctx: Context, name: String, url: String): String {
+        val raw = url.substringBefore('?').substringAfterLast('.', "jpg").lowercase()
+        val ext = raw.takeIf { it.length in 2..4 && it.all { c -> c.isLetterOrDigit() } } ?: "jpg"
+        val mime = when (ext) {
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            else -> "image/jpeg"
+        }
+        val (u, f) = openOut(ctx, "图片", "${safe(name)}.$ext", mime)
+        val os = stream(ctx, u, f) ?: throw java.io.IOException("无法写入下载目录")
+        os.use { Api.fetch(url, it) }
+        finish(ctx, u)
+        return uriText(u, f)
+    }
+
     /** 下载一首歌：音频 + 封面 + 歌词 + 歌曲信息（meta.json），返回记录 */
     fun download(
         ctx: Context,

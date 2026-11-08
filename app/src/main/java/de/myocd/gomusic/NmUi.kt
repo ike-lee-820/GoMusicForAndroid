@@ -256,11 +256,23 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
     Column(Modifier.fillMaxSize()) {
         TopBar(vm)
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            // 点封面 / 标题进简介页：专辑带歌手名，歌手不显示副标题
+            val openIntro = {
+                if (isArtist) vm.openArtistIntro(s.id, s.title, cover)
+                else vm.openAlbumIntro(s.id, s.title, cover, vm.nmPageSubtitle)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                CoverWithSource(cover, Modifier.size(88.dp), 16.dp, source = SRC_NETEASE)
+                CoverWithSource(
+                    cover, Modifier.size(88.dp).clickable { openIntro() },
+                    16.dp, source = SRC_NETEASE,
+                )
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Txt(titleWithSource(s.title, SRC_NETEASE), 18, weight = FontWeight.Bold, maxLines = 2)
+                    Txt(
+                        titleWithSource(s.title, SRC_NETEASE), 18,
+                        modifier = Modifier.clickable { openIntro() },
+                        weight = FontWeight.Bold, maxLines = 2,
+                    )
                     Spacer(Modifier.height(4.dp))
                     // 歌手页副标题留空（原来写「网易云歌手」）；专辑页显示歌手名
                     if (!isArtist) {

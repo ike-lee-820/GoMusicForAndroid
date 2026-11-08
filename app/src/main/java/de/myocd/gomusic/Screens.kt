@@ -317,6 +317,7 @@ fun MainScreen(vm: MainViewModel) {
                                     is Screen.Artist -> ArtistPage(vm, s)
                                     is Screen.PlaylistPage -> PlaylistPage(vm, s)
                                     is Screen.NmSongs -> NmSongsPage(vm, s)
+                                    is Screen.AlbumIntro, is Screen.ArtistIntro -> IntroPage(vm, s)
                                     // MV 不在这里画：它是全屏覆盖层，由最外层单独组合，
                                     // 否则会被后面组合的 FullPlayer 盖住
                                     is Screen.Video -> Spacer(Modifier.size(0.dp))
@@ -1482,9 +1483,15 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val w = minOf(LocalConfiguration.current.screenWidthDp * 0.72f, 320f).dp
-                    Cover(cover, Modifier.size(w), 24.dp)
+                    // 点封面 / 标题进专辑简介页（大图、标题、歌手、简介）
+                    val openIntro = { vm.openLocalAlbumIntro(s.artist, s.album, cover, list) }
+                    Cover(cover, Modifier.size(w).clickable { openIntro() }, 24.dp)
                     VS(16)
-                    Txt(s.album.ifBlank { "未知专辑" }, 20, weight = FontWeight.Bold, align = TextAlign.Center)
+                    Txt(
+                        s.album.ifBlank { "未知专辑" }, 20,
+                        modifier = Modifier.clickable { openIntro() },
+                        weight = FontWeight.Bold, align = TextAlign.Center,
+                    )
                     VS(4)
                     Txt(
                         s.artist, 14, color = go.muted,
@@ -1525,9 +1532,15 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Cover(img, Modifier.size(160.dp), circle = true)
+                    // 点大图 / 名字进歌手简介页（大图、名字、简介、详细信息）
+                    val openIntro = { vm.openLocalArtistIntro(s.name, img, list) }
+                    Cover(img, Modifier.size(160.dp).clickable { openIntro() }, circle = true)
                     VS(12)
-                    Txt(s.name, 20, weight = FontWeight.Bold, align = TextAlign.Center)
+                    Txt(
+                        s.name, 20,
+                        modifier = Modifier.clickable { openIntro() },
+                        weight = FontWeight.Bold, align = TextAlign.Center,
+                    )
                     val bio = info?.bio
                     if (!bio.isNullOrBlank()) {
                         VS(8)

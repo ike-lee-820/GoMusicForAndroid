@@ -312,9 +312,10 @@ private fun fmtShort(ms: Long): String {
 /** 优先用已下载的同档位音频；没有就按档位取地址下载到缓存，返回本地文件 */
 private fun prepareRecAudio(ctx: Context, song: Song, cfg: RecorderConfig): File? {
     return runCatching {
-        val qs = qualitiesOf(ctx, song.ssid)
-        val pick = if (qs.contains(cfg.quality)) cfg.quality else (qs.firstOrNull() ?: "")
-        val uri = audioUri(ctx, song.ssid, pick)
+        val recs = Prefs(ctx).downloads.filter { it.ssid == song.ssid && it.audio.isNotBlank() }
+        val rec = recs.firstOrNull { it.quality == cfg.quality } ?: recs.firstOrNull()
+        val uri = rec?.audio?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Uri.parse(it) }.getOrNull() }
         val out = File(ctx.cacheDir, "rec_audio_${song.ssid.filter { it.isLetterOrDigit() }}.bin")
         if (uri != null) {
             ctx.contentResolver.openInputStream(uri)?.use { input ->

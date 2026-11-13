@@ -145,7 +145,7 @@ class RecorderEngine(private val ctx: Context) {
             if (wait > 0) Thread.sleep(wait / 1_000_000L, (wait % 1_000_000L).toInt())
             next += frameNs
         }
-        vcodec.signalEndOfInput()
+        vcodec.signalEndOfInputStream()
         drain(true)
         runCatching { vcodec.stop() }
         runCatching { vcodec.release() }

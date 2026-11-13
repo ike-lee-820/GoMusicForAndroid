@@ -51,6 +51,49 @@ object RecorderJobHolder {
  */
 class RecorderEngine(private val ctx: Context) {
 
+    /** MP4 封装器能直接接受的音频 mime；其余（FLAC/APE/WAV/DSD…）必须转 AAC 才能进 MP4。 */
+    private fun isMuxableAudio(mime: String?): Boolean = when (mime) {
+        MediaFormat.MIMETYPE_AUDIO_AAC, "audio/mpeg", "audio/ac3", "audio/eac3" -> true
+        else -> false
+    }
+
+    /** 去掉容器头里的 duration / max-input-size 等冗余键，只留封装器需要的字段。 */
+    private fun sanitizeAudioFormat(src: MediaFormat): MediaFormat {
+        val mime = src.getString(MediaFormat.KEY_MIME) ?: MediaFormat.MIMETYPE_AUDIO_AAC
+        val sr = if (src.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+            src.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
+        val ch = if (src.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+            src.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
+        val f = MediaFormat.createAudioFormat(mime, sr, ch)
+        if (src.containsKey(MediaFormat.KEY_BIT_RATE))
+            runCatching { f.setInteger(MediaFormat.KEY_BIT_RATE, src.getInteger(MediaFormat.KEY_BIT_RATE)) }
+        if (src.containsKey(MediaFormat.KEY_AAC_PROFILE))
+            runCatching { f.setInteger(MediaFormat.KEY_AAC_PROFILE, src.getInteger(MediaFormat.KEY_AAC_PROFILE)) }
+        for (k in arrayOf("csd-0", "csd-1", "csd-2")) {
+            if (src.containsKey(k)) runCatching {
+                val b = src.getByteBuffer(k)
+                if (b != null) {
+                    val d = ByteArray(b.remaining())
+                    b.duplicate().get(d)
+                    f.setByteBuffer(k, ByteBuffer.wrap(d))
+                }
+            }
+        }
+        return f
+    }
+
+    private fun addVideoTrack(muxer: MediaMuxer, fmt: MediaFormat): Int =
+        runCatching { muxer.addTrack(fmt) }.getOrElse {
+            error("视频轨无法写入 MP4（${fmt.getString(MediaFormat.KEY_MIME)}）：${it.message}")
+        }
+
+    private fun addAudioTrack(muxer: MediaMuxer, fmt: MediaFormat): Int =
+        runCatching { muxer.addTrack(fmt) }.getOrElse {
+            val mime = fmt.getString(MediaFormat.KEY_MIME)
+            error("音轨无法写入 MP4（$mime）：该音质容器不支持直接封装，新版已自动转 AAC；" +
+                "若仍失败请改选标准/较高音质：${it.message}")
+        }
+
     fun render(job: RecJob, outFile: File, onProgress: (RecProgress) -> Unit, cancelled: () -> Boolean): String {
         RecFrameStats.reset()
         val (w, h) = RecorderPrefs.dims(job.cfg)
@@ -104,11 +147,12 @@ class RecorderEngine(private val ctx: Context) {
                 guard++
                 val idx = vcodec.dequeueOutputBuffer(info, if (end) 10_000L else 0L)
                 if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    if (videoTrack < 0) videoTrack = muxer.addTrack(vcodec.outputFormat)
-                    if (audioTrack < 0) audioTrack = muxer.addTrack(audio.format)
+                    if (videoTrack < 0) videoTrack = addVideoTrack(muxer, vcodec.outputFormat)
+                    if (audioTrack < 0) audioTrack = addAudioTrack(muxer, audio.format)
                     if (!started) {
                         muxer.start()
                         started = true
+                        NmLog.note("录制引擎：视频轨与音轨已添加，muxer 启动（音轨 mime=${audio.format.getString(MediaFormat.KEY_MIME)}）")
                     }
                     continue
                 }
@@ -189,8 +233,8 @@ class RecorderEngine(private val ctx: Context) {
             val of = runCatching { vcodec.outputFormat }.getOrElse {
                 error("视频编码器未输出格式，无法添加视频轨：${it.message}")
             }
-            videoTrack = muxer.addTrack(of)
-            audioTrack = muxer.addTrack(audio.format)
+            if (videoTrack < 0) videoTrack = addVideoTrack(muxer, of)
+            if (audioTrack < 0) audioTrack = addAudioTrack(muxer, audio.format)
             muxer.start()
             started = true
             NmLog.note("录制引擎：编码器未按时回调格式，已用运行时输出格式启动 muxer")
@@ -271,8 +315,9 @@ class RecorderEngine(private val ctx: Context) {
         val mime = inFmt.getString(MediaFormat.KEY_MIME) ?: "audio/mpeg"
         NmLog.note("录制音频：mime=$mime 输入 sr=$sr ch=$ch 时长=${durUs / 1000L}ms 人声强度=${(strength * 100).toInt()}%")
 
-        if (strength <= 0f) {
-            onStage(100, "原声：压缩样本直接封装，不重编码")
+        val muxable = isMuxableAudio(mime)
+        if (strength <= 0f && muxable) {
+            onStage(100, "原声：$mime 压缩样本直接封装，不重编码")
             val list = ArrayList<RecAudioSample>()
             val buf = ByteBuffer.allocate(256 * 1024)
             while (true) {
@@ -288,12 +333,19 @@ class RecorderEngine(private val ctx: Context) {
                 ex.advance()
             }
             ex.release()
-            return RecAudio(inFmt, list, durUs)
+            return RecAudio(sanitizeAudioFormat(inFmt), list, durUs)
         }
 
-        onStage(15, "按强度 ${(strength * 100).toInt()}% 解码为 PCM…")
+        if (strength <= 0f && !muxable) {
+            NmLog.note("录制音频：源格式 $mime 不能直接封装进 MP4，自动转码为 AAC（不做人声处理）")
+            onStage(10, "源格式 $mime 需转码为 AAC 才能封装，开始解码…")
+        }
+
+        onStage(15, if (strength > 0f) "按强度 ${(strength * 100).toInt()}% 解码为 PCM…" else "解码为 PCM（仅转码，不改音色）…")
         // ---- Pass 1：解码成裸 PCM 文件（流式，不把整首歌放进内存） ----
-        val dec = MediaCodec.createDecoderByType(mime)
+        val dec = runCatching { MediaCodec.createDecoderByType(mime) }.getOrElse {
+            error("本机无法解码 $mime 音质，请在录制页改选标准 / 较高 / 极高音质后重试：${it.message}")
+        }
         dec.configure(inFmt, null, null, 0)
         dec.start()
         val pcm = File(ctx.cacheDir, "rec_pcm_${System.currentTimeMillis()}.raw")
@@ -344,7 +396,7 @@ class RecorderEngine(private val ctx: Context) {
         runCatching { dec.release() }
         ex.release()
         NmLog.note("录制音频：解码输出 sr=$outSr ch=$outCh pcmEnc=$pcmEnc")
-        onStage(45, "中置抵消 / 低频回补处理人声…")
+        onStage(45, if (strength > 0f) "中置抵消 / 低频回补处理人声…" else "仅转码，跳过人声处理…")
 
         // ---- Pass 2：逐块 DSP + AAC 编码 ----
         val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, outSr, outCh)
@@ -417,8 +469,9 @@ class RecorderEngine(private val ctx: Context) {
                             sb.get(a)
                             a
                         }
-                        val proc = VocalReduce.process(arr, arr.size / outCh, outCh, strength)
-                        if (!dspLogged) {
+                        val proc = if (strength > 0f)
+                            VocalReduce.process(arr, arr.size / outCh, outCh, strength) else arr
+                        if (!dspLogged && strength > 0f) {
                             dspLogged = true
                             NmLog.note(
                                 "人声处理生效：ch=$outCh sr=$outSr 强度=${(strength * 100).toInt()}% " +
@@ -457,7 +510,7 @@ class RecorderEngine(private val ctx: Context) {
             tail++
         }
         drainEnc(20L)
-        NmLog.note("录制音频：DSP 后 AAC 样本=${samples.size} 段，EOS=$encEos")
+        NmLog.note("录制音频：${if (strength > 0f) "DSP 后" else "转码后"} AAC 样本=${samples.size} 段，EOS=$encEos")
         runCatching { enc.stop() }
         runCatching { enc.release() }
         runCatching { pcm.delete() }

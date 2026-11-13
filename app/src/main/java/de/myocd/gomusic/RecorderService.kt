@@ -118,7 +118,7 @@ class RecorderService : Service() {
                 }
             } catch (e: Exception) {
                 if (!cancelled) {
-                    val why = e.message ?: "未知错误"
+                    val why = humanizeError(e.message)
                     RecorderHistory.update(applicationContext, recId) {
                         it.copy(state = "失败", note = why, stage = "失败", detail = why,
                             finishedAt = System.currentTimeMillis())
@@ -192,6 +192,18 @@ class RecorderService : Service() {
         }
         if (recId.isNotBlank()) RecorderHistory.update(applicationContext, recId) {
             it.copy(progress = p.percent, stage = p.stage, detail = p.detail)
+        }
+    }
+
+    /** 系统层英文异常转成可操作的中文提示，别再把堆栈原样塞进通知。 */
+    private fun humanizeError(raw: String?): String {
+        val s = raw ?: "未知错误"
+        return when {
+            "Failed to add the track" in s ->
+                "音轨容器不被 MP4 支持（26.11.25 起已自动转 AAC，请更新后重试）"
+            "start() failed" in s || "Muxer" in s && "start" in s ->
+                "封装器启动失败，请重试或改选标准音质"
+            else -> s
         }
     }
 

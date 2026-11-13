@@ -361,7 +361,7 @@ class Biquad(
 }
 
 /** 一个声道的滤波器级联：HPF → 10 段 → LPF */
-private class ChannelChain(sampleRate: Int, cfg: EqConfig) {
+private class ChannelChain(private val sampleRate: Int, cfg: EqConfig) {
     private val filters = mutableListOf<Biquad>()
     var config: EqConfig = cfg
         private set

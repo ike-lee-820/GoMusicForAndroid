@@ -43,7 +43,19 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle assembleRelease --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon 2>&1 | tee /tmp/gradle_build.log
+
+      # 编译失败时把 Kotlin 错误以 annotations 上报，便于直接读 API 定位
+      - name: Report compile errors
+        if: failure()
+        run: |
+          if [ -f /tmp/gradle_build.log ]; then
+            grep -E '(^e: |error:|FAILURE:|What went wrong|Caused by:|Execution failed|Unresolved reference)' /tmp/gradle_build.log | head -80 | while IFS= read -r line; do
+              echo "::error::${line//%/%25}"
+            done
+          fi
 
       - name: Verify signature
         env:

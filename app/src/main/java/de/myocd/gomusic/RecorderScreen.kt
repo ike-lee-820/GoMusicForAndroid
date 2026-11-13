@@ -190,10 +190,12 @@ fun RecorderScreen(vm: MainViewModel) {
             actualQuality = cfg.quality,
         )
         RecorderJobHolder.pending = job
+        // 服务被系统回收后靠这份快照重启续跑，而不是静默丢掉整个任务
+        RecorderJobStore.save(ctx, job)
         runCatching {
             val i = android.content.Intent(ctx, RecorderService::class.java)
             androidx.core.content.ContextCompat.startForegroundService(ctx, i)
-        }
+        }.onFailure { status = "无法启动后台生成：${it.message}" }
         Toast.makeText(ctx, "开始生成，可退到后台", Toast.LENGTH_SHORT).show()
         busy = false
     }

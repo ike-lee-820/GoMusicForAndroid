@@ -2,7 +2,9 @@ package de.myocd.gomusic
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Typeface
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaExtractor
@@ -52,7 +54,13 @@ class RecorderEngine(private val ctx: Context) {
     fun render(job: RecJob, outFile: File, onProgress: (RecProgress) -> Unit, cancelled: () -> Boolean): String {
         val (w, h) = RecorderPrefs.dims(job.cfg)
         val fps = job.cfg.fps.coerceIn(15, 60)
-        val strength = if (job.cfg.vocalMode == "减弱人声") job.cfg.vocalStrength else 0f
+        // 兼容旧配置里可能出现的英文值，避免人声模式被误判成「原声」
+        val strength = if (job.cfg.vocalMode in setOf("减弱人声", "reduce", "vocal", "伴奏"))
+            job.cfg.vocalStrength.coerceIn(0f, 1f) else 0f
+        NmLog.note(
+            "录制引擎：人声=${job.cfg.vocalMode} 强度=${(strength * 100).toInt()}% " +
+                "比例=${job.cfg.aspect} 分辨率=${job.cfg.resolution} 样式=${job.cfg.style}"
+        )
 
         onProgress(RecProgress(30, "步骤 2/3 · 音频处理", "读取音轨与真实时长…"))
         val audio = prepareAudio(job.audioFile, strength) { p, d ->
@@ -120,20 +128,41 @@ class RecorderEngine(private val ctx: Context) {
             }
         }
 
+        // 后台/熄屏时硬件 Canvas 依赖的 GPU 会被挂起，lockHardwareCanvas 会抛异常
+        // 或提交空白帧（成品白屏）。优先 CPU 软件 Canvas，失败再回退硬件路径。
         fun drawFrame(i: Int) {
-            val cvs = if (Build.VERSION.SDK_INT >= 23) surface.lockHardwareCanvas()
-            else surface.lockCanvas(null)
-            try {
-                val posMs = i * 1000L / fps
-                renderRecFrame(
-                    cvs,
-                    RecFrameState(job.song, job.cover, job.rows, posMs, durationMs),
-                    job.cfg,
-                    job.typeface,
-                )
-            } finally {
-                surface.unlockCanvasAndPost(cvs)
+            var last: Throwable? = null
+            for (attempt in 0 until 3) {
+                val hardware = attempt == 2
+                var cvs: Canvas? = null
+                runCatching {
+                    cvs = if (hardware && Build.VERSION.SDK_INT >= 23) surface.lockHardwareCanvas()
+                    else surface.lockCanvas(null)
+                }.onFailure { last = it }
+                val c = cvs
+                if (c != null) {
+                    var ok = false
+                    try {
+                        val posMs = i * 1000L / fps
+                        renderRecFrame(
+                            c,
+                            RecFrameState(job.song, job.cover, job.rows, posMs, durationMs),
+                            job.cfg,
+                            job.typeface,
+                        )
+                        ok = true
+                    } catch (e: Throwable) {
+                        last = e
+                    } finally {
+                        runCatching { surface.unlockCanvasAndPost(c) }
+                    }
+                    if (ok) return
+                }
+                Thread.sleep(20L)
             }
+            throw IllegalStateException(
+                "第 $i 帧绘制失败（软件 / 硬件 Canvas 都不可用）：${last?.message}", last
+            )
         }
 
         // 第一帧触发编码器输出格式；时间戳全部由 drain 改写，不再依赖墙上时钟
@@ -146,23 +175,36 @@ class RecorderEngine(private val ctx: Context) {
         )
         drawFrame(0)
         var guard = 0
-        while (!started && guard < 200 && !cancelled()) {
-            Thread.sleep(10L)
+        while (!started && guard < 600 && !cancelled()) {
             drain(false)
+            // 部分编码器要收到两三帧才回调 output format，只画一帧会一直等不到
+            if (!started && guard > 0 && guard % 20 == 0) runCatching { drawFrame(0) }
+            if (!started) Thread.sleep(10L)
             guard++
         }
         if (!started) {
-            videoTrack = muxer.addTrack(vfmt)
+            // 绝不能用 configure 时的 vfmt：不含 SPS/PPS，很多播放器会直接白屏。
+            // 用编码器当前实际输出格式；拿不到就明确报错，而不是写一条缺 csd 的轨。
+            val of = runCatching { vcodec.outputFormat }.getOrElse {
+                error("视频编码器未输出格式，无法添加视频轨：${it.message}")
+            }
+            videoTrack = muxer.addTrack(of)
             audioTrack = muxer.addTrack(audio.format)
             muxer.start()
             started = true
+            NmLog.note("录制引擎：编码器未按时回调格式，已用运行时输出格式启动 muxer")
         }
 
         // 不再按真实帧率 sleep：Surface 缓冲队列满时 lockHardwareCanvas 会自然
         // 阻塞形成背压，编码速度只取决于 CPU / 编码器吞吐，通常比实时快数倍。
         for (i in 1 until totalFrames) {
             if (cancelled()) break
-            drawFrame(i)
+            try {
+                drawFrame(i)
+            } catch (e: Throwable) {
+                NmLog.note("录制引擎：第 $i / $totalFrames 帧连续失败，终止：${e.message}")
+                throw e
+            }
             drain(false)
             if (i % (fps / 2).coerceAtLeast(1) == 0)
                 onProgress(
@@ -224,6 +266,8 @@ class RecorderEngine(private val ctx: Context) {
             inFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
         val ch = if (inFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
             inFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
+        val mime = inFmt.getString(MediaFormat.KEY_MIME) ?: "audio/mpeg"
+        NmLog.note("录制音频：mime=$mime 输入 sr=$sr ch=$ch 时长=${durUs / 1000L}ms 人声强度=${(strength * 100).toInt()}%")
 
         if (strength <= 0f) {
             onStage(100, "原声：压缩样本直接封装，不重编码")
@@ -247,7 +291,6 @@ class RecorderEngine(private val ctx: Context) {
 
         onStage(15, "按强度 ${(strength * 100).toInt()}% 解码为 PCM…")
         // ---- Pass 1：解码成裸 PCM 文件（流式，不把整首歌放进内存） ----
-        val mime = inFmt.getString(MediaFormat.KEY_MIME)!!
         val dec = MediaCodec.createDecoderByType(mime)
         dec.configure(inFmt, null, null, 0)
         dec.start()
@@ -286,13 +329,23 @@ class RecorderEngine(private val ctx: Context) {
                 }
             }
         }
+        // 解码器实际输出格式可能和容器头不同（SBR/PS、float PCM、24bit 等），
+        // 按容器头的 ch 去解析 PCM 会把左右声道错位，人声抵消自然「无效」。
+        val decOut = runCatching { dec.outputFormat }.getOrNull()
+        val outSr = if (decOut != null && decOut.containsKey(MediaFormat.KEY_SAMPLE_RATE))
+            decOut.getInteger(MediaFormat.KEY_SAMPLE_RATE) else sr
+        val outCh = if (decOut != null && decOut.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+            decOut.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else ch
+        val pcmEnc = if (decOut != null && decOut.containsKey("pcm-encoding"))
+            decOut.getInteger("pcm-encoding") else AudioFormat.ENCODING_PCM_16BIT
         runCatching { dec.stop() }
         runCatching { dec.release() }
         ex.release()
+        NmLog.note("录制音频：解码输出 sr=$outSr ch=$outCh pcmEnc=$pcmEnc")
         onStage(45, "中置抵消 / 低频回补处理人声…")
 
         // ---- Pass 2：逐块 DSP + AAC 编码 ----
-        val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sr, ch)
+        val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, outSr, outCh)
         af.setInteger(MediaFormat.KEY_BIT_RATE, 192_000)
         af.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
         val enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -305,9 +358,9 @@ class RecorderEngine(private val ctx: Context) {
         var pts = 0L
         val ebi = MediaCodec.BufferInfo()
 
-        fun drainEnc() {
+        fun drainEnc(waitMs: Long = 1L) {
             while (true) {
-                val oi = enc.dequeueOutputBuffer(ebi, 0L)
+                val oi = enc.dequeueOutputBuffer(ebi, waitMs)
                 if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     encFmt = enc.outputFormat
                     continue
@@ -327,8 +380,15 @@ class RecorderEngine(private val ctx: Context) {
         }
 
         onStage(65, "AAC 编码处理后的音频…")
-        val frameSamples = ch * 2048
-        val raw = ByteArray(frameSamples * 2)
+        val bytesPerSample = if (pcmEnc == AudioFormat.ENCODING_PCM_FLOAT) 4 else 2
+        val frameSamples = outCh * 2048
+        val raw = ByteArray(frameSamples * bytesPerSample)
+        var dspLogged = false
+        fun rms(a: ShortArray): Float {
+            var sum = 0.0
+            for (v in a) { val f = v / 32768f; sum += f * f }
+            return kotlin.math.sqrt(sum / a.size.coerceAtLeast(1)).toFloat()
+        }
         FileInputStream(pcm).use { fis ->
             var spin = 0
             while (spin < 300000) {
@@ -343,10 +403,26 @@ class RecorderEngine(private val ctx: Context) {
                             sentEos = true
                         }
                     } else {
-                        val sb = ByteBuffer.wrap(raw, 0, n).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                        val arr = ShortArray(sb.remaining())
-                        sb.get(arr)
-                        val proc = VocalReduce.process(arr, arr.size / ch, ch, strength)
+                        val buf = ByteBuffer.wrap(raw, 0, n).order(ByteOrder.LITTLE_ENDIAN)
+                        val arr = if (pcmEnc == AudioFormat.ENCODING_PCM_FLOAT) {
+                            val fb = buf.asFloatBuffer()
+                            val fl = FloatArray(fb.remaining())
+                            fb.get(fl)
+                            ShortArray(fl.size) { k -> (fl[k].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
+                        } else {
+                            val sb = buf.asShortBuffer()
+                            val a = ShortArray(sb.remaining())
+                            sb.get(a)
+                            a
+                        }
+                        val proc = VocalReduce.process(arr, arr.size / outCh, outCh, strength)
+                        if (!dspLogged) {
+                            dspLogged = true
+                            NmLog.note(
+                                "人声处理生效：ch=$outCh sr=$outSr 强度=${(strength * 100).toInt()}% " +
+                                    "首块 RMS ${rms(arr)} -> ${rms(proc)} 样本=${arr.size}"
+                            )
+                        }
                         var off = 0
                         while (off < proc.size) {
                             val ei = enc.dequeueInputBuffer(1000L)
@@ -356,11 +432,15 @@ class RecorderEngine(private val ctx: Context) {
                             }
                             val ib = enc.getInputBuffer(ei)!!
                             ib.clear()
+                            // MediaCodec 输入 buffer 是 direct ByteBuffer，默认 BIG_ENDIAN；
+                            // 不显式设成小端，写进去的 16bit PCM 会高低字节颠倒，
+                            // 处理后听起来就是「没变化 / 一团糊」。
+                            ib.order(ByteOrder.LITTLE_ENDIAN)
                             val cap = ib.capacity() / 2
                             val take = min(cap, proc.size - off)
                             ib.asShortBuffer().put(proc, off, take)
                             enc.queueInputBuffer(ei, 0, take * 2, pts, 0)
-                            pts += take.toLong() * 1_000_000L / (sr * ch)
+                            pts += take.toLong() * 1_000_000L / (outSr * outCh)
                             off += take
                             drainEnc()
                         }
@@ -368,7 +448,14 @@ class RecorderEngine(private val ctx: Context) {
                 } else if (encEos) break
             }
         }
-        drainEnc()
+        // 非阻塞 drain 会漏掉编码器尾部几帧；等它把 EOS 之前的数据全部吐出
+        var tail = 0
+        while (!encEos && tail < 300) {
+            drainEnc(20L)
+            tail++
+        }
+        drainEnc(20L)
+        NmLog.note("录制音频：DSP 后 AAC 样本=${samples.size} 段，EOS=$encEos")
         runCatching { enc.stop() }
         runCatching { enc.release() }
         runCatching { pcm.delete() }

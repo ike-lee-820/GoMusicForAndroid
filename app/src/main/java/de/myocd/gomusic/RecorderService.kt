@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,7 @@ class RecorderService : Service() {
     private var cancelled = false
     @Volatile
     private var recId: String = ""
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,18 +51,29 @@ class RecorderService : Service() {
                     it.copy(state = "已取消", note = "已取消", stage = "已取消", detail = "用户取消", finishedAt = System.currentTimeMillis())
                 }
             }
+            RecorderJobStore.clear(applicationContext)
+            releaseCpu()
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTI_ID, notif("正在准备录制…", "即将开始", 0))
-        val job = RecorderJobHolder.pending
+        runCatching { startForeground(NOTI_ID, notif("正在准备录制…", "即将开始", 0)) }
+            .onFailure { NmLog.note("录制服务：前台通知启动失败 ${it.message}") }
+        val fromMemory = RecorderJobHolder.pending
+        val job = fromMemory ?: runCatching { RecorderJobStore.restore(applicationContext) }.getOrNull()
         if (job == null) {
+            releaseCpu()
             stopSelf()
             return START_NOT_STICKY
         }
+        val resumed = fromMemory == null
+        if (resumed) NmLog.note("录制服务：服务被回收后重启，已从快照恢复任务并重新准备素材")
+        holdCpu()
         cancelled = false
         RecorderHistory.load(applicationContext)
-        recId = "rec_" + System.currentTimeMillis().toString()
+        val running = RecorderHistory.items.firstOrNull { it.state == "进行中" }
+        recId = if (resumed && running != null) running.id
+            else "rec_" + System.currentTimeMillis().toString()
+        if (!(resumed && running != null)) {
         RecorderHistory.add(applicationContext, RecRecord(
             id = recId,
             title = job.song.title,
@@ -76,6 +89,7 @@ class RecorderService : Service() {
             stage = "步骤 1/3 · 下载素材",
             detail = "准备下载所选音质与歌词…",
         ))
+        }
         scope.launch {
             val tmp = File(cacheDir, "recording_${System.currentTimeMillis()}.mp4")
             try {
@@ -121,6 +135,8 @@ class RecorderService : Service() {
                 }
                 runCatching { tmp.delete() }
                 RecorderJobHolder.pending = null
+                RecorderJobStore.clear(applicationContext)
+                releaseCpu()
                 stopSelf()
             }
         }
@@ -131,7 +147,25 @@ class RecorderService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         cancelled = true
+        releaseCpu()
         scope.cancel()
+    }
+
+    /** 熄屏后系统可能让 CPU 休眠，编码循环会停住、通知卡在某个百分比、回到前台只剩白屏。 */
+    private fun holdCpu() {
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gomusic:record")
+            wl.setReferenceCounted(false)
+            wl.acquire(60 * 60 * 1000L)
+            wakeLock = wl
+            NmLog.note("录制服务：已持有 CPU 唤醒锁（上限 1 小时）")
+        }
+    }
+
+    private fun releaseCpu() {
+        runCatching { wakeLock?.release() }
+        wakeLock = null
     }
 
     private fun notif(stage: String, detail: String, percent: Int) = NotificationCompat.Builder(this, CH)

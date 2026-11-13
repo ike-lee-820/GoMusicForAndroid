@@ -61,7 +61,7 @@ data class RecorderConfig(
     /** 原声 / 减弱人声 */
     val vocalMode: String = "原声",
     /** 人声减弱强度 0–1，1 约等于伴奏 */
-    val vocalStrength: Float = 0.75f,
+    val vocalStrength: Float = 0.85f,
     /** 字体来源，见 [REC_FONT_MODES] */
     val fontMode: String = "系统默认",
     /** 导入字体在私有目录的绝对路径，空 = 未导入 */

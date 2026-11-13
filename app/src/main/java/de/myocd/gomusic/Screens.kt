@@ -1879,6 +1879,7 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                     otherSp = ARC_OTHER_SP_WIDE,
                     radiusBoost = ARC_RADIUS_BOOST_WIDE,
                     minSpan = ARC_MIN_SPAN_WIDE,
+                    onRetry = { vm.reloadLyric() },
                 ) { vm.seekTo(it) }
             }
         }
@@ -2098,7 +2099,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     verticalArrangement = Arrangement.Center,
                 ) {
                     if (lines.isEmpty()) {
-                        Txt("暂无歌词", 14, color = go.muted)
+                        NoLyricsHint({ vm.reloadLyric() }, 14, go.muted)
                     } else {
                         val i = idx.coerceAtLeast(0)
                         listOf(i - 1, i, i + 1).forEach { k ->
@@ -2373,6 +2374,7 @@ fun WheelLyrics(
     idx: Int,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
+    onRetry: () -> Unit = {},
     onSeek: (Long) -> Unit,
 ) {
     if (lines.isEmpty()) {
@@ -2388,7 +2390,7 @@ fun WheelLyrics(
                     Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
                 }
             } else {
-                Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+                NoLyricsHint(onRetry, 14, Color.White.copy(alpha = 0.55f))
             }
         }
         return
@@ -2504,6 +2506,7 @@ idx: Int,
 radius: Dp,
 modifier: Modifier = Modifier,
 loading: Boolean = false,
+onRetry: () -> Unit = {},
 onSeek: (Long) -> Unit,
 ) {
 if (lines.isEmpty()) {
@@ -2519,7 +2522,7 @@ if (lines.isEmpty()) {
                 Txt("正在加载歌词…", 13, color = Color.White.copy(alpha = 0.7f))
             }
         } else {
-            Txt("暂无歌词", 13, color = Color.White.copy(alpha = 0.55f))
+            NoLyricsHint(onRetry, 13, Color.White.copy(alpha = 0.55f))
         }
     }
     return
@@ -2646,6 +2649,7 @@ curSp: Float = 19f,
 otherSp: Float = 15f,
 radiusBoost: Float = ARC_RADIUS_BOOST,
 minSpan: Int = 1,
+onRetry: () -> Unit = {},
 onSeek: (Long) -> Unit,
 ) {
 if (rows.isEmpty()) {
@@ -2659,7 +2663,7 @@ if (rows.isEmpty()) {
                 Txt("正在加载歌词…", 14, color = Color.White.copy(alpha = 0.7f))
             }
         } else {
-            Txt("暂无歌词", 14, color = Color.White.copy(alpha = 0.55f))
+            NoLyricsHint(onRetry, 14, Color.White.copy(alpha = 0.55f))
         }
     }
     return
@@ -3121,7 +3125,7 @@ fun LyricsList(vm: MainViewModel) {
                     Txt("正在加载歌词…", 14, color = go.muted)
                 }
             } else {
-                Txt("暂无歌词", 14, color = go.muted)
+                NoLyricsHint({ vm.reloadLyric() }, 14, go.muted)
             }
         }
         return
@@ -3752,5 +3756,29 @@ fun SurroundSheet(vm: MainViewModel) {
                 11, color = go.muted,
             )
         }
+    }
+}
+
+/**
+ * 歌词为空时的占位：点一下重新加载。
+ *
+ * 之前「暂无歌词」只是纯文本，加载失败 / 超时后没有任何重试入口，
+ * 只能切走再切回来。现在整块（含「点击重试」小字）都可点，
+ * 触发 vm.reloadLyric() 清掉失败态并再取一次；重试期间由
+ * lyricLoading 驱动原有的「正在加载歌词…」状态，不会重复发请求。
+ */
+@Composable
+fun NoLyricsHint(
+    onRetry: () -> Unit,
+    size: Int = 14,
+    color: Color = Color.White.copy(alpha = 0.55f),
+) {
+    Column(
+        Modifier.clickable { onRetry() }.padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Txt("暂无歌词", size, color = color)
+        VS(6)
+        Txt("点击重试", 11, color = color.copy(alpha = color.alpha * 0.8f))
     }
 }

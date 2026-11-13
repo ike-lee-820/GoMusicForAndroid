@@ -2225,6 +2225,32 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         curIndex = c.currentMediaItemIndex
     }
 
+    /**
+     * 歌词加载失败后重试：点「暂无歌词」时调用。
+     *
+     * 失败 / 超时分支同样会把 lyricSsid 写成当前 id，之后 onItem 遇到同一首歌
+     * 就直接 return，界面会一直停在「暂无歌词」，只能切走再切回来。
+     * 这里把「已加载 / 在途 / 旧任务」三个标记一起清掉，再走一次完整加载路径
+     * （含译文补取与本地歌词兜底），让点击能真正重新发请求。
+     */
+    fun reloadLyric() {
+        val id = curSsid ?: return
+        if (lyricLoading) return
+        lyricJob?.cancel()
+        lyricSsid = null
+        lyricLoadingFor = null
+        lyric = emptyList()
+        lyricLoading = true
+        NmLog.note("歌词重试：id=$id")
+        val item = controller?.currentMediaItem
+        if (item == null) {
+            lyricLoading = false
+            toast("播放器未就绪，请稍后重试")
+            return
+        }
+        onItem(item, false)
+    }
+
     private fun onItem(item: MediaItem?, count: Boolean) {
         val id = item?.mediaId?.takeIf { it.isNotEmpty() }
         curSsid = id

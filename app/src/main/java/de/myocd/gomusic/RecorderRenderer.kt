@@ -1,13 +1,10 @@
 package de.myocd.gomusic
 
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
-import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -48,240 +45,54 @@ fun recActiveRow(st: RecFrameState, offsetMs: Long): Int {
     return idx
 }
 
-/**
- * 一帧的总入口。背景与底部进度条由两套样式共用，歌词绘制各自一套：
- * 经典 = 录制默认的「左封面信息 + 右居中歌词」；
- * 圆盘 = 横屏播放器版本：左封面信息区 + 右侧圆弧旋转歌词（ArcLyrics 几何）。
- *
- * 所有可选项（样式 / 字号 / 字体 / 译文 / 偏移 / 信息区 / 比例 / 分辨率）
- * 都从同一份 [RecorderConfig] 读，预览与编码调的是同一个函数，不会各画一套。
- *
- * 只使用硬件 Canvas 也支持的绘制调用（不 clipPath / 不 BlurMaskFilter），
- * 因此同一份代码既能画进 Compose 预览，也能画进 MediaCodec 的 input Surface。
- */
-fun renderRecFrame(cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?) {
-    val w = cv.width.toFloat()
-    val h = cv.height.toFloat()
-    if (w <= 0f || h <= 0f) return
-    val scale = h / 1080f
-    val pad = 28f * scale
-
-    drawRecBackground(cv, st.cover, w, h, scale)
-
-    when (RecStyle.of(c.style)) {
-        RecStyle.CLASSIC -> drawClassic(cv, st, c, tf, w, h, pad, scale)
-        RecStyle.DISC -> drawDisc(cv, st, c, tf, w, h, pad, scale)
+/** 帧渲染统计：静态层预渲染 + 相同帧复用到底省了多少帧。 */
+object RecFrameStats {
+    @Volatile var frames = 0
+    @Volatile var reused = 0
+    fun reset() { frames = 0; reused = 0 }
+    fun report(): String {
+        val f = frames
+        val r = reused
+        return "帧渲染 $f 帧，复用 $r 帧（${if (f > 0) r * 100 / f else 0}%）"
     }
-    drawRecProgress(cv, st, w, h, pad, scale, c, tf)
-}
-
-/** 共用的模糊封面底 + 上下渐变遮罩 */
-private fun drawRecBackground(cv: Canvas, cover: Bitmap?, w: Float, h: Float, scale: Float) {
-    cv.drawColor(Color.rgb(12, 11, 16))
-    cover?.let { bmp ->
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = 70 }
-        val k = max(w / bmp.width.toFloat(), h / bmp.height.toFloat())
-        val dw = bmp.width * k
-        val dh = bmp.height * k
-        cv.drawBitmap(
-            bmp, Rect(0, 0, bmp.width, bmp.height),
-            RectF((w - dw) / 2f, (h - dh) / 2f, (w + dw) / 2f, (h + dh) / 2f), p,
-        )
-    }
-    val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-    fill.shader = LinearGradient(
-        0f, 0f, 0f, h,
-        Color.argb(110, 0, 0, 0), Color.argb(215, 0, 0, 0), Shader.TileMode.CLAMP,
-    )
-    cv.drawRect(0f, 0f, w, h, fill)
-}
-
-/** 经典：左侧封面 + 歌曲信息，右侧居中歌词 */
-private fun drawClassic(
-    cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
-    w: Float, h: Float, pad: Float, scale: Float,
-) {
-    val infoW = w * c.infoRatio.coerceIn(0.18f, 0.60f)
-    val coverSize = min(infoW - pad * 2f, h * 0.42f).coerceAtLeast(40f)
-    val cx = (infoW - coverSize) / 2f
-    val cy = h * 0.18f
-    val cp = Paint(Paint.ANTI_ALIAS_FLAG)
-    if (st.cover != null) {
-        cv.drawBitmap(st.cover, null, RectF(cx, cy, cx + coverSize, cy + coverSize), cp)
-    } else {
-        cp.color = Color.rgb(40, 38, 48)
-        cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
-    }
-
-    val tp = recTextPaint(c, tf).apply {
-        color = Color.WHITE
-        isFakeBoldText = true
-    }
-    tp.textSize = 30f * scale
-    cv.drawText(ellipsizeRec(st.song.title, tp, infoW - pad * 2f), pad, cy + coverSize + 44f * scale, tp)
-    tp.isFakeBoldText = false
-    tp.textSize = 21f * scale
-    tp.color = Color.argb(205, 255, 255, 255)
-    cv.drawText(ellipsizeRec(st.song.artist, tp, infoW - pad * 2f), pad, cy + coverSize + 78f * scale, tp)
-    cv.drawText(ellipsizeRec(st.song.album, tp, infoW - pad * 2f), pad, cy + coverSize + 108f * scale, tp)
-
-    drawRecLyrics(cv, st, c, tf, infoW + pad, (w - infoW - pad * 2f).coerceAtLeast(60f), h * 0.5f, scale)
 }
 
 /**
- * 圆盘 = 横屏播放器版本：复刻 WidePlayerPane 的「左封面 / 右圆弧歌词」。
+ * 一帧的总入口。
  *
- * 几何照 Screens.kt 的 ArcLyrics：行距随字号联动、可见行数按高度算、
- * 圆心半径由最外侧倾角 20° 反推并乘 0.7、每行沿圆弧的横纵位移、
- * 绕左端旋转、smoothstep 边缘淡出。dp 换算成输出像素后由 Canvas 绘制，
- * 预览与编码调用同一份函数，不再画黑胶唱片 / 唱针。
+ * 26.11.24 提速核心：把「模糊背景 + 渐变 + 封面 + 歌曲信息」这些整首歌都不变的
+ * 内容预渲染成一张静态层 Bitmap；再把整帧缓存起来，只要高亮行与进度条都没变化
+ * 就直接贴上一帧。逐帧只剩一次 drawBitmap，不再每帧缩放封面、重建渐变、重画文字。
+ * 雨季 / 雪天的粒子是唯一需要逐帧画的东西，且仍然复用静态层。
  */
-private fun drawDisc(
-    cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
-    w: Float, h: Float, pad: Float, scale: Float,
-) {
-    val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
-    val gap = 16f * scale
-    val lyricX = infoW + gap
-    val lyricW = (w - lyricX - pad).coerceAtLeast(60f)
+fun renderRecFrame(cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?) =
+    RecFrameCache.render(cv, st, c, tf)
 
-    // 左：封面 → 歌手 → 歌名 → 专辑名，居中排布（顺序与横屏播放器一致）
-    val coverSize = min(infoW * 0.66f, h * 0.56f).coerceAtLeast(40f)
-    val cx = (infoW - coverSize) / 2f
-    val cy = (h - coverSize) / 2f - h * 0.08f
-    val cp = Paint(Paint.ANTI_ALIAS_FLAG)
-    if (st.cover != null) {
-        cv.drawBitmap(st.cover, null, RectF(cx, cy, cx + coverSize, cy + coverSize), cp)
-    } else {
-        cp.color = Color.rgb(40, 38, 48)
-        cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
-    }
-    val tp = recTextPaint(c, tf).apply {
-        color = Color.WHITE
-        textAlign = Paint.Align.CENTER
-    }
-    var ty = cy + coverSize + 26f * scale
-    tp.textSize = 19f * scale
-    tp.color = Color.argb(185, 255, 255, 255)
-    cv.drawText(ellipsizeRec(st.song.artist, tp, infoW - pad), infoW / 2f, ty, tp)
-    ty += 34f * scale
-    tp.isFakeBoldText = true
-    tp.textSize = 28f * scale
-    tp.color = Color.WHITE
-    cv.drawText(ellipsizeRec(st.song.title, tp, infoW - pad), infoW / 2f, ty, tp)
-    ty += 30f * scale
-    tp.isFakeBoldText = false
-    tp.textSize = 17f * scale
-    tp.color = Color.argb(165, 255, 255, 255)
-    cv.drawText(ellipsizeRec(st.song.album.ifBlank { "未知专辑" }, tp, infoW - pad), infoW / 2f, ty, tp)
-
-    drawArcLyrics(cv, st, c, tf, lyricX, lyricW, h * 0.5f, h, scale)
-}
-
-/**
- * ArcLyrics 的 Canvas 版：歌词沿半径 r 的圆弧排列，当前句在弧的中点，
- * 其余行按角度分布、绕左端旋转、越远越小越淡；译文贴在同一行下方一起转。
- */
-private fun drawArcLyrics(
-    cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
-    lx: Float, lw: Float, centerY: Float, h: Float, scale: Float,
-) {
-    val rows = st.rows
-    if (rows.isEmpty()) return
-    val act = recActiveRow(st, c.lyricOffsetMs).coerceAtLeast(0).coerceAtMost(rows.lastIndex)
-    val base = c.lyricSizeSp.toFloat().coerceIn(10f, 48f) * scale
-    val hasTrans = c.showTrans && rows.any { !it.trans.isNullOrBlank() }
-    // 78dp / 23sp ≈ 3.4：行距随字号联动；显示译文时按原代码乘 1.6
-    val rowSpan = base * 3.4f * (if (hasTrans) 1.6f else 1f)
-    val regionH = h * 0.86f
-    val visibleRows = (regionH / rowSpan).toInt().coerceIn(9, 25)
-    val span = (visibleRows / 2).coerceAtLeast(4)          // ARC_MIN_SPAN_WIDE
-    val tiltRad = 20f * PI.toFloat() / 180f                // ARC_MAX_TILT_DEG
-    val rPx = (span * rowSpan / tiltRad * 0.7f)            // ARC_RADIUS_BOOST_WIDE
-        .coerceAtLeast(regionH * 0.5f)
-    val stepRad = rowSpan / rPx
-    val lineWPx = lw * 0.78f
-    val maxShift = ((lw - lineWPx) / 2f).coerceAtLeast(0f)
-    val shiftPx = (rPx * (1f - cos(span * stepRad)) / 2f).coerceAtMost(maxShift)
-    val edge = span + 1
-    val lp = recTextPaint(c, tf)
-    for (i in (act - edge).coerceAtLeast(0)..(act + edge).coerceAtMost(rows.lastIndex)) {
-        val d = (i - act).toFloat()
-        val th = d * stepRad
-        val x = -rPx * (1f - cos(th)) + shiftPx
-        val y = rPx * sin(th)
-        val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
-        val fade = 1f - t * t * (3f - 2f * t)
-        val isCur = i == act
-        val alpha = (255f * (0.18f + 0.82f * fade) * (if (isCur) 1f else 0.55f))
-            .toInt().coerceIn(0, 255)
-        val row = rows[i]
-        cv.save()
-        cv.translate(lx + x, centerY + y)
-        cv.rotate(th * 180f / PI.toFloat(), 0f, rowSpan * 0.5f)
-        lp.textSize = if (isCur) base * 1.12f else base * 0.86f
-        lp.isFakeBoldText = isCur
-        lp.color = Color.argb(alpha, 255, 255, 255)
-        cv.drawText(ellipsizeRec(row.text, lp, lineWPx), 0f, rowSpan * 0.5f, lp)
-        if (c.showTrans && !row.trans.isNullOrBlank()) {
-            lp.textSize = base * 0.56f
-            lp.isFakeBoldText = false
-            lp.color = Color.argb((alpha * 0.75f).toInt(), 210, 210, 225)
-            cv.drawText(ellipsizeRec(row.trans!!, lp, lineWPx), 0f, rowSpan * 0.5f + base * 0.8f, lp)
+/** 按可用宽度把过长歌词折成多行（中文按字、英文优先在空格断），放不下才省略。 */
+private fun wrapRecLines(text: String, p: Paint, maxW: Float, maxLines: Int): List<String> {
+    if (text.isBlank()) return emptyList()
+    if (p.measureText(text) <= maxW) return listOf(text)
+    val out = ArrayList<String>(maxLines)
+    var rest = text
+    while (rest.isNotEmpty()) {
+        if (out.size == maxLines - 1 || p.measureText(rest) <= maxW) {
+            out.add(if (p.measureText(rest) <= maxW) rest else ellipsizeRec(rest, p, maxW))
+            break
         }
-        cv.restore()
-    }
-}
-
-/** 两套样式共用的歌词绘制：字号 / 字体 / 译文 / 全体偏移全部生效 */
-private fun drawRecLyrics(
-    cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
-    lx: Float, lw: Float, centerY: Float, scale: Float,
-) {
-    val act = recActiveRow(st, c.lyricOffsetMs)
-    val base = c.lyricSizeSp.toFloat().coerceIn(10f, 48f) * scale
-    val lineH = base * 1.95f
-    val lp = recTextPaint(c, tf)
-    for (d in -3..3) {
-        val i = act + d
-        if (i < 0 || i >= st.rows.size) continue
-        val row = st.rows[i]
-        val y = centerY + d * lineH
-        val active = d == 0
-        lp.color = if (active) Color.WHITE
-        else Color.argb((130 - abs(d) * 28).coerceAtLeast(35), 255, 255, 255)
-        lp.textSize = if (active) base * 1.12f else base * 0.86f
-        lp.isFakeBoldText = active
-        cv.drawText(ellipsizeRec(row.text, lp, lw), lx, y, lp)
-        if (c.showTrans && !row.trans.isNullOrBlank()) {
-            lp.textSize = base * 0.56f
-            lp.isFakeBoldText = false
-            lp.color = Color.argb(if (active) 190 else 90, 210, 210, 225)
-            cv.drawText(ellipsizeRec(row.trans!!, lp, lw), lx, y + base * 0.72f, lp)
+        var lo = 0
+        var hi = rest.length
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (p.measureText(rest.substring(0, mid)) <= maxW) lo = mid else hi = mid - 1
         }
+        var cut = lo.coerceAtLeast(1)
+        val head = rest.substring(0, cut)
+        val sp = head.lastIndexOf(' ')
+        if (sp > cut / 2 && sp > 0) cut = sp
+        out.add(rest.substring(0, cut).trimEnd())
+        rest = rest.substring(cut).trimStart()
     }
-}
-
-/** 两套样式共用的底部进度条与时间 */
-private fun drawRecProgress(
-    cv: Canvas, st: RecFrameState, w: Float, h: Float, pad: Float, scale: Float,
-    c: RecorderConfig, tf: Typeface?,
-) {
-    val barY = h - 26f * scale
-    val bp = Paint(Paint.ANTI_ALIAS_FLAG)
-    bp.color = Color.argb(90, 255, 255, 255)
-    cv.drawRect(pad, barY, w - pad, barY + 3f * scale, bp)
-    bp.color = Color.WHITE
-    val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
-    cv.drawRect(pad, barY, pad + (w - pad * 2f) * prog, barY + 3f * scale, bp)
-    val clock = recTextPaint(c, tf).apply {
-        color = Color.argb(175, 255, 255, 255)
-        textSize = 16f * scale
-    }
-    val a = fmtRecTime(st.positionMs)
-    val b = fmtRecTime(st.durationMs)
-    cv.drawText(a, pad, barY - 10f * scale, clock)
-    cv.drawText(b, w - pad - clock.measureText(b), barY - 10f * scale, clock)
+    return out
 }
 
 private fun ellipsizeRec(text: String, p: Paint, maxW: Float): String {
@@ -298,4 +109,480 @@ private fun ellipsizeRec(text: String, p: Paint, maxW: Float): String {
 private fun fmtRecTime(ms: Long): String {
     val s = (ms.coerceAtLeast(0L) / 1000L).toInt()
     return "%02d:%02d".format(s / 60, s % 60)
+}
+
+private data class StaticKey(
+    val coverId: Int,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val style: String,
+    val infoRatio: Float,
+    val infoSizeSp: Int,
+    val bgMode: String,
+    val fontMode: String,
+    val fontWeight: Int,
+    val fontPath: String,
+    val tfId: Int,
+    val w: Int,
+    val h: Int,
+)
+
+private object RecFrameCache {
+
+    private var staticKey: StaticKey? = null
+    private var staticBmp: Bitmap? = null
+    private var fullBmp: Bitmap? = null
+    private var fullSig: String? = null
+
+    private fun bitmap(old: Bitmap?, w: Int, h: Int): Bitmap {
+        if (old != null && !old.isRecycled && old.width == w && old.height == h) return old
+        if (old != null && !old.isRecycled) old.recycle()
+        return Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** 画面签名：高亮行、进度条像素桶、全部影响排版的配置；动态雨/雪再带上时间。 */
+    private fun frameSig(
+        st: RecFrameState, c: RecorderConfig, w: Int, h: Int, tf: Typeface?,
+    ): String {
+        val act = recActiveRow(st, c.lyricOffsetMs)
+        val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
+        val bucket = (prog * w / 2f).toInt()
+        val dynamic = if (c.bgMode == "雨季" || c.bgMode == "雪天") st.positionMs.toString() else ""
+        return listOf(
+            act, bucket, c.style, c.bgMode, c.lyricSizeSp, c.infoSizeSp, c.showTrans,
+            c.lyricOffsetMs, c.infoRatio, c.fontMode, c.fontWeight, c.fontPath,
+            System.identityHashCode(tf), st.rows.size, st.song.title, w, h, dynamic,
+        ).joinToString("|")
+    }
+
+    @Synchronized
+    fun render(cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?) {
+        val w = cv.width
+        val h = cv.height
+        if (w <= 0 || h <= 0) return
+        RecFrameStats.frames++
+        val sig = frameSig(st, c, w, h, tf)
+        val cached = fullBmp
+        if (cached != null && !cached.isRecycled &&
+            cached.width == w && cached.height == h && sig == fullSig
+        ) {
+            cv.drawBitmap(cached, 0f, 0f, null)
+            RecFrameStats.reused++
+            return
+        }
+        val target = bitmap(cached, w, h)
+        drawFull(Canvas(target), st, c, tf, w.toFloat(), h.toFloat())
+        cv.drawBitmap(target, 0f, 0f, null)
+        fullBmp = target
+        fullSig = sig
+    }
+
+    /** 静态层：背景效果 + 左侧封面与歌曲信息。整首歌只生成一次。 */
+    private fun staticBitmap(
+        st: RecFrameState, c: RecorderConfig, tf: Typeface?, w: Int, h: Int,
+    ): Bitmap {
+        val key = StaticKey(
+            coverId = System.identityHashCode(st.cover),
+            title = st.song.title,
+            artist = st.song.artist,
+            album = st.song.album,
+            style = c.style,
+            infoRatio = c.infoRatio,
+            infoSizeSp = c.infoSizeSp,
+            bgMode = c.bgMode,
+            fontMode = c.fontMode,
+            fontWeight = c.fontWeight,
+            fontPath = c.fontPath,
+            tfId = System.identityHashCode(tf),
+            w = w,
+            h = h,
+        )
+        val old = staticBmp
+        if (old != null && !old.isRecycled && staticKey == key) return old
+        val b = bitmap(old, w, h)
+        val cv = Canvas(b)
+        val scale = h / 1080f
+        drawBackground(cv, st.cover, w.toFloat(), h.toFloat(), scale, c.bgMode)
+        val pad = 28f * scale
+        when (RecStyle.of(c.style)) {
+            RecStyle.CLASSIC -> drawClassicInfo(cv, st, c, tf, w.toFloat(), h.toFloat(), pad, scale)
+            RecStyle.DISC -> drawDiscInfo(cv, st, c, tf, w.toFloat(), h.toFloat(), pad, scale)
+        }
+        staticBmp = b
+        staticKey = key
+        return b
+    }
+
+    private fun drawFull(
+        cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?, w: Float, h: Float,
+    ) {
+        val scale = h / 1080f
+        val pad = 28f * scale
+        cv.drawBitmap(staticBitmap(st, c, tf, w.toInt(), h.toInt()), 0f, 0f, null)
+        drawParticles(cv, c.bgMode, st.positionMs, w, h, scale)
+        val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
+        when (RecStyle.of(c.style)) {
+            RecStyle.CLASSIC -> drawClassicLyrics(
+                cv, st, c, tf, infoW + pad,
+                (w - infoW - pad * 2f).coerceAtLeast(60f), h * 0.5f, h, scale,
+            )
+            RecStyle.DISC -> {
+                val gap = 16f * scale
+                drawArcLyrics(
+                    cv, st, c, tf, infoW + gap,
+                    (w - infoW - gap - pad).coerceAtLeast(60f), h * 0.5f, h, scale,
+                )
+            }
+        }
+        drawProgress(cv, st, w, h, pad, scale, c, tf)
+    }
+
+    /**
+     * 背景：封面降采样 + 盒式模糊近似高斯，再放大铺满；四种模式共用这套底。
+     * 液态玻璃叠静态折射高光，雨季 / 雪天只叠一层色调，粒子在 drawParticles 逐帧画。
+     */
+    private fun drawBackground(
+        cv: Canvas, cover: Bitmap?, w: Float, h: Float, scale: Float, mode: String,
+    ) {
+        cv.drawColor(Color.rgb(12, 11, 16))
+        val coverBmp = cover
+        if (coverBmp != null && !coverBmp.isRecycled) {
+            val sw = (w / 20f).toInt().coerceIn(12, 160)
+            val sh = (h / 20f).toInt().coerceIn(12, 160)
+            val small = runCatching { Bitmap.createScaledBitmap(coverBmp, sw, sh, true) }.getOrNull()
+            if (small != null) {
+                val blurred = blurSmall(small)
+                val p = Paint(Paint.ANTI_ALIAS_FLAG + Paint.FILTER_BITMAP_FLAG).apply {
+                    alpha = if (mode == "高斯模糊") 95 else 82
+                }
+                cv.drawBitmap(blurred, null, RectF(0f, 0f, w, h), p)
+                blurred.recycle()
+                small.recycle()
+            }
+        }
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+        fill.shader = LinearGradient(
+            0f, 0f, 0f, h,
+            Color.argb(110, 0, 0, 0), Color.argb(215, 0, 0, 0), Shader.TileMode.CLAMP,
+        )
+        cv.drawRect(0f, 0f, w, h, fill)
+        when (mode) {
+            "液态玻璃" -> drawGlass(cv, w, h, scale)
+            "雨季" -> {
+                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(38, 36, 78, 140) }
+                cv.drawRect(0f, 0f, w, h, t)
+            }
+            "雪天" -> {
+                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(26, 190, 215, 255) }
+                cv.drawRect(0f, 0f, w, h, t)
+            }
+        }
+    }
+
+    /** 小图上做一次水平 + 垂直盒式模糊，像素量只有几千，静态层生成时算一次。 */
+    private fun blurSmall(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        val tmp = IntArray(w * h)
+        val r = 2
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                var sa = 0L; var sr = 0L; var sg = 0L; var sb = 0L; var n = 0
+                for (k in -r..r) {
+                    val xx = (x + k).coerceIn(0, w - 1)
+                    val c = px[y * w + xx]
+                    sa += ((c ushr 24) and 0xFF)
+                    sr += ((c ushr 16) and 0xFF)
+                    sg += ((c ushr 8) and 0xFF)
+                    sb += (c and 0xFF)
+                    n++
+                }
+                tmp[y * w + x] = ((sa / n).toInt() shl 24) + ((sr / n).toInt() shl 16) +
+                    ((sg / n).toInt() shl 8) + (sb / n).toInt()
+            }
+        }
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                var sa = 0L; var sr = 0L; var sg = 0L; var sb = 0L; var n = 0
+                for (k in -r..r) {
+                    val yy = (y + k).coerceIn(0, h - 1)
+                    val c = tmp[yy * w + x]
+                    sa += ((c ushr 24) and 0xFF)
+                    sr += ((c ushr 16) and 0xFF)
+                    sg += ((c ushr 8) and 0xFF)
+                    sb += (c and 0xFF)
+                    n++
+                }
+                px[y * w + x] = ((sa / n).toInt() shl 24) + ((sr / n).toInt() shl 16) +
+                    ((sg / n).toInt() shl 8) + (sb / n).toInt()
+            }
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /** 液态玻璃：模糊底上叠两片圆角玻璃与折射色带，全部静态。 */
+    private fun drawGlass(cv: Canvas, w: Float, h: Float, scale: Float) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.shader = LinearGradient(
+            0f, 0f, w, h,
+            Color.argb(0, 255, 255, 255), Color.argb(55, 255, 255, 255), Shader.TileMode.CLAMP,
+        )
+        cv.drawRect(0f, 0f, w, h, p)
+        p.shader = null
+        val r = 40f * scale
+        val top = RectF(w * 0.05f, h * 0.07f, w * 0.95f, h * 0.28f)
+        val bottom = RectF(w * 0.05f, h * 0.72f, w * 0.95f, h * 0.93f)
+        p.color = Color.argb(26, 255, 255, 255)
+        cv.drawRoundRect(top, r, r, p)
+        cv.drawRoundRect(bottom, r, r, p)
+        val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1.6f * scale
+            color = Color.argb(75, 255, 255, 255)
+        }
+        cv.drawRoundRect(top, r, r, edge)
+        cv.drawRoundRect(bottom, r, r, edge)
+        val g = Paint(Paint.ANTI_ALIAS_FLAG)
+        g.shader = LinearGradient(
+            0f, h * 0.1f, w, h * 0.9f,
+            Color.argb(45, 120, 200, 255), Color.argb(35, 220, 150, 255), Shader.TileMode.CLAMP,
+        )
+        cv.drawRoundRect(RectF(w * 0.08f, h * 0.30f, w * 0.92f, h * 0.70f), r, r, g)
+    }
+
+    /** 雨季 / 雪天的逐帧粒子；数量固定、无随机对象分配，静态层仍然复用。 */
+    private fun drawParticles(
+        cv: Canvas, mode: String, tMs: Long, w: Float, h: Float, scale: Float,
+    ) {
+        if (mode == "雨季") {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(110, 220, 235, 255)
+                strokeWidth = 1.4f * scale
+            }
+            val phase = (tMs / 12f) % h
+            for (i in 0 until 56) {
+                val seed = i * 97.13f
+                val x = ((sin(seed) * 0.5f + 0.5f) * w + phase * 0.35f) % (w + 40f) - 20f
+                val y = ((cos(seed * 1.7f) * 0.5f + 0.5f) * h + phase * 2.2f + i * 37f) % h
+                cv.drawLine(x, y, x - 8f * scale, y + 26f * scale, p)
+            }
+        } else if (mode == "雪天") {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(190, 255, 255, 255) }
+            val phase = tMs / 30f
+            for (i in 0 until 64) {
+                val seed = i * 53.7f
+                val x = (sin(seed) * 0.5f + 0.5f) * w + sin(phase * 0.02f + i) * 12f * scale
+                val y = ((cos(seed * 2.3f) * 0.5f + 0.5f) * h +
+                    phase * (1.2f + (i % 5) * 0.4f)) % h
+                cv.drawCircle(x, y, (1.2f + (i % 4) * 0.9f) * scale, p)
+            }
+        }
+    }
+
+    /** 经典：封面与三行歌曲信息都从同一个 x 起排，字号由 infoSizeSp 单独控制。 */
+    private fun drawClassicInfo(
+        cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
+        w: Float, h: Float, pad: Float, scale: Float,
+    ) {
+        val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
+        val coverSize = min(infoW - pad * 2f, h * 0.42f).coerceAtLeast(40f)
+        val cx = pad
+        val cy = h * 0.18f
+        val cp = Paint(Paint.ANTI_ALIAS_FLAG)
+        val coverBmp = st.cover
+        if (coverBmp != null && !coverBmp.isRecycled) {
+            cv.drawBitmap(coverBmp, null, RectF(cx, cy, cx + coverSize, cy + coverSize), cp)
+        } else {
+            cp.color = Color.rgb(40, 38, 48)
+            cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
+        }
+        val base = c.infoSizeSp.toFloat().coerceIn(REC_INFO_MIN_SP.toFloat(), REC_INFO_MAX_SP.toFloat()) * scale
+        val maxTextW = infoW - pad * 2f
+        val tp = recTextPaint(c, tf).apply { textAlign = Paint.Align.LEFT }
+        tp.color = Color.WHITE
+        tp.isFakeBoldText = true
+        tp.textSize = base * 1.35f
+        cv.drawText(ellipsizeRec(st.song.title, tp, maxTextW), pad, cy + coverSize + base * 1.9f, tp)
+        tp.isFakeBoldText = false
+        tp.textSize = base * 0.95f
+        tp.color = Color.argb(205, 255, 255, 255)
+        cv.drawText(ellipsizeRec(st.song.artist, tp, maxTextW), pad, cy + coverSize + base * 3.1f, tp)
+        tp.textSize = base * 0.88f
+        cv.drawText(ellipsizeRec(st.song.album, tp, maxTextW), pad, cy + coverSize + base * 4.1f, tp)
+    }
+
+    /**
+     * 圆盘 = 横屏播放器歌词模式：左侧信息区顺序仍是封面 → 歌手 → 歌名 → 专辑名，
+     * 26.11.24 起同样左对齐并用独立信息字号；右侧圆弧歌词几何保持不变。
+     */
+    private fun drawDiscInfo(
+        cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
+        w: Float, h: Float, pad: Float, scale: Float,
+    ) {
+        val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
+        val coverSize = min(infoW * 0.66f, h * 0.56f).coerceAtLeast(40f)
+        val cx = pad
+        val cy = (h - coverSize) / 2f - h * 0.08f
+        val cp = Paint(Paint.ANTI_ALIAS_FLAG)
+        val coverBmp = st.cover
+        if (coverBmp != null && !coverBmp.isRecycled) {
+            cv.drawBitmap(coverBmp, null, RectF(cx, cy, cx + coverSize, cy + coverSize), cp)
+        } else {
+            cp.color = Color.rgb(40, 38, 48)
+            cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
+        }
+        val base = c.infoSizeSp.toFloat().coerceIn(REC_INFO_MIN_SP.toFloat(), REC_INFO_MAX_SP.toFloat()) * scale
+        val maxTextW = infoW - pad * 2f
+        val tp = recTextPaint(c, tf).apply {
+            color = Color.WHITE
+            textAlign = Paint.Align.LEFT
+        }
+        var ty = cy + coverSize + base * 1.35f
+        tp.textSize = base * 0.86f
+        tp.color = Color.argb(185, 255, 255, 255)
+        cv.drawText(ellipsizeRec(st.song.artist, tp, maxTextW), pad, ty, tp)
+        ty += base * 1.5f
+        tp.isFakeBoldText = true
+        tp.textSize = base * 1.25f
+        tp.color = Color.WHITE
+        cv.drawText(ellipsizeRec(st.song.title, tp, maxTextW), pad, ty, tp)
+        ty += base * 1.45f
+        tp.isFakeBoldText = false
+        tp.textSize = base * 0.8f
+        tp.color = Color.argb(165, 255, 255, 255)
+        cv.drawText(
+            ellipsizeRec(st.song.album.ifBlank { "未知专辑" }, tp, maxTextW), pad, ty, tp,
+        )
+    }
+
+    /** 经典歌词：过长歌词最多 3 行自动折行，译文最多 2 行；行距按字号联动。 */
+    private fun drawClassicLyrics(
+        cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
+        lx: Float, lw: Float, centerY: Float, h: Float, scale: Float,
+    ) {
+        val act = recActiveRow(st, c.lyricOffsetMs)
+        val base = c.lyricSizeSp.toFloat()
+            .coerceIn(REC_LYRIC_MIN_SP.toFloat(), REC_LYRIC_MAX_SP.toFloat()) * scale
+        val hasTrans = c.showTrans && st.rows.any { !it.trans.isNullOrBlank() }
+        val lineH = base * (1.12f * 3f + (if (hasTrans) 1.05f else 0.35f))
+        val visible = (h * 0.78f / lineH).toInt().coerceIn(3, 7)
+        val half = visible / 2
+        val lp = recTextPaint(c, tf).apply { textAlign = Paint.Align.LEFT }
+        for (d in -half..half) {
+            val i = act + d
+            if (i < 0 || i >= st.rows.size) continue
+            val row = st.rows[i]
+            val y = centerY + d * lineH
+            val active = d == 0
+            lp.color = if (active) Color.WHITE
+            else Color.argb((130 - abs(d) * 28).coerceAtLeast(35), 255, 255, 255)
+            lp.textSize = if (active) base * 1.12f else base * 0.86f
+            lp.isFakeBoldText = active
+            val lines = wrapRecLines(row.text, lp, lw, 3)
+            var ly = y - (lines.size - 1) * base * 0.55f
+            for (l in lines) {
+                cv.drawText(l, lx, ly, lp)
+                ly += base * 1.06f
+            }
+            if (c.showTrans && !row.trans.isNullOrBlank()) {
+                lp.textSize = base * 0.56f
+                lp.isFakeBoldText = false
+                lp.color = Color.argb(if (active) 190 else 90, 210, 210, 225)
+                val tl = wrapRecLines(row.trans!!, lp, lw, 2)
+                var ty = ly + base * 0.12f
+                for (t in tl) {
+                    cv.drawText(t, lx, ty, lp)
+                    ty += base * 0.72f
+                }
+            }
+        }
+    }
+
+    /** ArcLyrics 的 Canvas 版：几何照横屏播放器，歌词与译文都允许折行。 */
+    private fun drawArcLyrics(
+        cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
+        lx: Float, lw: Float, centerY: Float, h: Float, scale: Float,
+    ) {
+        val rows = st.rows
+        if (rows.isEmpty()) return
+        val act = recActiveRow(st, c.lyricOffsetMs).coerceAtLeast(0).coerceAtMost(rows.lastIndex)
+        val base = c.lyricSizeSp.toFloat()
+            .coerceIn(REC_LYRIC_MIN_SP.toFloat(), REC_LYRIC_MAX_SP.toFloat()) * scale
+        val hasTrans = c.showTrans && rows.any { !it.trans.isNullOrBlank() }
+        val rowSpan = base * 3.4f * (if (hasTrans) 1.6f else 1f)
+        val regionH = h * 0.86f
+        val visibleRows = (regionH / rowSpan).toInt().coerceIn(3, 25)
+        val span = (visibleRows / 2).coerceAtLeast(2)
+        val tiltRad = 20f * PI.toFloat() / 180f
+        val rPx = (span * rowSpan / tiltRad * 0.7f).coerceAtLeast(regionH * 0.35f)
+        val stepRad = rowSpan / rPx
+        val lineWPx = lw * 0.78f
+        val maxShift = ((lw - lineWPx) / 2f).coerceAtLeast(0f)
+        val shiftPx = (rPx * (1f - cos(span * stepRad)) / 2f).coerceAtMost(maxShift)
+        val edge = span + 1
+        val lp = recTextPaint(c, tf)
+        for (i in (act - edge).coerceAtLeast(0)..(act + edge).coerceAtMost(rows.lastIndex)) {
+            val d = (i - act).toFloat()
+            val th = d * stepRad
+            val x = -rPx * (1f - cos(th)) + shiftPx
+            val y = rPx * sin(th)
+            val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
+            val fade = 1f - t * t * (3f - 2f * t)
+            val isCur = i == act
+            val alpha = (255f * (0.18f + 0.82f * fade) * (if (isCur) 1f else 0.55f))
+                .toInt().coerceIn(0, 255)
+            val row = rows[i]
+            cv.save()
+            cv.translate(lx + x, centerY + y)
+            cv.rotate(th * 180f / PI.toFloat(), 0f, rowSpan * 0.5f)
+            lp.textSize = if (isCur) base * 1.12f else base * 0.86f
+            lp.isFakeBoldText = isCur
+            lp.color = Color.argb(alpha, 255, 255, 255)
+            val lines = wrapRecLines(row.text, lp, lineWPx, 2)
+            var ly = rowSpan * 0.5f - (lines.size - 1) * base * 0.5f
+            for (l in lines) {
+                cv.drawText(l, 0f, ly, lp)
+                ly += base * 1.0f
+            }
+            if (c.showTrans && !row.trans.isNullOrBlank()) {
+                lp.textSize = base * 0.56f
+                lp.isFakeBoldText = false
+                lp.color = Color.argb((alpha * 0.75f).toInt(), 210, 210, 225)
+                val tl = wrapRecLines(row.trans!!, lp, lineWPx, 2)
+                var ty = ly + base * 0.1f
+                for (t2 in tl) {
+                    cv.drawText(t2, 0f, ty, lp)
+                    ty += base * 0.7f
+                }
+            }
+            cv.restore()
+        }
+    }
+
+    /** 两套样式共用的底部进度条与时间 */
+    private fun drawProgress(
+        cv: Canvas, st: RecFrameState, w: Float, h: Float, pad: Float, scale: Float,
+        c: RecorderConfig, tf: Typeface?,
+    ) {
+        val barY = h - 26f * scale
+        val bp = Paint(Paint.ANTI_ALIAS_FLAG)
+        bp.color = Color.argb(90, 255, 255, 255)
+        cv.drawRect(pad, barY, w - pad, barY + 3f * scale, bp)
+        bp.color = Color.WHITE
+        val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
+        cv.drawRect(pad, barY, pad + (w - pad * 2f) * prog, barY + 3f * scale, bp)
+        val clock = recTextPaint(c, tf).apply {
+            color = Color.argb(175, 255, 255, 255)
+            textSize = 16f * scale
+        }
+        val a = fmtRecTime(st.positionMs)
+        val b = fmtRecTime(st.durationMs)
+        cv.drawText(a, pad, barY - 10f * scale, clock)
+        cv.drawText(b, w - pad - clock.measureText(b), barY - 10f * scale, clock)
+    }
 }

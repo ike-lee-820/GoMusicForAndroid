@@ -52,6 +52,7 @@ object RecorderJobHolder {
 class RecorderEngine(private val ctx: Context) {
 
     fun render(job: RecJob, outFile: File, onProgress: (RecProgress) -> Unit, cancelled: () -> Boolean): String {
+        RecFrameStats.reset()
         val (w, h) = RecorderPrefs.dims(job.cfg)
         val fps = job.cfg.fps.coerceIn(15, 60)
         // 兼容旧配置里可能出现的英文值，避免人声模式被误判成「原声」
@@ -237,6 +238,7 @@ class RecorderEngine(private val ctx: Context) {
         }
         runCatching { muxer.stop() }
         runCatching { muxer.release() }
+        NmLog.note("录制引擎：${RecFrameStats.report()}（静态层预渲染 + 相同帧复用）")
         onProgress(RecProgress(100, "完成", "视频与音频已封装，准备保存到 影片/GoMusic"))
         return outFile.absolutePath
     }

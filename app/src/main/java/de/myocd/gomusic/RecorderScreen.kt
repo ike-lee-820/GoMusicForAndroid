@@ -306,11 +306,15 @@ fun RecorderScreen(vm: MainViewModel) {
                 RecStep("信息区 / 唱片大小", "${(cfg.infoRatio * 100).toInt()}%",
                     { persist(cfg.copy(infoRatio = (cfg.infoRatio - 0.05f).coerceIn(0.18f, 0.60f))) },
                     { persist(cfg.copy(infoRatio = (cfg.infoRatio + 0.05f).coerceIn(0.18f, 0.60f))) })
+                RecChips("背景", cfg.bgMode, REC_BG_MODES) { persist(cfg.copy(bgMode = it)) }
+                RecStep("信息字号", "${cfg.infoSizeSp} sp（$REC_INFO_MIN_SP–$REC_INFO_MAX_SP）",
+                    { persist(cfg.copy(infoSizeSp = (cfg.infoSizeSp - 2).coerceIn(REC_INFO_MIN_SP, REC_INFO_MAX_SP))) },
+                    { persist(cfg.copy(infoSizeSp = (cfg.infoSizeSp + 2).coerceIn(REC_INFO_MIN_SP, REC_INFO_MAX_SP))) })
             }
             RecGroup("歌词") {
-                RecStep("歌词字号", "${cfg.lyricSizeSp} sp",
-                    { persist(cfg.copy(lyricSizeSp = (cfg.lyricSizeSp - 2).coerceIn(12, 48))) },
-                    { persist(cfg.copy(lyricSizeSp = (cfg.lyricSizeSp + 2).coerceIn(12, 48))) })
+                RecStep("歌词字号", "${cfg.lyricSizeSp} sp（$REC_LYRIC_MIN_SP–$REC_LYRIC_MAX_SP）",
+                    { persist(cfg.copy(lyricSizeSp = (cfg.lyricSizeSp - 2).coerceIn(REC_LYRIC_MIN_SP, REC_LYRIC_MAX_SP))) },
+                    { persist(cfg.copy(lyricSizeSp = (cfg.lyricSizeSp + 2).coerceIn(REC_LYRIC_MIN_SP, REC_LYRIC_MAX_SP))) })
                 RecStep("全体快进 / 延迟", "${cfg.lyricOffsetMs} ms",
                     { persist(cfg.copy(lyricOffsetMs = (cfg.lyricOffsetMs - 100L).coerceIn(-5000L, 5000L))) },
                     { persist(cfg.copy(lyricOffsetMs = (cfg.lyricOffsetMs + 100L).coerceIn(-5000L, 5000L))) })

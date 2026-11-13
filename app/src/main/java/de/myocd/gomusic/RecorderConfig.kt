@@ -39,6 +39,15 @@ val REC_QUALITIES = listOf(
 /** 录制字体来源：系统默认 / 内置可变思源宋体 / 用户导入 */
 val REC_FONT_MODES = listOf("系统默认", "思源宋体", "导入")
 
+/** 背景效果：高斯模糊 / 液态玻璃为静态预渲染，雨季 / 雪天带逐帧粒子 */
+val REC_BG_MODES = listOf("高斯模糊", "液态玻璃", "雨季", "雪天")
+
+/** 字号范围：歌词 8–96sp、信息区 10–64sp，两者互不影响 */
+const val REC_LYRIC_MIN_SP = 8
+const val REC_LYRIC_MAX_SP = 96
+const val REC_INFO_MIN_SP = 10
+const val REC_INFO_MAX_SP = 64
+
 @Serializable
 data class RecorderConfig(
     /** 比例标签，见 [RecAspect] */
@@ -72,6 +81,10 @@ data class RecorderConfig(
     val showTrans: Boolean = true,
     /** 视频码率 Mbps */
     val bitrateMbps: Int = 8,
+    /** 歌曲信息区独立字号（sp，按输出高度归一化），与歌词字号分开控制 */
+    val infoSizeSp: Int = 22,
+    /** 背景效果，见 [REC_BG_MODES] */
+    val bgMode: String = "高斯模糊",
 )
 
 object RecorderPrefs {

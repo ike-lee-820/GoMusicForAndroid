@@ -103,13 +103,17 @@ fun UpdateScreen(vm: MainViewModel) {
                 Txt("安装包 ${"%.1f".format(info.size / 1024f / 1024f)} MB", 12, color = go.muted)
             }
             Spacer(Modifier.height(20.dp))
-            // 更新说明：全文 + Markdown 排版，占满剩余高度、可滚动、长按可复制
+            // 更新说明：全文 + Markdown 排版，占满剩余高度、可滚动、长按可复制。
+            // 底部「共 N 字 · 复制全文」那一行已移除；重载入口并入卡片右下角。
             Box(
                 Modifier.fillMaxWidth().weight(1f)
                     .clip(RoundedCornerShape(16.dp)).background(go.surfaceHi)
                     .padding(14.dp),
             ) {
-                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                Column(
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                        .padding(bottom = 32.dp),
+                ) {
                     SelectionContainer {
                         if (notes.isBlank()) {
                             Txt("暂无更新说明", 13, color = go.on)
@@ -118,40 +122,31 @@ fun UpdateScreen(vm: MainViewModel) {
                         }
                     }
                 }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt(
-                    if (notesLoading) "正在载入完整文档…" else "共 ${notes.length} 字 · Markdown 排版 · 长按可复制",
-                    11, color = go.muted,
-                )
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = {
-                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("更新说明", notes))
-                    android.widget.Toast.makeText(
-                        ctx, "已复制完整更新说明", android.widget.Toast.LENGTH_SHORT,
-                    ).show()
-                }) { Txt("复制全文", 12, color = go.primary) }
-                TextButton(onClick = {
-                    notesLoading = true
-                    scope.launch {
-                        val t = withContext(Dispatchers.IO) {
-                            runCatching { Updater.fetchNotes(info) }.getOrNull()
+                TextButton(
+                    onClick = {
+                        if (!notesLoading) {
+                            notesLoading = true
+                            scope.launch {
+                                val t = withContext(Dispatchers.IO) {
+                                    runCatching { Updater.fetchNotes(info) }.getOrNull()
+                                }
+                                if (!t.isNullOrBlank() && t.length > notes.length) {
+                                    fullNotes = t
+                                    android.widget.Toast.makeText(
+                                        ctx, "已载入完整文档", android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        ctx, "已是完整文档", android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                                notesLoading = false
+                            }
                         }
-                        if (!t.isNullOrBlank() && t.length > notes.length) {
-                            fullNotes = t
-                            android.widget.Toast.makeText(
-                                ctx, "已载入完整文档", android.widget.Toast.LENGTH_SHORT,
-                            ).show()
-                        } else {
-                            android.widget.Toast.makeText(
-                                ctx, "已是完整文档", android.widget.Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-                        notesLoading = false
-                    }
-                }) { Txt("查看完整文档", 12, color = go.primary) }
+                    },
+                    enabled = !notesLoading,
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                ) { Txt(if (notesLoading) "载入中…" else "重新载入", 11, color = go.primary) }
             }
             Spacer(Modifier.height(12.dp))
             if (!info.hasUpdate) {

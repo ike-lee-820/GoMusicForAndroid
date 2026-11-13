@@ -31,7 +31,7 @@ import androidx.compose.ui.unit.sp
  * 以前 UpdateUi 直接用 Txt(notes) 把 md 当纯文本显示，#、|、**、- 这些符号
  * 全部原样堆在屏幕上，看起来既不像文档也像被截断。这里不引入第三方解析库
  * （避免 CI 新增依赖），只覆盖更新说明实际用到的语法；未识别的行按正文显示。
- * 「复制全文」按钮仍然复制原始 md，排版只影响显示，不影响内容。
+ * 正文仍可长按选中复制；排版只影响显示，不影响内容。
  */
 @Composable
 fun MarkdownDoc(src: String, modifier: Modifier = Modifier) {

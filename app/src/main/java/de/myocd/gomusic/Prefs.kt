@@ -207,4 +207,11 @@ class Prefs(ctx: Context) {
             // 已迁移，prefs 里那份不再维护，避免两边不一致
             if (sp.contains("lyric_trans")) sp.edit().remove("lyric_trans").apply()
         }
+
+    /** 均衡器配置（预设 / 强度 / 自定义 10 段 / A/B / 设备校准） */
+    var eqConfig: EqConfig
+        get() = runCatching {
+            json.decodeFromString<EqConfig>(sp.getString("eq_config", "")!!)
+        }.getOrDefault(EQ_FLAT)
+        set(v) { sp.edit().putString("eq_config", json.encodeToString(v)).apply() }
 }

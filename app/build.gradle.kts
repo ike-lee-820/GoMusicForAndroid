@@ -30,8 +30,8 @@ android {
         )
         minSdk = 26
         targetSdk = 35
-        versionCode = 110
-        versionName = "26.11.8"
+        versionCode = 111
+        versionName = "26.11.9"
     }
 
     signingConfigs {
@@ -84,6 +84,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     implementation("androidx.media3:media3-exoplayer:1.4.1")
+    // FFmpeg 解码内核（libavcodec）：DefaultRenderersFactory 会优先用它，
+    // 缺失格式自动回退 MediaCodec，播放功能完全不变
+    implementation("androidx.media3:media3-decoder-ffmpeg:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-datasource:1.4.1")
     // SimpleCache 的 DatabaseProvider 在这个模块里（边播边缓存要用）

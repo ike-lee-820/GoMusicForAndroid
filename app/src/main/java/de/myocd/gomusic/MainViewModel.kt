@@ -142,6 +142,30 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var showQueue by mutableStateOf(false)
     var showSettings by mutableStateOf(false)
     var showDownloads by mutableStateOf(false)
+    var showEq by mutableStateOf(false)
+    var eqConfig by mutableStateOf(runCatching { prefs.eqConfig }.getOrDefault(EQ_FLAT))
+        private set
+
+    fun setEq(cfg: EqConfig) {
+        eqConfig = cfg
+        prefs.eqConfig = cfg
+        // 服务与界面在同一进程，直接推给 PCM 链路，即刻生效
+        EqBridge.apply(cfg)
+    }
+
+    /** A/B 试听：临时切到 B 侧 3 秒，再自动回到原曲线 */
+    fun eqCompareB() {
+        val saved = eqConfig
+        val b = eqConfig.copy(
+            presetId = eqConfig.compareId.ifBlank { "flat" },
+            enabled = true,
+        )
+        setEq(b)
+        viewModelScope.launch {
+            delay(3_000)
+            if (eqConfig == b) setEq(saved)
+        }
+    }
     var pickReq by mutableStateOf<PickRequest?>(null)
     var toastMsg by mutableStateOf<String?>(null); private set
     /** 播放倍速 */

@@ -364,6 +364,7 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.showNmLogin) NmLoginSheet(vm)
         if (vm.showHistory) HistorySheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
+        if (vm.showEq) EqSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
 
         // MV：放在所有内容之后组合，才在最上层。
@@ -1753,7 +1754,7 @@ fun FullPlayer(vm: MainViewModel) {
                 .padding(start = 16.dp + sideInset, end = 16.dp),
         ) {
             Column {
-                Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
                     // 横屏左上角用「×」，竖屏保持向下箭头；都是关闭播放器
                     IconBtn(
                         if (wide) Icons.Outlined.Close else Icons.Outlined.KeyboardArrowDown,
@@ -1789,7 +1790,7 @@ fun FullPlayer(vm: MainViewModel) {
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .height(56.dp)
+                            .height(32.dp)
                             .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
                     )
                 }
@@ -1891,85 +1892,101 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
 @Composable
 fun WideTopControls(vm: MainViewModel, s: Song) {
     val ctx = LocalContext.current
-    // 横向可滚动：按钮多的时候宁可滚动，也不要把每个按钮挤成窄条
-    // （之前固定排布，宽度不够时按钮被压缩，就变得很难点中）
-    Row(
+    // 展开后是「两行」：第一行功能按钮，第二行进度条 + 播放控制。
+    // 每行都横向可滚动，按钮多时不会被挤成窄条；整块吃掉空隙点击，
+    // 不然点空隙会穿透到下面的歌词。
+    Column(
         Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            // 按钮之间的空隙也吃掉点击：不然点空隙会穿透到下面的歌词
             .noRippleClickable { /* 只拦截穿透，不做任何事 */ },
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 进度条占弹性宽度，但保底 80dp，窄屏也不会被挤没
-        SimpleSeekBar(
-            vm.positionMs, vm.durationMs,
-            Modifier.width(160.dp),
-        ) { vm.seekTo(it) }
-        HS(8)
-        Txt(
-            "${fmt(vm.positionMs)} / ${fmt(vm.durationMs)}", 11,
-            color = Color.White.copy(alpha = 0.65f),
-        )
-        HS(10)
-        // 上一首 / 播放 / 下一首
-        IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.prev() }
-        HS(6)
-        IconBtn(
-            if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-            if (vm.isPlaying) "暂停" else "播放",
-            size = 34.dp, minHit = 34.dp, tint = Color.Black, bg = Color.White,
-        ) { vm.togglePlay() }
-        HS(6)
-        IconBtn(Icons.Outlined.SkipNext, "下一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.next() }
-        HS(10)
-        // 播放列表 / 播放方式
-        IconBtn(
-            Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表",
-            size = 24.dp, minHit = 34.dp, tint = Color.White,
-        ) { vm.showQueue = true }
-        HS(6)
-        IconBtn(
-            when (vm.playMode) {
-                0 -> Icons.Outlined.Repeat
-                1 -> Icons.Outlined.Shuffle
-                else -> Icons.Outlined.RepeatOne
-            },
-            listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
-            size = 24.dp, minHit = 34.dp, tint = Color.White,
-        ) { vm.cycleMode() }
-        HS(10)
-        // 分享 / 下载 / 加入歌单 / 音质 / 倍速
-        IconBtn(Icons.Outlined.Share, "分享", size = 24.dp, minHit = 34.dp, tint = Color.White) {
-            shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
-        }
-        HS(6)
-        IconBtn(Icons.Outlined.Download, "下载", size = 24.dp, minHit = 34.dp, tint = Color.White) {
-            vm.download(listOf(s))
-        }
-        HS(6)
-        IconBtn(
-            Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
-            size = 24.dp, minHit = 34.dp, tint = Color.White,
-        ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
-        // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
-        LaunchedEffect(s.ssid) { vm.probeMv(s) }
-        if (vm.mvAvailable(s)) {
+        // ---------- 第一行：分享 / 下载 / 收藏 / MV / 翻译 / 均衡器 / 音质 / 倍速 ----------
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .height(40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconBtn(Icons.Outlined.Share, "分享", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+                shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
+            }
             HS(6)
-            MvIconButton({ vm.playMv() }, tint = Color.White, size = 24.dp, hit = 34.dp)
-        }
-        // 翻译：歌词里有非中文才出现
-        if (vm.lyricNeedTrans) {
+            IconBtn(Icons.Outlined.Download, "下载", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+                vm.download(listOf(s))
+            }
             HS(6)
-            TransIconButton(
-                { vm.translateLyric() }, tint = Color.White, size = 24.dp, hit = 34.dp,
-                active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
+            IconBtn(
+                Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
+                size = 24.dp, minHit = 34.dp, tint = Color.White,
+            ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
+            // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
+            LaunchedEffect(s.ssid) { vm.probeMv(s) }
+            if (vm.mvAvailable(s)) {
+                HS(6)
+                MvIconButton({ vm.playMv() }, tint = Color.White, size = 24.dp, hit = 34.dp)
+            }
+            // 翻译：歌词里有非中文才出现
+            if (vm.lyricNeedTrans) {
+                HS(6)
+                TransIconButton(
+                    { vm.translateLyric() }, tint = Color.White, size = 24.dp, hit = 34.dp,
+                    active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
+                )
+            }
+            HS(6)
+            EqIconButton(
+                { vm.showEq = true }, tint = Color.White, size = 24.dp, hit = 34.dp,
+                active = vm.eqConfig.enabled,
             )
+            HS(6)
+            QualityMenu(vm, Color.White)
+            HS(6)
+            SpeedMenu(vm, Color.White)
         }
-        HS(6)
-        QualityMenu(vm, Color.White)
-        HS(6)
-        SpeedMenu(vm, Color.White)
+        // ---------- 第二行：进度条 / 时间 / 上一首 / 播放 / 下一首 / 列表 / 循环 ----------
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .height(46.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SimpleSeekBar(
+                vm.positionMs, vm.durationMs,
+                Modifier.width(180.dp),
+            ) { vm.seekTo(it) }
+            HS(8)
+            Txt(
+                "${fmt(vm.positionMs)} / ${fmt(vm.durationMs)}", 11,
+                color = Color.White.copy(alpha = 0.65f),
+            )
+            HS(10)
+            IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.prev() }
+            HS(6)
+            IconBtn(
+                if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                if (vm.isPlaying) "暂停" else "播放",
+                size = 34.dp, minHit = 34.dp, tint = Color.Black, bg = Color.White,
+            ) { vm.togglePlay() }
+            HS(6)
+            IconBtn(Icons.Outlined.SkipNext, "下一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.next() }
+            HS(10)
+            IconBtn(
+                Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表",
+                size = 24.dp, minHit = 34.dp, tint = Color.White,
+            ) { vm.showQueue = true }
+            HS(6)
+            IconBtn(
+                when (vm.playMode) {
+                    0 -> Icons.Outlined.Repeat
+                    1 -> Icons.Outlined.Shuffle
+                    else -> Icons.Outlined.RepeatOne
+                },
+                listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
+                size = 24.dp, minHit = 34.dp, tint = Color.White,
+            ) { vm.cycleMode() }
+        }
     }
 }
 
@@ -2112,6 +2129,10 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                         active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
                     )
                 }
+                EqIconButton(
+                    { vm.showEq = true }, tint = go.on, size = 24.dp, hit = 36.dp,
+                    active = vm.eqConfig.enabled,
+                )
                 QualityMenu(vm)
                 SpeedMenu(vm)
             }
@@ -2214,7 +2235,7 @@ fun MvIconButton(
         Canvas(Modifier.size(size)) {
             // 按 24dp 的设计网格画，u 是「一格」对应的像素
             val u = this.size.width / 24f
-            val line = Stroke(width = 1.7f * u)
+            val line = Stroke(width = glyphLineWidth(this.size.width))
             // 显示器外框
             drawRoundRect(
                 color = tint,
@@ -2881,7 +2902,7 @@ fun FullscreenIconButton(
     Box(Modifier.size(hit).clickScale(true, onClick), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(size)) {
             val u = this.size.width / 24f
-            val st = Stroke(width = 1.8f * u)
+            val st = Stroke(width = glyphLineWidth(this.size.width))
             // 四个角的直角：向外张开 = 进入全屏，向内收 = 退出全屏
             val o = if (active) 2.6f else 0f
             val l = 6.5f

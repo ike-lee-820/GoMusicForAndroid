@@ -180,7 +180,14 @@ class PlaybackService : MediaSessionService() {
             .setBackBuffer(30_000, false)
             .build()
 
-        val p = ExoPlayer.Builder(this)
+        // FFmpeg 解码内核：解码器由 RenderersFactory 提供，控制面仍是原来
+        // 那套 ExoPlayer，所以切内核不会丢通知 / 锁屏 / 队列 / 进度。
+        // 均衡器挂在解码后的 PCM 链路上（见 EqAudioProcessor）。
+        val eqProcessor = EqAudioProcessor()
+        EqBridge.attach(eqProcessor)
+        EqBridge.apply(Prefs(applicationContext).eqConfig)
+        val renderers = buildKernelRenderersFactory(this, eqProcessor)
+        val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dsFactory))
             .setLoadControl(loadControl)
             .setAudioAttributes(buildAttrs(), true)

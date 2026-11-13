@@ -82,7 +82,22 @@ class PlaybackService : MediaSessionService() {
         }
         override fun onTimelineChanged(timeline: Timeline, reason: Int) { savePlaybackState() }
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) { savePlaybackState() }
-        override fun onPlaybackStateChanged(playbackState: Int) { savePlaybackState() }
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            savePlaybackState()
+            // 自动续播兜底放在服务层：播放页重组（横屏展开控制栏）不会
+            // 把这个 listener 带 dispose。队列还有下一首而播放器停在 ENDED
+            // 时主动推进；单曲循环由 REPEAT_MODE_ONE 自己处理，不干预。
+            if (playbackState == Player.STATE_ENDED) {
+                val cur = player
+                if (cur != null && cur.repeatMode != Player.REPEAT_MODE_ONE
+                    && cur.mediaItemCount > cur.currentMediaItemIndex + 1
+                ) {
+                    NmLog.note("播放结束：服务层自动切下一首")
+                    cur.seekToNext()
+                    cur.play()
+                }
+            }
+        }
     }
 
     /** 定期存一次进度：切歌 / 暂停等事件之间被强杀时，位置不至于差太多 */
@@ -185,8 +200,13 @@ class PlaybackService : MediaSessionService() {
         // 均衡器挂在解码后的 PCM 链路上（见 EqAudioProcessor）。
         val eqProcessor = EqAudioProcessor()
         EqBridge.attach(eqProcessor)
-        EqBridge.apply(Prefs(applicationContext).eqConfig)
-        val renderers = buildKernelRenderersFactory(this, eqProcessor)
+        val initialPrefs = Prefs(applicationContext)
+        EqBridge.apply(initialPrefs.eqConfig)
+        // 3D 环绕是独立链路，不使用均衡器增益
+        val surroundProcessor = SurroundAudioProcessor()
+        SurroundBridge.attach(surroundProcessor)
+        SurroundBridge.apply(initialPrefs.surroundOn, initialPrefs.surroundStrength)
+        val renderers = buildKernelRenderersFactory(this, eqProcessor, surroundProcessor)
         val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(dsFactory))
             .setLoadControl(loadControl)

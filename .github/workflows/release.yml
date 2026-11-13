@@ -95,10 +95,22 @@ jobs:
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           cp "$APK" "GoMusic-$TAG.apk"
           APK="GoMusic-$TAG.apk"
+
+          # 发布文案 = 该版本的完整更新说明，不再用固定一句话。
+          # 每版说明归档在 docs/release-notes/<版本号>.md；没有归档时回退根目录
+          # RELEASE_NOTES.md。两者都没有就直接失败，避免又发出一句占位文案。
+          NOTES="docs/release-notes/$V.md"
+          if [ ! -f "$NOTES" ]; then NOTES="RELEASE_NOTES.md"; fi
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::缺少更新说明 docs/release-notes/$V.md 或 RELEASE_NOTES.md"
+            exit 1
+          fi
+          echo "release notes = $NOTES ($(wc -c < "$NOTES") bytes)"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG 已存在，更新 APK"
+            echo "release $TAG 已存在，同步文案与 APK"
+            gh release edit "$TAG" --title "GoMusic $TAG" --notes-file "$NOTES"
           else
-            gh release create "$TAG" --title "GoMusic $TAG" --notes "自动构建的正式版 APK（固定 keystore 签名）"
+            gh release create "$TAG" --title "GoMusic $TAG" --notes-file "$NOTES"
           fi
           gh release upload "$TAG" "$APK" --clobber
           echo "已发布到 Releases：$TAG"

@@ -146,6 +146,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var eqConfig by mutableStateOf(runCatching { prefs.eqConfig }.getOrDefault(EQ_FLAT))
         private set
 
+    // 3D 环绕：开关与强度独立保存，不写进 EqConfig，避免影响均衡器预设
+    var showSurround by mutableStateOf(false)
+    var surroundOn by mutableStateOf(prefs.surroundOn)
+        private set
+    var surroundStrength by mutableFloatStateOf(prefs.surroundStrength)
+        private set
+
+    fun setSurround(on: Boolean, strength: Float = surroundStrength) {
+        surroundOn = on
+        surroundStrength = strength.coerceIn(0f, 1f)
+        prefs.surroundOn = on
+        prefs.surroundStrength = surroundStrength
+        SurroundBridge.apply(on, surroundStrength)
+    }
+
     fun setEq(cfg: EqConfig) {
         eqConfig = cfg
         prefs.eqConfig = cfg
@@ -1505,6 +1520,31 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (!info.hasUpdate) return
         autoShown = true
         showUpdate = true
+    }
+
+    /**
+     * 打开「更新说明」阅读页：不要求有新版本，也不触发下载。
+     *
+     * 启动时静默检查过一次，updateInfo 通常已有值；万一没查到（断网、
+     * 代理全挂），也构造一个最小 Info，让弹窗仍能从仓库拉完整 md 显示。
+     */
+    fun openUpdateNotes() {
+        showUpdate = true
+        if (updateInfo != null || updateChecking) return
+        updateChecking = true
+        viewModelScope.launch {
+            val info = withContext(Dispatchers.IO) { runCatching { Updater.check() }.getOrNull() }
+            updateInfo = info ?: Updater.Info(
+                latest = appVersion,
+                url = "",
+                page = Updater.RELEASES_PAGE,
+                notes = "",
+                size = 0L,
+                hasUpdate = false,
+                notesUrl = Updater.notesUrlFor(appVersion),
+            )
+            updateChecking = false
+        }
     }
 
     fun closeUpdate() {

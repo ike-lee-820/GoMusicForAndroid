@@ -365,6 +365,7 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.showHistory) HistorySheet(vm)
         if (vm.showDownloads) DownloadsSheet(vm)
         if (vm.showEq) EqSheet(vm)
+    if (vm.showSurround) SurroundSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
 
         // MV：放在所有内容之后组合，才在最上层。
@@ -1938,6 +1939,11 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
             EqIconButton(
                 { vm.showEq = true }, tint = Color.White, size = 24.dp, hit = 34.dp,
                 active = vm.eqConfig.enabled,
+            )
+            HS(6)
+            SurroundIconButton(
+                { vm.showSurround = true }, size = 24.dp, hit = 34.dp,
+                active = vm.surroundOn,
             )
             HS(6)
             QualityMenu(vm, Color.White)
@@ -3529,13 +3535,15 @@ fun SettingsSheet(vm: MainViewModel) {
                     icon = Icons.Outlined.Refresh,
                     enabled = !vm.updateChecking,
                 ) { vm.checkUpdate() }
+                // 不要求有新版本，随时可查看该版本的完整更新文档
+                GoButton("更新说明") { vm.openUpdateNotes() }
                 if (up?.hasUpdate == true) {
                     // 与启动时一致：打开同一个全屏更新弹窗
                     GoButton("更新", primary = true, icon = Icons.Outlined.Download) { vm.showUpdate = true }
                 }
             }
             VS(8)
-            Txt("更新检查经 v6.gh-proxy.com 加速", 11, color = go.muted)
+            Txt("更新检查与完整文档均经 v6.gh-proxy.com 加速", 11, color = go.muted)
             VS(16)
 
             // ---------- 字体 ----------
@@ -3677,6 +3685,72 @@ fun DownloadsSheet(vm: MainViewModel) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 3D 环绕按钮：与 MV / 均衡器同一套 24dp 网格与笔触的自绘图标。
+ * 两圈同心圆弧 + 中心点，表示声场向外扩散；开启时用主题主色。
+ */
+@Composable
+fun SurroundIconButton(
+    onClick: () -> Unit,
+    size: Dp = 24.dp,
+    hit: Dp = 36.dp,
+    active: Boolean = false,
+    tint: Color = Color.White,
+) {
+    val go = LocalGo.current
+    val c = if (active) go.primary else tint
+    Box(
+        Modifier.size(hit).clickScale(true, onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(size)) {
+            val u = this.size.width / 24f
+            val line = Stroke(width = glyphLineWidth(this.size.width))
+            val center = Offset(12f * u, 12f * u)
+            drawCircle(color = c, radius = 9f * u, center = center, style = line)
+            drawCircle(color = c, radius = 5f * u, center = center, style = line)
+            drawCircle(color = c, radius = 1.6f * u, center = center)
+        }
+    }
+}
+
+/** 3D 环绕设置：开关 + 强度，不使用均衡器频段增益 */
+@Composable
+fun SurroundSheet(vm: MainViewModel) {
+    val go = LocalGo.current
+    GoSheet({ vm.showSurround = false }) {
+        Column(Modifier.fillMaxWidth()) {
+            Txt("3D 环绕", 18, color = go.on)
+            Spacer(Modifier.height(10.dp))
+            Txt(
+                "独立挂在解码后的 PCM 上，不使用均衡器频段增益；均衡器全关也生效。",
+                12, color = go.muted,
+            )
+            Spacer(Modifier.height(16.dp))
+            GoButton(
+                if (vm.surroundOn) "关闭环绕" else "开启环绕",
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+            ) { vm.setSurround(!vm.surroundOn) }
+            Spacer(Modifier.height(14.dp))
+            Txt("强度（当前 ${(vm.surroundStrength * 100).toInt()}%）", 13, color = go.on)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                listOf(0.3f to "弱", 0.55f to "中", 0.85f to "强").forEach { (v, label) ->
+                    GoButton(label, modifier = Modifier.weight(1f)) {
+                        vm.setSurround(vm.surroundOn, v)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Txt(
+                "150Hz 以下不空间化（低音不虚）；输出软限幅，交叉馈送叠加不削波。场景差异由强度统一校准。",
+                11, color = go.muted,
+            )
         }
     }
 }

@@ -15,16 +15,27 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 全屏更新弹窗。
@@ -40,6 +51,22 @@ fun UpdateScreen(vm: MainViewModel) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val info = vm.updateInfo ?: return
     val prog = vm.updateProgress
+
+    // 完整文档双保险：release body 已是全文，再后台拉一次仓库归档 md。
+    // 两条都失败时至少还能显示 body 全文，不会再被 600 字截断。
+    var fullNotes by remember(info.latest) { mutableStateOf<String?>(null) }
+    var notesLoading by remember(info.latest) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(info.latest) {
+        notesLoading = true
+        val t = withContext(Dispatchers.IO) {
+            runCatching { Updater.fetchNotes(info) }.getOrNull()
+        }
+        if (!t.isNullOrBlank()) fullNotes = t
+        notesLoading = false
+    }
+    val notes = fullNotes ?: info.notes
+
     Box(
         Modifier.fillMaxSize().background(go.bg),
     ) {
@@ -66,17 +93,54 @@ fun UpdateScreen(vm: MainViewModel) {
                 Txt("安装包 ${"%.1f".format(info.size / 1024f / 1024f)} MB", 12, color = go.muted)
             }
             Spacer(Modifier.height(20.dp))
-            // 更新说明
-            if (info.notes.isNotBlank()) {
-                Box(
-                    Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 260.dp)
-                        .clip(RoundedCornerShape(16.dp)).background(go.surfaceHi)
-                        .verticalScroll(rememberScrollState()).padding(14.dp),
-                ) { Txt(info.notes, 13, color = go.on) }
-                Spacer(Modifier.height(20.dp))
+            // 更新说明：完整全文，占满剩余高度、可滚动、长按可复制
+            Box(
+                Modifier.fillMaxWidth().weight(1f)
+                    .clip(RoundedCornerShape(16.dp)).background(go.surfaceHi)
+                    .padding(14.dp),
+            ) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    SelectionContainer {
+                        Txt(notes.ifBlank { "暂无更新说明" }, 13, color = go.on)
+                    }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt(
+                    if (notesLoading) "正在载入完整文档…" else "共 ${notes.length} 字 · 长按可复制",
+                    11, color = go.muted,
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = {
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("更新说明", notes))
+                    android.widget.Toast.makeText(
+                        ctx, "已复制完整更新说明", android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }) { Txt("复制全文", 12, color = go.primary) }
+                TextButton(onClick = {
+                    if (fullNotes != null) {
+                        android.widget.Toast.makeText(
+                            ctx, "已是完整文档", android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        notesLoading = true
+                        scope.launch {
+                            val t = withContext(Dispatchers.IO) {
+                                runCatching { Updater.fetchNotes(info) }.getOrNull()
+                            }
+                            if (!t.isNullOrBlank()) fullNotes = t
+                            notesLoading = false
+                        }
+                    }
+                }) { Txt("查看完整文档", 12, color = go.primary) }
             }
             Spacer(Modifier.height(12.dp))
-            if (prog != null) {
+            if (!info.hasUpdate) {
+                Txt("当前已是最新版本，此处仅查看更新说明", 11, color = go.muted)
+                Spacer(Modifier.height(18.dp))
+            } else if (prog != null) {
                 // 应用内下载中：显示进度，此时不重复触发下载
                 val (done, total) = prog
                 val pct = if (total > 0) (done * 100f / total) else 0f
@@ -135,7 +199,10 @@ fun UpdateScreen(vm: MainViewModel) {
             }
             Spacer(Modifier.height(18.dp))
             // 取消
-            GoButton("取消", modifier = Modifier.fillMaxWidth().height(44.dp)) { vm.closeUpdate() }
+            GoButton(
+                if (info.hasUpdate) "取消" else "关闭",
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+            ) { vm.closeUpdate() }
             Spacer(Modifier.height(16.dp))
         }
     }

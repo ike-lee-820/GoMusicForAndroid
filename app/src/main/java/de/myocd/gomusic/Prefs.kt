@@ -214,4 +214,12 @@ class Prefs(ctx: Context) {
             json.decodeFromString<EqConfig>(sp.getString("eq_config", "")!!)
         }.getOrDefault(EQ_FLAT)
         set(v) { sp.edit().putString("eq_config", json.encodeToString(v)).apply() }
+
+    /** 3D 环绕开关与强度（0~1），与均衡器各自独立持久化 */
+    var surroundOn: Boolean
+        get() = sp.getBoolean("surround_on", false)
+        set(v) { sp.edit().putBoolean("surround_on", v).apply() }
+    var surroundStrength: Float
+        get() = sp.getFloat("surround_strength", 0.55f)
+        set(v) { sp.edit().putFloat("surround_strength", v.coerceIn(0f, 1f)).apply() }
 }

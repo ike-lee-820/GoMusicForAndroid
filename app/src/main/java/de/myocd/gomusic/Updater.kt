@@ -23,7 +23,10 @@ object Updater {
     private const val API_LATEST = "https://api.github.com/repos/$OWNER/$REPO/releases/latest"
     /** 发布列表：用来在多个发布里挑版本号最大的那个 */
     private const val API_RELEASES = "https://api.github.com/repos/$OWNER/$REPO/releases?per_page=20"
-    private const val RELEASES_PAGE = "https://github.com/$OWNER/$REPO/releases"
+    val RELEASES_PAGE = "https://github.com/$OWNER/$REPO/releases"
+    /** 每版完整更新说明在仓库里的归档目录（纯 ASCII 路径，便于走加速代理） */
+    private const val RAW_NOTES_BASE =
+        "https://raw.githubusercontent.com/$OWNER/$REPO/main/docs/release-notes/"
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -49,10 +52,11 @@ object Updater {
         val latest: String,          // 最新版本号，如 1.3.6
         val url: String,             // APK 下载直链
         val page: String,            // Releases 页面
-        val notes: String,           // 更新说明
+        val notes: String,           // 更新说明（release body 全文，不再截断）
         val size: Long,              // APK 大小（字节），0 = 未知
         val draft: Boolean = false,  // 草稿发布，不参与更新
         val hasUpdate: Boolean,
+        val notesUrl: String = "",   // 仓库内该版本完整说明 md 的 raw 地址
     )
 
     /** 当前版本号 */
@@ -113,7 +117,9 @@ object Updater {
                 return@forEach
             }
         }
-        val notes = (root["body"] as? JsonPrimitive)?.content?.take(600) ?: ""
+        // 以前这里 .take(600) 把说明截断，长文档在应用内永远看不全。
+        // GitHub release body 上限 65536 字符，正常更新说明远小于它，直接保留全文。
+        val notes = (root["body"] as? JsonPrimitive)?.content.orEmpty()
         Info(
             latest = latest,
             url = url,
@@ -122,6 +128,7 @@ object Updater {
             size = size,
             draft = (root["draft"] as? JsonPrimitive)?.content?.toBoolean() ?: false,
             hasUpdate = compare(latest, current()) > 0,
+            notesUrl = notesUrlFor(latest),
         )
     }.onFailure {
         NmLog.note("更新检查解析失败：${it.message}")
@@ -154,6 +161,21 @@ object Updater {
             json.parseToJsonElement(body) as? JsonObject
         }.getOrNull() ?: return null
         return parseInfo(root)
+    }
+
+    /** 某版本完整更新说明的 raw 地址 */
+    fun notesUrlFor(version: String): String = RAW_NOTES_BASE + norm(version) + ".md"
+
+    /**
+     * 拉取仓库里归档的完整更新说明。
+     *
+     * release body 已经带全文，这里是第二条路径：用户点「查看完整文档」、
+     * 或 body 被清空 / 代理只返回摘要时，仍能拿到未删减的 md 原文。
+     * 同样先走加速、失败回退直连。
+     */
+    fun fetchNotes(info: Info): String? {
+        val u = info.notesUrl.ifBlank { notesUrlFor(info.latest) }
+        return getBody(u)?.takeIf { it.isNotBlank() }
     }
 
     /**

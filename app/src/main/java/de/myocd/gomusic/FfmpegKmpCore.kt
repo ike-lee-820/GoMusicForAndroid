@@ -42,7 +42,11 @@ object EqBridge {
 }
 
 @UnstableApi
-fun buildKernelRenderersFactory(ctx: Context, eq: EqAudioProcessor): DefaultRenderersFactory {
+fun buildKernelRenderersFactory(
+    ctx: Context,
+    eq: EqAudioProcessor,
+    surround: SurroundAudioProcessor,
+): DefaultRenderersFactory {
     // FFmpeg 渲染器是反射加载的：把 decoder_ffmpeg 的 AAR 放进 app/libs 就会命中，
     // 没带原生库也不会崩，MediaCodec 照常接管。日志里能直接看到当前内核。
     val ffmpeg = runCatching {
@@ -64,7 +68,7 @@ fun buildKernelRenderersFactory(ctx: Context, eq: EqAudioProcessor): DefaultRend
         ): AudioSink = DefaultAudioSink.Builder(context)
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-            .setAudioProcessors(arrayOf<AudioProcessor>(eq))
+            .setAudioProcessors(arrayOf<AudioProcessor>(eq, surround))
             .build()
     }
     f.setExtensionRendererMode(

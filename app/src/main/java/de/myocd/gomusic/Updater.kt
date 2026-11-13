@@ -169,14 +169,41 @@ object Updater {
     /**
      * 拉取仓库里归档的完整更新说明。
      *
-     * release body 已经带全文，这里是第二条路径：用户点「查看完整文档」、
-     * 或 body 被清空 / 代理只返回摘要时，仍能拿到未删减的 md 原文。
-     * 同样先走加速、失败回退直连。
+     * 以前这里复用 getBody()：加速节点先返回什么就用什么。代理偶尔只给
+     * 文档前半截（或一段错误页），只要非空就会把 release body 的全文覆盖掉，
+     * 应用内于是显示「被截断」的说明。现在把两个候选都取回来，按长度挑最完整的，
+     * 并且短于 body 90% 的一律不采用 —— 宁可显示 body 全文，也不拿残片替换。
      */
     fun fetchNotes(info: Info): String? {
         val u = info.notesUrl.ifBlank { notesUrlFor(info.latest) }
-        return getBody(u)?.takeIf { it.isNotBlank() }
+        val found = mutableListOf<String>()
+        for (candidate in listOf(PROXY + u, u)) {
+            try {
+                val req = Request.Builder().url(candidate).build()
+                client.newCall(req).execute().use { r ->
+                    val t = r.body?.string().orEmpty()
+                    if (r.isSuccessful && t.isNotBlank() && looksLikeMd(t)) {
+                        found += t
+                    } else {
+                        NmLog.note("更新文档候选不可用 HTTP ${r.code} 长度=${t.length}")
+                    }
+                }
+            } catch (e: Exception) {
+                NmLog.note("更新文档候选异常 ${e.message}")
+            }
+        }
+        val best = found.maxByOrNull { it.length }
+        val bodyLen = info.notes.length
+        NmLog.note("更新文档：body=$bodyLen raw=${best?.length ?: 0} 候选数=${found.size}")
+        if (best == null) return null
+        return if (best.length >= (bodyLen * 0.9f).toInt()) best else info.notes.ifBlank { best }
     }
+
+    /** 粗判是否为更新说明 md，避免把代理的错误页当成正文 */
+    private fun looksLikeMd(t: String): Boolean =
+        t.lines().size > 1 && (
+            t.contains("# ") || t.contains("## ") || t.contains("- ") || t.contains("**")
+        )
 
     /**
      * APK 下载地址：套一层加速，方便在国内网络下直接下载。

@@ -65,7 +65,17 @@ fun UpdateScreen(vm: MainViewModel) {
         if (!t.isNullOrBlank()) fullNotes = t
         notesLoading = false
     }
-    val notes = fullNotes ?: info.notes
+    // 取更完整的一份：fetchNotes 已保证不会用残片替换全文，这里再加一层保险。
+    // 只有仓库归档 md 确实不短于 release body 时才覆盖它。
+    val notes = remember(fullNotes, info.notes) {
+        val a = info.notes
+        val b = fullNotes
+        when {
+            b == null -> a
+            b.length >= a.length -> b
+            else -> a
+        }
+    }
 
     Box(
         Modifier.fillMaxSize().background(go.bg),
@@ -93,7 +103,7 @@ fun UpdateScreen(vm: MainViewModel) {
                 Txt("安装包 ${"%.1f".format(info.size / 1024f / 1024f)} MB", 12, color = go.muted)
             }
             Spacer(Modifier.height(20.dp))
-            // 更新说明：完整全文，占满剩余高度、可滚动、长按可复制
+            // 更新说明：全文 + Markdown 排版，占满剩余高度、可滚动、长按可复制
             Box(
                 Modifier.fillMaxWidth().weight(1f)
                     .clip(RoundedCornerShape(16.dp)).background(go.surfaceHi)
@@ -101,13 +111,17 @@ fun UpdateScreen(vm: MainViewModel) {
             ) {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                     SelectionContainer {
-                        Txt(notes.ifBlank { "暂无更新说明" }, 13, color = go.on)
+                        if (notes.isBlank()) {
+                            Txt("暂无更新说明", 13, color = go.on)
+                        } else {
+                            MarkdownDoc(notes)
+                        }
                     }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Txt(
-                    if (notesLoading) "正在载入完整文档…" else "共 ${notes.length} 字 · 长按可复制",
+                    if (notesLoading) "正在载入完整文档…" else "共 ${notes.length} 字 · Markdown 排版 · 长按可复制",
                     11, color = go.muted,
                 )
                 Spacer(Modifier.weight(1f))
@@ -120,19 +134,22 @@ fun UpdateScreen(vm: MainViewModel) {
                     ).show()
                 }) { Txt("复制全文", 12, color = go.primary) }
                 TextButton(onClick = {
-                    if (fullNotes != null) {
-                        android.widget.Toast.makeText(
-                            ctx, "已是完整文档", android.widget.Toast.LENGTH_SHORT,
-                        ).show()
-                    } else {
-                        notesLoading = true
-                        scope.launch {
-                            val t = withContext(Dispatchers.IO) {
-                                runCatching { Updater.fetchNotes(info) }.getOrNull()
-                            }
-                            if (!t.isNullOrBlank()) fullNotes = t
-                            notesLoading = false
+                    notesLoading = true
+                    scope.launch {
+                        val t = withContext(Dispatchers.IO) {
+                            runCatching { Updater.fetchNotes(info) }.getOrNull()
                         }
+                        if (!t.isNullOrBlank() && t.length > notes.length) {
+                            fullNotes = t
+                            android.widget.Toast.makeText(
+                                ctx, "已载入完整文档", android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        } else {
+                            android.widget.Toast.makeText(
+                                ctx, "已是完整文档", android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                        notesLoading = false
                     }
                 }) { Txt("查看完整文档", 12, color = go.primary) }
             }

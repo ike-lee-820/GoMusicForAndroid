@@ -366,6 +366,7 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.showDownloads) DownloadsSheet(vm)
         if (vm.showEq) EqSheet(vm)
     if (vm.showSurround) SurroundSheet(vm)
+        if (vm.showRecorder) RecorderScreen(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
 
         // MV：放在所有内容之后组合，才在最上层。
@@ -1947,6 +1948,11 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 active = vm.surroundOn,
             )
             HS(6)
+            IconBtn(
+                Icons.Outlined.Videocam, "录制视频",
+                size = 24.dp, minHit = 34.dp, tint = Color.White,
+            ) { vm.showRecorder = true }
+            HS(6)
             QualityMenu(vm, Color.White)
             HS(6)
             SpeedMenu(vm, Color.White)
@@ -2146,6 +2152,10 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     { vm.showSurround = true }, tint = go.on, size = 24.dp, hit = 36.dp,
                     active = vm.surroundOn,
                 )
+                IconBtn(
+                    Icons.Outlined.Videocam, "录制视频",
+                    size = 24.dp, minHit = 36.dp, tint = go.on,
+                ) { vm.showRecorder = true }
                 QualityMenu(vm)
                 SpeedMenu(vm)
             }

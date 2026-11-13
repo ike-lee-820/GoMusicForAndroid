@@ -30,8 +30,8 @@ android {
         )
         minSdk = 26
         targetSdk = 35
-        versionCode = 120
-        versionName = "26.11.18"
+        versionCode = 121
+        versionName = "26.11.19"
     }
 
     signingConfigs {
@@ -65,6 +65,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    // 无 AI 伴奏提取（2DFT / REPET）的原生模块在 app/src/main/cpp，
+    // 默认不参与构建，避免 CI 环境缺 NDK 时整包失败。启用方式见该目录 README。
+    // externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
     buildFeatures { compose = true; buildConfig = true }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }

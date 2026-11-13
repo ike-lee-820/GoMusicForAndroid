@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 录制导出：前台服务在后台跑完整首歌 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- 后台播放：熄屏后 CPU 休眠会中断播放，需要持有唤醒锁 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 后台播放策略「仅通话暂停」需要读取通话状态 -->
@@ -55,6 +57,10 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <service
+            android:name=".RecorderService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <service
             android:name=".PlaybackService"
             android:exported="true"

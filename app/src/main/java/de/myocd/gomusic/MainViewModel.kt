@@ -148,6 +148,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // 3D 环绕：开关与强度独立保存，不写进 EqConfig，避免影响均衡器预设
     var showSurround by mutableStateOf(false)
+    /** 录制歌曲视频（横竖屏共用全屏页） */
+    var showRecorder by mutableStateOf(false)
     var surroundOn by mutableStateOf(prefs.surroundOn)
         private set
     var surroundStrength by mutableFloatStateOf(prefs.surroundStrength)

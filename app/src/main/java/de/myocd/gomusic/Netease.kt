@@ -154,12 +154,20 @@ object Netease {
         return map.entries.joinToString("; ") { "${it.key}=${it.value}" }
     }
 
-    /** 音质：本站质量键 -> 网易云 level（从高到低，逐个尝试直到拿到地址） */
-    private fun levels(quality: String): List<String> = when (quality) {
-        "lossless" -> listOf("lossless", "exhigh", "higher", "standard")
-        "high" -> listOf("exhigh", "higher", "standard")
-        "normal" -> listOf("higher", "standard")
-        else -> listOf("standard")
+    /**
+     * 从指定档位开始，按 NM_LEVELS 的排列「逐级往回退一档」直到 standard。
+     *
+     * 之前降档只走 levels(quality) 那 4 个老档位：用户手动选了 jymaster
+     * 取不到时直接跳到 lossless，中间的 vivid / dolby / jyeffect / hires
+     * 全被跳过 —— 明明有稍低一档能播，却一下掉到标准。现在按完整档位表
+     * 一档一档退，某一档请求失败就换它的上一音质。
+     */
+    private fun descendingLevels(start: String): List<String> {
+        val key = nmLevelKey(start)
+        var i = NM_LEVELS.indexOf(key)
+        if (i < 0) i = NM_LEVELS.indexOf(nmLevelOfQuality(start))
+        if (i < 0) i = 0
+        return (i downTo 0).map { NM_LEVELS[it] }
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
@@ -604,7 +612,7 @@ object Netease {
      * 二十多个 HTTP 往返才开始出声——这就是「加载极慢」的原因。
      * 缓存后切歌回来、重播都是秒开。地址有时效，过期时间放短一点。
      */
-    private val urlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+    private val urlCache = java.util.concurrent.ConcurrentHashMap<String, Triple<String, String, Long>>()
 
     /**
      * 负缓存：取不到地址时记一笔，短时间内的重复请求直接放弃。
@@ -631,7 +639,7 @@ object Netease {
     fun prefetchAudioUrl(id: Long, quality: String, level: String? = null) {
         val k = cacheKey(id, quality, level)
         val hit = urlCache[k]
-        if (hit != null && System.currentTimeMillis() - hit.second < URL_TTL_MS) return
+        if (hit != null && System.currentTimeMillis() - hit.third < URL_TTL_MS) return
         GlobalScope.launch(Dispatchers.IO) {
             runCatching { audioUrl(id, quality, level) }
                 .onFailure { NmLog.note("预取音源失败：${it.message}") }
@@ -650,12 +658,13 @@ object Netease {
      * （存着「无损」，实际是 320k，离线播放与文件命名都会错）。
      */
     fun audioWithLevel(id: Long, quality: String, level: String? = null): Pair<String, String>? {
-        // 命中缓存直接返回，不再走那一长串探测
+        // 命中缓存直接返回，并把缓存里记录的「实际档位」带回去。
+        // 之前缓存只存 url，命中时拿请求档位冒充实际档位，下载记录会写错。
         val k = cacheKey(id, quality, level)
-        urlCache[k]?.let { (u, t) ->
+        urlCache[k]?.let { (u, lv, t) ->
             if (System.currentTimeMillis() - t < URL_TTL_MS) {
-                NmLog.note("音源命中缓存 id=$id")
-                return u to (level?.takeIf { it.isNotBlank() } ?: quality)
+                NmLog.note("音源命中缓存 id=$id 实际档位=$lv")
+                return u to lv
             }
             urlCache.remove(k)
         }
@@ -679,15 +688,14 @@ object Netease {
                 runCatching { Thread.sleep(150) }
                 waited += 150
             }
-            urlCache[k]?.let { (u, t) ->
-                if (System.currentTimeMillis() - t < URL_TTL_MS)
-                    return u to (level?.takeIf { it.isNotBlank() } ?: quality)
+            urlCache[k]?.let { (u, lv, t) ->
+                if (System.currentTimeMillis() - t < URL_TTL_MS) return u to lv
             }
             return null
         }
         return try {
             val hit = resolveAudioUrl(id, quality, level)
-            if (hit != null) urlCache[k] = hit.first to System.currentTimeMillis()
+            if (hit != null) urlCache[k] = Triple(hit.first, hit.second, System.currentTimeMillis())
             else urlMiss[k] = System.currentTimeMillis()
             hit
         } finally {
@@ -718,7 +726,11 @@ object Netease {
      * 通用 get() 会重试 4 次并递增 sleep（约 3 秒），而取播放地址时
      * 一个档位拿不到就该立刻换下一个，重试只会把时间白白耗掉。
      */
-    private fun getOnce(path: String, vararg params: Pair<String, String>): JsonObject? {
+    private fun getOnce(
+        path: String,
+        vararg params: Pair<String, String>,
+        allowErrorBody: Boolean = false,
+    ): JsonObject? {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
         sb.append("unblock=true&")
@@ -735,8 +747,15 @@ object Netease {
                 val t = r.body?.string().orEmpty()
                 NmLog.req(url)
                 NmLog.res(url, r.code, t)
-                if (!r.isSuccessful || t.isBlank()) null
-                else json.parseToJsonElement(t) as? JsonObject
+                if (t.isBlank()) {
+                    null
+                } else {
+                    val el = runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject
+                    // 非 2xx 也可能带完整业务错误（-462 易盾验证、10004 安全风险、
+                    // 401 需要登录）。音质链据此判断「换档也没用」并停止逐档刷；
+                    // 默认仍返回 null，保持其它调用方的旧行为。
+                    if (!r.isSuccessful && !allowErrorBody) null else el
+                }
             }
         } catch (e: Exception) {
             NmLog.note("单次请求失败：$path -> ${e.message}")
@@ -746,98 +765,123 @@ object Netease {
 
     private data class UrlHit(val lv: String, val url: String)
 
+    /** 单个档位的结果：命中 / 这一档没有 / 命中风控（换档也无意义） */
+    private sealed class LevelResult {
+        data class Hit(val hit: UrlHit) : LevelResult()
+        object Miss : LevelResult()
+        object Blocked : LevelResult()
+    }
+
+    /** 业务错误：换任何音质都拿不到地址，不该把整条降档链刷一遍 */
+    private fun isBlocking(o: JsonObject): Boolean {
+        val c = o.code()
+        if (c in listOf(-462, 10004, 301, 401, 403, 460, 800001)) return true
+        val s = o.str("message", "msg", "error", "blockText").orEmpty()
+        val d = o.obj("data")
+        val hasVerify = listOf(
+            o.str("verifyUrl", "redirectUrl"),
+            d?.str("verifyUrl", "url", "redirectUrl"),
+        ).any { it?.contains("verify", ignoreCase = true) == true }
+        return hasVerify || s.contains("验证") || s.contains("登录") ||
+            s.contains("风险") || s.contains("Login required", ignoreCase = true)
+    }
+
     /**
-     * 并发探测：把「档位 × 3 种参数变体」的请求一起发出去。
-     *
-     * 原来是一档一档串行试，最多 15 个档位 × 3 种参数 = 45 次串行请求，
-     * 每次还要重试 4 遍，等于点一首歌要干等几十个 HTTP 往返 —— 这就是
-     * 「加载极慢」的根因。改成并发后，耗时从「所有请求之和」变成
-     * 「最慢那一个请求」，通常一两秒就好。
+     * 试一个档位：档内两个参数变体并发，档与档之间串行。
+     * 只有「这一档确实失败」才返回 Miss，由调用方更换上一音质。
      */
-    private fun probeLevels(id: Long, levels: List<String>): List<UrlHit> {
-        if (levels.isEmpty()) return emptyList()
-        // getOnce 现在统一带 randomCNIP=true，原来专门发一条 randomCNIP 变体
-        // 已经和基础请求完全一样，去掉它，请求量直接少 1/3。
-        val jobs = levels.flatMap { lv ->
-            listOf(
-                lv to listOf("id" to id.toString(), "level" to lv),
-                lv to listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
-            )
-        }
-        return runBlocking(Dispatchers.IO) {
-            jobs.map { (lv, ps) ->
-                async {
-                    val r = getOnce("/song/url/v1", *ps.toTypedArray()) ?: return@async null
-                    val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
-                    val u = first?.str("url")
-                        ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
-                    if (u.isNullOrBlank()) return@async null
-                    // 服务端降档返回时，实际档位以它返回的为准，
-                    // 否则界面会把 standard 的地址标成 Hi-Res。
-                    val got = first?.str("level", "levelName", "quality")
-                        ?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
-                    UrlHit(if (got.isNullOrBlank()) lv else got, u)
-                }
+    private fun tryLevel(id: Long, lv: String): LevelResult {
+        val variants = listOf(
+            listOf("id" to id.toString(), "level" to lv),
+            listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
+        )
+        val rs = runBlocking(Dispatchers.IO) {
+            variants.map { ps ->
+                async { getOnce("/song/url/v1", *ps.toTypedArray(), allowErrorBody = true) }
             }.awaitAll().filterNotNull()
         }
+        if (rs.any { isBlocking(it) }) {
+            NmLog.note("音质 $lv 命中风控/需登录，停止逐档降档（code=${rs.first { isBlocking(it) }.code()}）")
+            return LevelResult.Blocked
+        }
+        for (r in rs) {
+            if (r.code() != 200) continue
+            val first = (r["data"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
+            val u = first?.str("url")
+                ?: first?.str("freeTrialInfo", "url")?.takeIf { it.startsWith("http") }
+            if (u.isNullOrBlank()) continue
+            // 服务端降档返回时，实际档位以它返回的为准，
+            // 否则界面会把 standard 的地址标成 Hi-Res。
+            val got = first?.str("level", "levelName", "quality")
+                ?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
+            val real = got?.takeIf { it in NM_LEVELS } ?: lv
+            return LevelResult.Hit(UrlHit(real, u))
+        }
+        return LevelResult.Miss
     }
 
     /**
      * 解析播放地址，返回「地址 + 实际档位」。
-     * 档位一路降档时以实际拿到的那一档为准（见 [audioWithLevel]）。
+     *
+     * 从指定档位起沿 NM_LEVELS 一档一档往回退：某一档请求失败
+     * （网络异常 / 非 200 / 业务码异常 / 地址为空）就自动更换上一音质，
+     * 直到 standard 或拿到可用地址。风控、需要登录这类错误换档无意义，
+     * 直接终止，避免把 9 个档位各打一遍把服务端打爆。
      */
     private fun resolveAudioUrl(id: Long, quality: String, level: String?): Pair<String, String>? {
-        NmLog.note("开始取播放地址 id=$id quality=$quality level=$level（分档探测）")
-        // 候选档位：指定的档位优先，然后按音质设置降档。
-        // 不再追加全部 NM_LEVELS：那会多出十来个几乎用不上的档位，
-        // levels(quality) 本身已经一路降到 standard
-        val cands = (listOfNotNull(level?.takeIf { it.isNotBlank() }) + levels(quality)).distinct()
-
-        // 分两步探测，而不是一次把「所有档位 × 3 种参数」全打出去：
-        // 那通常是 12 个并发请求，服务端一慢就全部堆在一起，
-        // 每个都要等最慢的那个才返回 —— 这就是「半天播不出来」。
-        // 先只试最高那一档的 3 种参数（3 个请求），命中就直接用；
-        // 拿不到再对其余档位并发。绝大多数歌在第一步就拿到了。
-        val first = probeLevels(id, listOf(cands.first()))
-        first.firstOrNull()?.let {
-            NmLog.note("首选档位拿到地址（${it.lv}）：${it.url}")
-            return it.url to it.lv
-        }
-        val rest = cands.drop(1)
-        val hits = if (rest.isEmpty()) emptyList() else first + probeLevels(id, rest)
-        // 按档位优先级取能用的最高音质
-        for (lv in cands) {
-            hits.firstOrNull { it.lv == lv }?.let {
-                NmLog.note("拿到地址（$lv）：${it.url}")
-                return it.url to lv
+        val start = level?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
+            ?: nmLevelOfQuality(quality)
+        val chain = descendingLevels(start)
+        NmLog.note("开始取播放地址 id=$id 起始档位=$start 降档链=${chain.joinToString("→")}")
+        for (i in chain.indices) {
+            val lv = chain[i]
+            when (val r = tryLevel(id, lv)) {
+                is LevelResult.Hit -> {
+                    if (i > 0) NmLog.note("音质 ${chain[i - 1]} 请求失败，已自动更换为上一音质 ${r.hit.lv}")
+                    NmLog.note("拿到地址（${r.hit.lv}）：${r.hit.url}")
+                    return r.hit.url to r.hit.lv
+                }
+                LevelResult.Blocked -> return null
+                LevelResult.Miss -> {
+                    val next = chain.getOrNull(i + 1)
+                    NmLog.note(
+                        if (next == null) "音质 $lv 请求失败，已到最低档位 standard"
+                        else "音质 $lv 请求失败，自动更换为上一音质 $next"
+                    )
+                }
             }
         }
-        // v1 拿不到时走 /song/url/match 解灰匹配（歌曲变灰时 v1 的地址会是空）
+        // v1 全部档位都拿不到时走 /song/url/match 解灰匹配（变灰歌曲 v1 地址为空）
         runCatching {
             val r = getOnce("/song/url/match", "id" to id.toString())
             val u = ((r?.get("data") as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
             if (!u.isNullOrBlank()) {
                 NmLog.note("match 解灰拿到地址：$u")
-                // 解灰接口不返回档位，按请求的档位记（能拿到就说明这一档可用）
                 return u to (level?.takeIf { it.isNotBlank() } ?: quality)
             }
         }
-        // 兜底：拿游客 cookie 再试一次（未登录/登录态失效时网易会返回 301 / 400 需验证）
+        // 兜底：拿游客 cookie 再走一遍降档链（未登录/登录态失效时常用）
         NmLog.note("登录态下取不到地址，尝试游客 cookie 再试一次")
         val anon = runCatching { anonCookie() }.getOrNull()
         if (!anon.isNullOrBlank()) {
             val saved = cookie
             cookie = anon
             try {
-                probeLevels(id, levels(quality)).firstOrNull()?.let {
-                    NmLog.note("游客 cookie 拿到地址（${it.lv}）：${it.url}")
-                    return it.url to it.lv
+                for (lv in chain) {
+                    when (val r = tryLevel(id, lv)) {
+                        is LevelResult.Hit -> {
+                            NmLog.note("游客 cookie 拿到地址（${r.hit.lv}）：${r.hit.url}")
+                            return r.hit.url to r.hit.lv
+                        }
+                        LevelResult.Blocked -> break
+                        LevelResult.Miss -> Unit
+                    }
                 }
             } finally {
                 cookie = saved
             }
         }
-        NmLog.note("所有方式都没有拿到播放地址 id=$id")
+        NmLog.note("所有档位与兜底方式都没有拿到播放地址 id=$id")
         return null
     }
 

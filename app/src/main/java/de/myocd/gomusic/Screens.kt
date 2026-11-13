@@ -368,6 +368,7 @@ fun MainScreen(vm: MainViewModel) {
         if (vm.showEq) EqSheet(vm)
     if (vm.showSurround) SurroundSheet(vm)
         if (vm.showRecorder) RecorderScreen(vm)
+        if (vm.showRecHistory) RecorderHistoryScreen(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
 
         // MV：放在所有内容之后组合，才在最上层。
@@ -3362,6 +3363,23 @@ fun SettingsSheet(vm: MainViewModel) {
     LaunchedEffect(Unit) { vm.refreshBatteryExempt() }
     GoSheet({ vm.showSettings = false }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
+            // ---------- 视频录制 ----------
+            Txt("视频录制", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
+                    .clickable { vm.showRecHistory = true }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Txt("录制列表", 14, weight = FontWeight.Medium)
+                    Txt("查看全部录制历史与进行中进度，可取消 / 打开 / 删除", 12, color = go.muted)
+                }
+                Txt("查看", 13, color = go.primary)
+            }
+            VS(16)
+
             // ---------- 后台播放 ----------
             Txt("后台播放", 15, weight = FontWeight.SemiBold)
             VS(8)

@@ -150,6 +150,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var showSurround by mutableStateOf(false)
     /** 录制歌曲视频（横竖屏共用全屏页） */
     var showRecorder by mutableStateOf(false)
+    /** 录制列表：设置页进入，显示所有历史与进行中进度 */
+    var showRecHistory by mutableStateOf(false)
     var surroundOn by mutableStateOf(prefs.surroundOn)
         private set
     var surroundStrength by mutableFloatStateOf(prefs.surroundStrength)
@@ -1968,6 +1970,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val c = controller ?: return
         if (c.isPlaying) c.pause() else c.play()
     }
+
+    /** 录制页进入时暂停，退出时按「进来前是否在播」恢复；不动队列与播放位置 */
+    fun pausePlayback() { runCatching { controller?.pause() } }
+    fun resumePlayback() { runCatching { controller?.play() } }
 
     fun next() {
         val c = controller ?: return

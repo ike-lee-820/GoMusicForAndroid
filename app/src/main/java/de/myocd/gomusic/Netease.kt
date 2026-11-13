@@ -650,6 +650,23 @@ object Netease {
         audioWithLevel(id, quality, level)?.first
 
     /**
+     * 严格单档取地址：只请求这一个档位，不降档、不解灰、不换游客 cookie。
+     *
+     * 录制必须把「录制界面所选音质的那个文件」原样嵌进视频：[audioWithLevel]
+     * 会自动沿 NM_LEVELS 逐级回退，请求 jymaster 却拿到 standard，成品音质就
+     * 与选项不一致。这里用 [tryLevel] 只打一档，且服务端返回的档位与请求
+     * 不同（降档返回）时直接判为不可用，由界面提示换档或先下载，不静默换文件。
+     */
+    fun audioExactLevel(id: Long, level: String): String? {
+        val lv = nmLevelKey(level)
+        if (lv !in NM_LEVELS) return null
+        return when (val r = tryLevel(id, lv)) {
+            is LevelResult.Hit -> if (r.hit.lv == lv) r.hit.url else null
+            else -> null
+        }
+    }
+
+    /**
      * 取地址并带回**实际拿到的档位**。
      *
      * 下载必须用这个：请求 lossless 时歌曲可能只有 320k，

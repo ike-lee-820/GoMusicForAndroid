@@ -25,6 +25,8 @@ class RecorderService : Service() {
 
     @Volatile
     private var cancelled = false
+    @Volatile
+    private var recId: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -41,6 +43,11 @@ class RecorderService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
             cancelled = true
+            if (recId.isNotBlank()) {
+                RecorderHistory.update(applicationContext, recId) {
+                    it.copy(state = "已取消", note = "已取消", finishedAt = System.currentTimeMillis())
+                }
+            }
             stopSelf()
             return START_NOT_STICKY
         }
@@ -51,6 +58,21 @@ class RecorderService : Service() {
             return START_NOT_STICKY
         }
         cancelled = false
+        RecorderHistory.load(applicationContext)
+        recId = "rec_" + System.currentTimeMillis().toString()
+        RecorderHistory.add(applicationContext, RecRecord(
+            id = recId,
+            title = job.song.title,
+            artist = job.song.artist,
+            style = job.cfg.style,
+            quality = if (job.actualQuality.isNotBlank()) job.actualQuality else job.cfg.quality,
+            resolution = job.cfg.resolution,
+            aspect = job.cfg.aspect,
+            fps = job.cfg.fps,
+            startedAt = System.currentTimeMillis(),
+            state = "进行中",
+            progress = 0,
+        ))
         scope.launch {
             val tmp = File(cacheDir, "recording_${System.currentTimeMillis()}.mp4")
             try {
@@ -61,11 +83,27 @@ class RecorderService : Service() {
                 )
                 if (!cancelled) {
                     val where = saveToMovies(tmp, job.song)
+                    RecorderHistory.update(applicationContext, recId) {
+                        it.copy(state = "已完成", progress = 100, output = where,
+                            finishedAt = System.currentTimeMillis())
+                    }
                     notifyDone(job.song.title, where)
                 }
             } catch (e: Exception) {
-                if (!cancelled) notifyDone(job.song.title, "录制失败：${e.message ?: "未知错误"}")
+                if (!cancelled) {
+                    val why = e.message ?: "未知错误"
+                    RecorderHistory.update(applicationContext, recId) {
+                        it.copy(state = "失败", note = why, finishedAt = System.currentTimeMillis())
+                    }
+                    notifyDone(job.song.title, "录制失败：$why")
+                }
             } finally {
+                if (recId.isNotBlank()) {
+                    RecorderHistory.update(applicationContext, recId) { r ->
+                        if (r.state == "进行中") r.copy(state = "已取消", note = "任务中断",
+                            finishedAt = System.currentTimeMillis()) else r
+                    }
+                }
                 runCatching { tmp.delete() }
                 RecorderJobHolder.pending = null
                 stopSelf()
@@ -101,6 +139,9 @@ class RecorderService : Service() {
         runCatching {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .notify(NOTI_ID, notif("已录制 $p%", p))
+        }
+        if (recId.isNotBlank()) RecorderHistory.update(applicationContext, recId) {
+            it.copy(progress = p)
         }
     }
 

@@ -30,6 +30,8 @@ data class RecJob(
     val cover: Bitmap?,
     val typeface: Typeface?,
     val durationMs: Long,
+    /** 实际拿到并嵌入的音质档位（严格等于界面所选档位） */
+    val actualQuality: String = "",
 )
 
 object RecorderJobHolder {
@@ -43,7 +45,7 @@ object RecorderJobHolder {
  * - 画面：MediaCodec AVC 的 input Surface，逐帧用与预览完全相同的 [renderRecFrame] 绘制。
  * - 音频「原声」：MediaExtractor 读出压缩样本，原封不动写进 MediaMuxer，不解码不重编码。
  * - 音频「减弱人声」：解码成 PCM → [VocalReduce] → AAC 编码，再写进同一容器。
- * - 逐帧按真实帧率 pacing，保证 Surface 自动打上的时间戳与音轨时间轴对齐。
+ * - 离屏快速编码：不再按真实帧率 sleep，输出帧时间戳按虚拟时间轴重写，音画仍严格对齐。
  */
 class RecorderEngine(private val ctx: Context) {
 
@@ -53,7 +55,9 @@ class RecorderEngine(private val ctx: Context) {
         val strength = if (job.cfg.vocalMode == "减弱人声") job.cfg.vocalStrength else 0f
 
         val audio = prepareAudio(job.audioFile, strength)
-        val durationMs = if (job.durationMs > 0) job.durationMs else audio.durationUs / 1000L
+        // 以音频文件真实时长为准：播放器的 durationMs 含缓冲估算，拿它当视频长度会让成品音画长短不一致。
+        val durationMs = if (audio.durationUs > 0L) audio.durationUs / 1000L
+            else if (job.durationMs > 0) job.durationMs else 180_000L
         val totalFrames = ((durationMs / 1000f) * fps).roundToInt().coerceIn(1, 60 * 60 * fps)
 
         val vfmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
@@ -71,6 +75,9 @@ class RecorderEngine(private val ctx: Context) {
         var audioTrack = -1
         var started = false
         val info = MediaCodec.BufferInfo()
+        // 离屏快速编码时 Surface 打的是「墙上时间」，这里按输出顺序给每帧
+        // 重新分配从 0 开始的虚拟时间戳，速度不受歌曲时长限制。
+        var frameOut = 0
 
         fun drain(end: Boolean) {
             var guard = 0
@@ -95,6 +102,7 @@ class RecorderEngine(private val ctx: Context) {
                 if (info.size > 0 && started && videoTrack >= 0) {
                     buf.position(info.offset)
                     buf.limit(info.offset + info.size)
+                    info.presentationTimeUs = frameOut++ * 1_000_000L / fps
                     muxer.writeSampleData(videoTrack, buf, info)
                 }
                 vcodec.releaseOutputBuffer(idx, false)
@@ -118,8 +126,7 @@ class RecorderEngine(private val ctx: Context) {
             }
         }
 
-        // 第一帧触发编码器输出格式；Surface 时间戳基准取这一刻
-        val t0Us = System.nanoTime() / 1000L
+        // 第一帧触发编码器输出格式；时间戳全部由 drain 改写，不再依赖墙上时钟
         drawFrame(0)
         var guard = 0
         while (!started && guard < 200 && !cancelled()) {
@@ -134,16 +141,14 @@ class RecorderEngine(private val ctx: Context) {
             started = true
         }
 
-        val frameNs = 1_000_000_000L / fps
-        var next = System.nanoTime() + frameNs
+        // 不再按真实帧率 sleep：Surface 缓冲队列满时 lockHardwareCanvas 会自然
+        // 阻塞形成背压，编码速度只取决于 CPU / 编码器吞吐，通常比实时快数倍。
         for (i in 1 until totalFrames) {
             if (cancelled()) break
             drawFrame(i)
             drain(false)
-            if (i % (fps * 2) == 0) onProgress((i * 100L / totalFrames).toInt().coerceIn(0, 99))
-            val wait = next - System.nanoTime()
-            if (wait > 0) Thread.sleep(wait / 1_000_000L, (wait % 1_000_000L).toInt())
-            next += frameNs
+            if (i % (fps / 2).coerceAtLeast(1) == 0)
+                onProgress((i * 100L / totalFrames).toInt().coerceIn(0, 99))
         }
         vcodec.signalEndOfInputStream()
         drain(true)
@@ -159,7 +164,8 @@ class RecorderEngine(private val ctx: Context) {
             for (s in audio.samples) {
                 if (cancelled()) break
                 val b = ByteBuffer.wrap(s.data)
-                bi.set(0, s.data.size, t0Us + (s.ptsUs - first), s.flags)
+                // 与视频同一条从 0 开始的虚拟时间轴
+                bi.set(0, s.data.size, (s.ptsUs - first).coerceAtLeast(0L), s.flags)
                 muxer.writeSampleData(audioTrack, b, bi)
             }
         }

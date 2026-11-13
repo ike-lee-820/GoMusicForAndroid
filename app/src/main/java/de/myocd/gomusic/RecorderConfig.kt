@@ -12,10 +12,20 @@ enum class RecAspect(val label: String, val rw: Float, val rh: Float) {
     R4_3("4:3", 4f, 3f),
 }
 
+/** 画面样式：经典 = 横屏播放器信息区 + 歌词；圆盘 = 黑胶唱片 + 歌词 */
+enum class RecStyle(val label: String) {
+    CLASSIC("经典"),
+    DISC("圆盘");
+
+    companion object {
+        fun of(s: String): RecStyle = values().firstOrNull { it.label == s } ?: CLASSIC
+    }
+}
+
 /** 短边分辨率档位 */
 val REC_RESOLUTIONS = listOf(480, 720, 1080, 1440)
 
-/** 音质：录制时优先取本地已下载的同档位文件，没有才按档位去取地址 */
+/** 音质：录制时严格按所选档位取文件，不降档、不回退到别的档位 */
 val REC_QUALITIES = listOf(
     "standard", "higher", "exhigh", "lossless", "hires",
     "jyeffect", "dolby", "vivid", "jymaster", "sky",
@@ -28,11 +38,13 @@ data class RecorderConfig(
     /** 短边像素 */
     val resolution: Int = 1080,
     val fps: Int = 30,
-    /** 音质档位，用于挑本地下载文件 / 取源地址 */
+    /** 音质档位：录制严格取这一档的文件 */
     val quality: String = "higher",
+    /** 画面样式：经典 / 圆盘 */
+    val style: String = "经典",
     /** 歌词字号（sp，按输出高度归一化） */
     val lyricSizeSp: Int = 22,
-    /** 左侧歌曲信息区宽度占比，0.18–0.60 */
+    /** 经典样式的信息区宽度占比；圆盘样式映射为唱片半径占比，0.18–0.60 */
     val infoRatio: Float = 0.34f,
     /** 歌词全体偏移：正数 = 整体提前（快进），负数 = 延迟，单位毫秒 */
     val lyricOffsetMs: Long = 0L,

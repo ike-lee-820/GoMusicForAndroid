@@ -59,6 +59,9 @@ class PlaybackService : MediaSessionService() {
     companion object {
         /** 设置里改了后台播放策略后，用它通知服务重新应用（服务读 Prefs） */
         const val ACTION_APPLY_FOCUS = "de.myocd.gomusic.APPLY_FOCUS"
+        /** 录制页进入 / 退出时，服务层直接暂停 / 恢复，兜底 MediaController 未就绪 */
+        const val ACTION_REC_PAUSE = "de.myocd.gomusic.REC_PAUSE"
+        const val ACTION_REC_RESUME = "de.myocd.gomusic.REC_RESUME"
     }
 
     private var session: MediaSession? = null
@@ -247,7 +250,17 @@ class PlaybackService : MediaSessionService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        if (intent?.action == ACTION_APPLY_FOCUS) applyFocus()
+        when (intent?.action) {
+            ACTION_APPLY_FOCUS -> applyFocus()
+            ACTION_REC_PAUSE -> {
+                runCatching { player?.pause() }
+                NmLog.note("录制页：服务层暂停播放")
+            }
+            ACTION_REC_RESUME -> {
+                runCatching { player?.play() }
+                NmLog.note("录制页：服务层恢复播放")
+            }
+        }
         // 被系统回收后让系统重建服务：onCreate 会从队列快照复原，
         // 否则进程一没，前台通知也随之消失
         return START_STICKY

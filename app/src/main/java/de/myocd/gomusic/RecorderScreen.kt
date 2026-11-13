@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -75,11 +76,15 @@ fun RecorderScreen(vm: MainViewModel) {
     var status by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
-    // 进入即时录制页暂停播放；退出时仅当进来前正在播才恢复
+    // 进入即时录制页暂停播放；退出时仅当进来前正在播才恢复。
+    // 不再读 vm.isPlaying 快照（异步回调可能滞后），且 pauseForRecorder 无条件发暂停。
     DisposableEffect(Unit) {
-        val wasPlaying = vm.isPlaying
-        if (wasPlaying) vm.pausePlayback()
-        onDispose { if (wasPlaying) vm.resumePlayback() }
+        val was = vm.pauseForRecorder()
+        NmLog.note("录制页：进入，已暂停播放（进来前在播=$was）")
+        onDispose {
+            vm.resumeFromRecorder(was)
+            NmLog.note("录制页：退出，恢复播放=$was")
+        }
     }
     BackHandler { if (!busy) vm.showRecorder = false }
 
@@ -182,11 +187,13 @@ fun RecorderScreen(vm: MainViewModel) {
     val (dw, dh) = RecorderPrefs.dims(cfg)
     val ratio = dw.toFloat() / dh.toFloat()
 
-    Column(
+    BoxWithConstraints(
         Modifier.fillMaxSize().background(go.bg)
-            .statusBarsPadding().navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .statusBarsPadding().navigationBarsPadding(),
     ) {
+        // 预览区最多占屏高 34%、且不超过 240dp：9:16 / 横屏 16:9 都不能撑满整页
+        val previewH = minOf(maxHeight * 0.34f, 240.dp)
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Txt("录制歌曲视频", 21, weight = FontWeight.SemiBold, color = go.on)
@@ -199,24 +206,35 @@ fun RecorderScreen(vm: MainViewModel) {
         Spacer(Modifier.height(12.dp))
 
         Box(
-            Modifier.fillMaxWidth().aspectRatio(ratio)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color.Black)
-                .border(1.dp, go.surfaceHi, RoundedCornerShape(20.dp)),
+            Modifier.fillMaxWidth().height(previewH),
+            contentAlignment = Alignment.Center,
         ) {
-            val draw = RecDraw(RecFrameState(song ?: Song(""), cover, rows, previewPos, duration), cfg, tf)
-            AndroidView(
-                factory = { c ->
-                    object : View(c) {
-                        override fun onDraw(cv: android.graphics.Canvas) {
-                            (tag as? RecDraw)?.let { renderRecFrame(cv, it.st, it.cfg, it.tf) }
-                        }
-                    }
-                },
-                update = { v -> v.tag = draw; v.invalidate() },
-                modifier = Modifier.fillMaxSize(),
-            )
+            BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                // 按所选比例 fit：宽取 min(可用宽, 可用高×比例)，高由比例反算
+                val pw = minOf(maxWidth, maxHeight * ratio)
+                val ph = pw / ratio
+                Box(
+                    Modifier.width(pw).height(ph)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color.Black)
+                        .border(1.dp, go.surfaceHi, RoundedCornerShape(20.dp)),
+                ) {
+                    val draw = RecDraw(RecFrameState(song ?: Song(""), cover, rows, previewPos, duration), cfg, tf)
+                    AndroidView(
+                        factory = { c ->
+                            object : View(c) {
+                                override fun onDraw(cv: android.graphics.Canvas) {
+                                    (tag as? RecDraw)?.let { renderRecFrame(cv, it.st, it.cfg, it.tf) }
+                                }
+                            }
+                        },
+                        update = { v -> v.tag = draw; v.invalidate() },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
         }
+
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Txt("预览 ${fmtShort(previewPos)} / ${fmtShort(duration)}", 12, Modifier.weight(1f), color = go.muted)
@@ -303,6 +321,7 @@ fun RecorderScreen(vm: MainViewModel) {
             loading = busy,
             enabled = !busy,
         ) { startRecord() }
+    }
     }
 }
 

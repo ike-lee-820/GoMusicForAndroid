@@ -12,7 +12,12 @@ enum class RecAspect(val label: String, val rw: Float, val rh: Float) {
     R4_3("4:3", 4f, 3f),
 }
 
-/** 画面样式：经典 = 横屏播放器信息区 + 歌词；圆盘 = 黑胶唱片 + 歌词 */
+/**
+ * 画面样式：
+ * 经典 = 录制功能默认的「左封面信息 + 右居中歌词」；
+ * 圆盘 = 横屏播放器（WidePlayerPane）的歌词显示版本：左封面信息区 +
+ * 右侧圆弧旋转歌词（ArcLyrics 的几何）。UI 上仍叫「圆盘」，但不是黑胶唱片。
+ */
 enum class RecStyle(val label: String) {
     CLASSIC("经典"),
     DISC("圆盘");
@@ -44,7 +49,7 @@ data class RecorderConfig(
     val style: String = "经典",
     /** 歌词字号（sp，按输出高度归一化） */
     val lyricSizeSp: Int = 22,
-    /** 经典样式的信息区宽度占比；圆盘样式映射为唱片半径占比，0.18–0.60 */
+    /** 左侧信息区 / 封面区宽度占比，0.18–0.60；两种样式共用，默认 0.34 与横屏播放器一致 */
     val infoRatio: Float = 0.34f,
     /** 歌词全体偏移：正数 = 整体提前（快进），负数 = 延迟，单位毫秒 */
     val lyricOffsetMs: Long = 0L,

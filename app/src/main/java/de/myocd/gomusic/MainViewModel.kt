@@ -1971,9 +1971,39 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (c.isPlaying) c.pause() else c.play()
     }
 
-    /** 录制页进入时暂停，退出时按「进来前是否在播」恢复；不动队列与播放位置 */
-    fun pausePlayback() { runCatching { controller?.pause() } }
-    fun resumePlayback() { runCatching { controller?.play() } }
+    /**
+     * 录制页进入时暂停，退出时按「进来前是否在播」恢复；不动队列与播放位置。
+     *
+     * 26.11.21：旧版读 vm.isPlaying 快照 + 单行 runCatching，控制器未连好或
+     * 状态回调滞后时暂停被静默吞掉。改为无条件发暂停，恢复依据取控制器即时状态；
+     * 同时用服务层 action 兜底，MediaSession 没转发也能停 / 续。
+     */
+    fun pauseForRecorder(): Boolean {
+        val c = controller
+        val was = c?.isPlaying == true || c?.playWhenReady == true || isPlaying
+        runCatching { c?.pause() }
+        runCatching {
+            app.startService(
+                Intent(app, PlaybackService::class.java)
+                    .setAction(PlaybackService.ACTION_REC_PAUSE)
+            )
+        }
+        return was
+    }
+
+    fun resumeFromRecorder(wasPlaying: Boolean) {
+        if (!wasPlaying) return
+        runCatching { controller?.play() }
+        runCatching {
+            app.startService(
+                Intent(app, PlaybackService::class.java)
+                    .setAction(PlaybackService.ACTION_REC_RESUME)
+            )
+        }
+    }
+
+    fun pausePlayback() { pauseForRecorder() }
+    fun resumePlayback() { resumeFromRecorder(true) }
 
     fun next() {
         val c = controller ?: return

@@ -126,7 +126,7 @@ fun RecorderScreen(vm: MainViewModel) {
     }
 
     val tf by remember(cfg.fontMode, cfg.fontPath, cfg.fontWeight) {
-        mutableStateOf(recTypeface(ctx, cfg))
+        mutableStateOf(RecorderFlow.recTypeface(ctx, cfg))
     }
 
     val rows: List<LyricRow> = remember(cfg.customLrc, vm.lyricRows) {

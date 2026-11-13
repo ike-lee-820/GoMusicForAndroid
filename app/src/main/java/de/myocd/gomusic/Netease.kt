@@ -909,19 +909,40 @@ object Netease {
     private const val FALLBACK_CN_IP = "116.25.146.177"
 
     /**
-     * 歌词。
+     * 歌词：/lyric 是免登录接口，走一条独立的快速通道。
      *
-     * 先发一次不带重试的快请求：服务端正常时这就是一次往返。
-     * 拿不到（网络抖动、偶发空响应）才退回带重试的 get()，
-     * 避免每次切歌都先白等一轮重试的 sleep —— 歌词慢主要来自这里。
+     * 通用 get() / getOnce() 会追加 unblock、randomCNIP、登录 cookie、timestamp，
+     * 失败还要重试两次并 sleep；带上整串清洗后的 cookie 后 URL 接近 4KB。
+     * 而切歌时歌词原本排在 /song/detail 之后才发出，详情一慢就跟着干等 ——
+     * 这两处叠起来就是「歌词半天不出来」。
+     *
+     * 这里只发 /lyric?id=<id>：不带登录态、不带解灰、不重试，一次往返。
+     * 主请求拿不到才补一次带 randomCNIP 的请求（境外 IP 的 460 兜底），
+     * 同样不带 cookie、不带 unblock、不重试。其余网易云接口的
+     * randomCNIP 规则不变。响应按标准结构取 lrc.lyric。
      */
     fun lyric(id: Long): String {
-        val fast = getOnce("/lyric", "id" to id.toString())
-            ?.obj("lrc")?.str("lyric")
-        if (!fast.isNullOrBlank()) return fast
-        val lrc = get("/lyric", "id" to id.toString()).obj("lrc")?.str("lyric")
-        if (lrc.isNullOrBlank()) NmLog.note("歌词为空 id=$id")
-        return lrc ?: ""
+        fun once(url: String): String = try {
+            val req = Request.Builder().url(url).build()
+            urlClient.newCall(req).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.req(url)
+                NmLog.res(url, r.code, t)
+                val o = runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject
+                    ?: return ""
+                o.obj("lrc")?.str("lyric")?.takeIf { it.isNotBlank() }
+                    ?: o.str("lyric").orEmpty()
+            }
+        } catch (e: Exception) {
+            NmLog.note("歌词独立请求失败 id=$id ${e.message}")
+            ""
+        }
+        val main = once("$NM_BASE/lyric?id=$id")
+        if (main.isNotBlank()) return main
+        NmLog.note("歌词主请求为空，补一次 randomCNIP 请求 id=$id")
+        val fallback = once("$NM_BASE/lyric?id=$id&randomCNIP=true")
+        if (fallback.isBlank()) NmLog.note("歌词为空 id=$id")
+        return fallback
     }
 
     /**

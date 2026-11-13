@@ -2140,6 +2140,12 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     { vm.showEq = true }, tint = go.on, size = 24.dp, hit = 36.dp,
                     active = vm.eqConfig.enabled,
                 )
+                // 竖屏此前只有均衡器、没有 3D 环绕入口；横屏第一行早就有了。
+                // 同一个 SurroundSheet 弹层与横竖屏无关，补上按钮即可打开。
+                SurroundIconButton(
+                    { vm.showSurround = true }, tint = go.on, size = 24.dp, hit = 36.dp,
+                    active = vm.surroundOn,
+                )
                 QualityMenu(vm)
                 SpeedMenu(vm)
             }
@@ -3722,12 +3728,24 @@ fun SurroundIconButton(
     }
 }
 
-/** 3D 环绕设置：开关 + 强度，不使用均衡器频段增益 */
+/**
+ * 3D 环绕设置：开关 + 强度，不使用均衡器频段增益。
+ *
+ * 内容四周留白并整体可滚：之前 Column 直接铺满 GoSheet，标题、开关、
+ * 强度按钮全贴着屏幕边缘，看着像没排过版。边距与均衡器面板同一套规格，
+ * 底部再留一点余量；小屏或大字号下能滚到底，也不会被导航栏盖住。
+ */
 @Composable
 fun SurroundSheet(vm: MainViewModel) {
     val go = LocalGo.current
     GoSheet({ vm.showSurround = false }) {
-        Column(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .navigationBarsPadding(),
+        ) {
             Txt("3D 环绕", 18, color = go.on)
             Spacer(Modifier.height(10.dp))
             Txt(
@@ -3755,6 +3773,7 @@ fun SurroundSheet(vm: MainViewModel) {
                 "150Hz 以下不空间化（低音不虚）；输出软限幅，交叉馈送叠加不削波。场景差异由强度统一校准。",
                 11, color = go.muted,
             )
+            Spacer(Modifier.height(10.dp))
         }
     }
 }

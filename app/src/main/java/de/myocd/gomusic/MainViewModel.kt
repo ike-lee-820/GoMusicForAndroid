@@ -2317,12 +2317,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     if (hit.ok.isNotEmpty()) qualities = hit.ok
                 }
             }
-            lyricJob = viewModelScope.launch {
-                // 播放前用 /song/detail 补全封面 / 专辑 / 歌手
-                // （搜索接口给的 al.picUrl 经常是空的）
-                if (nid != null) {
-                    val d = withContext(Dispatchers.IO) {
-                        runCatching { Netease.detailOf(nid) }.getOrNull()
+            // 封面 / 专辑 / 歌手详情与歌词彻底分开：以前歌词排在 /song/detail
+            // 之后串行发，详情一慢歌词就跟着干等。详情自己跑一个任务，
+            // 只有 curSsid 仍是这首歌时才写回，切歌不会串数据。
+            if (nid != null) {
+                viewModelScope.launch {
+                    val d = withTimeoutOrNull(5_000L) {
+                        withContext(Dispatchers.IO) {
+                            runCatching { Netease.detailOf(nid) }.getOrNull()
+                        }
                     }
                     if (d != null && curSsid == id) {
                         nmKnown[id] = d
@@ -2334,15 +2337,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         rememberSongs(listOf(d))
                     }
                 }
-                // 加超时：接口慢 / 重试退避时不再一直卡在「正在加载歌词…」，
+            }
+            // 歌词单独一条快速通道：不等详情、不等其它接口，一次 /lyric 往返
+            lyricJob = viewModelScope.launch {
+                // 加超时：接口慢时不再一直卡在「正在加载歌词…」，
                 // 超时就按「没有歌词」处理，界面显示「暂无歌词」
-                var t = withTimeoutOrNull(lyricTimeoutMs) {
-                    var x = ""
-                    if (nid != null) {
-                        x = withContext(Dispatchers.IO) {
+                val t = withTimeoutOrNull(lyricTimeoutMs) {
+                    var x = if (nid != null) {
+                        withContext(Dispatchers.IO) {
                             runCatching { Netease.lyric(nid) }.getOrDefault("")
                         }
-                    }
+                    } else ""
                     if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
                     x
                 } ?: ""

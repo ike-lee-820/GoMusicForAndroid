@@ -17,9 +17,11 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
  *
  * FFmpegKMP 的 Maven 模块只有 Kotlin API，native FFmpeg 运行时需要本地
  * NDK 编译（且要求 Kotlin 2.4.20）；它的 AudioPlayer 又直出 AudioTrack、
- * 不带会话与通知。因此用同源的 media3 FFmpeg 解码扩展（libavcodec）平替：
- * 同样是 FFmpeg 内核，控制面一行不改。EQ 参数体系按 FFmpegKMP 的
- * filter graph / 规范 1.0 落到自写双二阶链上。
+ * 不带会话与通知。Google 的 media3 FFmpeg 解码扩展同样只发布 Java 壳，
+ * 不发布带 .so 的 AAR。因此内核做成可插拔：检测到 FFmpeg 渲染器就
+ * 优先用 libavcodec 解码，没带原生库时自动由 MediaCodec 接管 ——
+ * 控制面一行不改，两种情况下播放能力完全一致。
+ * EQ 参数体系按 FFmpegKMP 的 filter graph / 规范 1.0 落到自写双二阶链上。
  */
 object EqBridge {
     @Volatile var config: EqConfig = EQ_FLAT
@@ -41,7 +43,16 @@ object EqBridge {
 
 @UnstableApi
 fun buildKernelRenderersFactory(ctx: Context, eq: EqAudioProcessor): DefaultRenderersFactory {
-    NmLog.note("播放内核：FFmpeg 解码优先（MediaCodec 回退），均衡器链路已挂载")
+    // FFmpeg 渲染器是反射加载的：把 decoder_ffmpeg 的 AAR 放进 app/libs 就会命中，
+    // 没带原生库也不会崩，MediaCodec 照常接管。日志里能直接看到当前内核。
+    val ffmpeg = runCatching {
+        Class.forName("androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer")
+        true
+    }.getOrDefault(false)
+    NmLog.note(
+        if (ffmpeg) "播放内核：FFmpeg(libavcodec) 解码优先，均衡器 PCM 链路已挂载"
+        else "播放内核：未随包提供 FFmpeg 原生库，使用 MediaCodec；均衡器 PCM 链路已挂载",
+    )
     // DefaultRenderersFactory 没有公开的 setAudioProcessors，音效链要通过
     // AudioSink 注入；1.4.1 的 buildAudioSink 是三参数版本。
     val f = object : DefaultRenderersFactory(ctx) {
@@ -56,8 +67,9 @@ fun buildKernelRenderersFactory(ctx: Context, eq: EqAudioProcessor): DefaultRend
             .setAudioProcessors(arrayOf<AudioProcessor>(eq))
             .build()
     }
-    // EXTENSION_RENDERER_MODE_PREFER：有 FFmpeg 解码器就用它，缺格式时
-    // DefaultRenderersFactory 自己回退 MediaCodec，不会让某首歌播不出来。
-    f.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+    f.setExtensionRendererMode(
+        if (ffmpeg) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+        else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON,
+    )
     return f
 }

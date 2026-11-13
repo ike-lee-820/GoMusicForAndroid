@@ -84,9 +84,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     implementation("androidx.media3:media3-exoplayer:1.4.1")
-    // FFmpeg 解码内核（libavcodec）：DefaultRenderersFactory 会优先用它，
-    // 缺失格式自动回退 MediaCodec，播放功能完全不变
-    implementation("androidx.media3:media3-decoder-ffmpeg:1.4.1")
+    // FFmpeg 解码内核（libavcodec）：Google 不发布 decoder_ffmpeg 的预编译 AAR，
+    // Maven 上只有 Java/Kotlin 壳，native .so 必须用 NDK 自行编译。
+    // 把编好的 media3-decoder-ffmpeg-1.4.1.aar 放到 app/libs/ 并取消下一行注释，
+    // DefaultRenderersFactory 会自动反射加载 FFmpeg 渲染器，播放代码零改动。
+    // implementation(files("libs/media3-decoder-ffmpeg.aar"))
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-datasource:1.4.1")
     // SimpleCache 的 DatabaseProvider 在这个模块里（边播边缓存要用）

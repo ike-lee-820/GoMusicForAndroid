@@ -35,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,9 +72,10 @@ fun RecorderScreen(vm: MainViewModel) {
     val go = LocalGo.current
     val song = vm.currentSong
     var cfg by remember { mutableStateOf(RecorderPrefs.load(ctx)) }
-    var previewPos by remember { mutableLongStateOf(0L) }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
+    var availableQualities by remember { mutableStateOf<List<String>>(emptyList()) }
+    var qualityProbe by remember { mutableStateOf("正在识别可用音质…") }
     val scope = rememberCoroutineScope()
 
     // 进入即时录制页暂停播放；退出时仅当进来前正在播才恢复。
@@ -93,6 +95,23 @@ fun RecorderScreen(vm: MainViewModel) {
         RecorderPrefs.save(ctx, next)
     }
 
+    LaunchedEffect(Unit) { RecorderHistory.load(ctx) }
+    LaunchedEffect(song?.ssid, song?.nmId) {
+        val s = song
+        if (s == null) {
+            availableQualities = emptyList()
+            qualityProbe = "没有可录制的歌曲"
+            return@LaunchedEffect
+        }
+        qualityProbe = "正在识别可用音质…"
+        val found = withContext(Dispatchers.IO) { RecorderFlow.availableQualities(ctx, s) }
+        availableQualities = found
+        if (found.isNotEmpty() && cfg.quality !in found) persist(cfg.copy(quality = found.last()))
+        qualityProbe = if (found.isEmpty()) "未识别到可用音质，不能开始生成"
+        else "识别完成：仅显示 ${found.size} 个可用音质"
+        NmLog.note("录制页音质识别：${found.joinToString(",")}")
+    }
+
     val cover by produceState<Bitmap?>(null, song?.coverUrl) {
         value = withContext(Dispatchers.IO) {
             runCatching {
@@ -106,11 +125,8 @@ fun RecorderScreen(vm: MainViewModel) {
         }
     }
 
-    val tf by remember(cfg.fontPath) {
-        mutableStateOf(
-            if (cfg.fontPath.isBlank()) null
-            else runCatching { Typeface.createFromFile(cfg.fontPath) }.getOrNull()
-        )
+    val tf by remember(cfg.fontMode, cfg.fontPath, cfg.fontWeight) {
+        mutableStateOf(recTypeface(ctx, cfg))
     }
 
     val rows: List<LyricRow> = remember(cfg.customLrc, vm.lyricRows) {
@@ -118,6 +134,9 @@ fun RecorderScreen(vm: MainViewModel) {
         else runCatching { buildLyricRows(lyricLines(cfg.customLrc)) }.getOrDefault(emptyList())
     }
     val duration = if (vm.durationMs > 0) vm.durationMs else 180_000L
+    // 预览只展示歌曲时长一半时的那一帧
+    val previewPos = duration / 2L
+    val runningRec = RecorderHistory.items.firstOrNull { it.state == "进行中" }
 
     val fontPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -133,7 +152,7 @@ fun RecorderScreen(vm: MainViewModel) {
             }.getOrDefault(false)
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 if (ok) {
-                    persist(cfg.copy(fontPath = dst.absolutePath))
+                    persist(cfg.copy(fontMode = "导入", fontPath = dst.absolutePath))
                     Toast.makeText(ctx, "字体已导入", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(ctx, "字体导入失败，请选 ttf / otf", Toast.LENGTH_SHORT).show()
@@ -149,40 +168,36 @@ fun RecorderScreen(vm: MainViewModel) {
             status = "当前没有正在播放的歌曲"
             return
         }
+        if (availableQualities.isEmpty() || cfg.quality !in availableQualities) {
+            status = qualityProbe
+            return
+        }
         if (RecorderHistory.items.any { it.state == "进行中" }) {
-            status = "已有录制任务在后台进行，请先到「录制列表」取消或等它完成"
+            status = "已有生成任务在后台进行，请先到「录制列表」取消或等它完成"
             return
         }
         busy = true
-        status = "正在准备所选音质的音频文件…"
-        scope.launch {
-            val prepared = withContext(Dispatchers.IO) { prepareRecAudio(ctx, s, cfg) }
-            if (prepared == null) {
-                busy = false
-                status = "音质 ${cfg.quality} 不可用：请先在下载页下载该音质，或换一个档位（不会自动降档）"
-                return@launch
-            }
-            val (audio, actualQuality) = prepared
-            val job = RecJob(
-                cfg = cfg,
-                song = s,
-                audioFile = audio,
-                rows = rows,
-                cover = cover,
-                typeface = tf,
-                durationMs = duration,
-                actualQuality = actualQuality,
-            )
-            RecorderJobHolder.pending = job
-            runCatching {
-                val i = android.content.Intent(ctx, RecorderService::class.java)
-                androidx.core.content.ContextCompat.startForegroundService(ctx, i)
-            }
-            status = "已在后台开始录制（$actualQuality 原样嵌入），可关闭此页；通知栏与录制列表都能看进度"
-            Toast.makeText(ctx, "开始录制，可退到后台", Toast.LENGTH_SHORT).show()
-            busy = false
+        status = "已提交后台生成：步骤 1 下载音频与歌词…"
+        val pendingAudio = File(ctx.cacheDir, "rec_pending_${System.currentTimeMillis()}.bin")
+        val job = RecJob(
+            cfg = cfg,
+            song = s,
+            audioFile = pendingAudio,
+            rows = rows,
+            cover = cover,
+            typeface = tf,
+            durationMs = duration,
+            actualQuality = cfg.quality,
+        )
+        RecorderJobHolder.pending = job
+        runCatching {
+            val i = android.content.Intent(ctx, RecorderService::class.java)
+            androidx.core.content.ContextCompat.startForegroundService(ctx, i)
         }
+        Toast.makeText(ctx, "开始生成，可退到后台", Toast.LENGTH_SHORT).show()
+        busy = false
     }
+
 
     val (dw, dh) = RecorderPrefs.dims(cfg)
     val ratio = dw.toFloat() / dh.toFloat()
@@ -197,7 +212,7 @@ fun RecorderScreen(vm: MainViewModel) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Txt("录制歌曲视频", 21, weight = FontWeight.SemiBold, color = go.on)
-                Txt("音频按所选音质原样嵌入，画面与预览一致", 12, color = go.muted)
+                Txt("下载素材 → 音频处理 → 录制视频；音画从 0 对齐", 12, color = go.muted)
             }
             GoButton("录制列表") { vm.showRecHistory = true }
             Spacer(Modifier.width(8.dp))
@@ -237,12 +252,9 @@ fun RecorderScreen(vm: MainViewModel) {
 
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Txt("预览 ${fmtShort(previewPos)} / ${fmtShort(duration)}", 12, Modifier.weight(1f), color = go.muted)
-            GoButton("−5s") { previewPos = (previewPos - 5000L).coerceAtLeast(0L) }
-            Spacer(Modifier.width(6.dp))
-            GoButton("+5s") { previewPos = (previewPos + 5000L).coerceAtMost(duration) }
-            Spacer(Modifier.width(6.dp))
-            GoButton("回到当前") { previewPos = vm.positionMs }
+            Txt("预览：仅显示时长一半 ${fmtShort(previewPos)} / ${fmtShort(duration)}", 12,
+                Modifier.weight(1f), color = go.muted)
+            Txt(qualityProbe, 11, color = go.muted)
         }
         if (status.isNotBlank()) {
             Spacer(Modifier.height(6.dp))
@@ -250,6 +262,29 @@ fun RecorderScreen(vm: MainViewModel) {
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
                     .background(go.primary.copy(alpha = 0.12f)).padding(horizontal = 12.dp, vertical = 8.dp),
             ) { Txt(status, 12, color = go.primary) }
+        }
+        if (runningRec != null) {
+            Spacer(Modifier.height(6.dp))
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(go.surface).padding(horizontal = 12.dp, vertical = 9.dp),
+            ) {
+                Txt("${runningRec.stage.ifBlank { "后台生成中" }} ${runningRec.progress}%", 12, color = go.primary)
+                if (runningRec.detail.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    Txt(runningRec.detail, 11, color = go.muted, maxLines = 2)
+                }
+                Spacer(Modifier.height(7.dp))
+                Box(
+                    Modifier.fillMaxWidth().height(5.dp)
+                        .clip(RoundedCornerShape(3.dp)).background(go.surfaceHi),
+                ) {
+                    Box(
+                        Modifier.fillMaxWidth(runningRec.progress.coerceIn(0, 100) / 100f).height(5.dp)
+                            .clip(RoundedCornerShape(3.dp)).background(go.primary),
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(10.dp))
 
@@ -280,11 +315,27 @@ fun RecorderScreen(vm: MainViewModel) {
                 RecChips("译文", if (cfg.showTrans) "开启" else "关闭", listOf("开启", "关闭")) {
                     persist(cfg.copy(showTrans = it == "开启"))
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Txt("歌词字体", 12, Modifier.weight(1f), color = go.muted)
-                    GoButton("导入字体") { fontPicker.launch(arrayOf("*/*")) }
-                    Spacer(Modifier.width(6.dp))
-                    GoButton("清除") { persist(cfg.copy(fontPath = "")) }
+                RecChips("字体来源", cfg.fontMode, REC_FONT_MODES) { mode ->
+                    if (mode == "导入") {
+                        persist(cfg.copy(fontMode = mode))
+                        fontPicker.launch(arrayOf("*/*"))
+                    } else {
+                        persist(cfg.copy(fontMode = mode, fontPath = ""))
+                    }
+                }
+                if (cfg.fontMode == "导入") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Txt(if (cfg.fontPath.isBlank()) "未导入字体" else "已导入：${File(cfg.fontPath).name}",
+                            11, Modifier.weight(1f), color = go.muted, maxLines = 1)
+                        GoButton("重新选择") { fontPicker.launch(arrayOf("*/*")) }
+                        Spacer(Modifier.width(6.dp))
+                        GoButton("清除") { persist(cfg.copy(fontMode = "系统默认", fontPath = "")) }
+                    }
+                }
+                if (cfg.fontMode != "系统默认") {
+                    RecStep("可变字重", "${cfg.fontWeight}（$WGHT_MIN–$WGHT_MAX）",
+                        { persist(cfg.copy(fontWeight = (cfg.fontWeight - 25).coerceIn(WGHT_MIN, WGHT_MAX))) },
+                        { persist(cfg.copy(fontWeight = (cfg.fontWeight + 25).coerceIn(WGHT_MIN, WGHT_MAX))) })
                 }
                 Spacer(Modifier.height(8.dp))
                 Txt("更改歌词（留空用原歌词）", 12, color = go.muted)
@@ -301,7 +352,12 @@ fun RecorderScreen(vm: MainViewModel) {
                 GoButton("重置为原歌词") { persist(cfg.copy(customLrc = "")) }
             }
             RecGroup("音频") {
-                RecChips("音质（严格不降档）", cfg.quality, REC_QUALITIES) { persist(cfg.copy(quality = it)) }
+                Txt(qualityProbe, 11, color = go.muted)
+                if (availableQualities.isNotEmpty()) {
+                    RecChips("音质（仅可用）", cfg.quality, availableQualities) { persist(cfg.copy(quality = it)) }
+                } else {
+                    Txt("未识别到可用音质，不能开始生成", 12, color = go.muted)
+                }
                 RecChips("人声", cfg.vocalMode, listOf("原声", "减弱人声")) { persist(cfg.copy(vocalMode = it)) }
                 if (cfg.vocalMode == "减弱人声") {
                     RecStep("减弱强度", "${(cfg.vocalStrength * 100).toInt()}%（100%≈伴奏）",
@@ -315,11 +371,11 @@ fun RecorderScreen(vm: MainViewModel) {
         }
         Spacer(Modifier.height(10.dp))
         GoButton(
-            if (busy) "准备中…" else "开始录制（后台进行）",
+            if (busy) "提交中…" else "开始生成（后台进行）",
             modifier = Modifier.fillMaxWidth(),
             primary = true,
             loading = busy,
-            enabled = !busy,
+            enabled = !busy && availableQualities.isNotEmpty() && cfg.quality in availableQualities,
         ) { startRecord() }
     }
     }

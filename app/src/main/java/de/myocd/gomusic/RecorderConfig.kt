@@ -36,6 +36,9 @@ val REC_QUALITIES = listOf(
     "jyeffect", "dolby", "vivid", "jymaster", "sky",
 )
 
+/** 录制字体来源：系统默认 / 内置可变思源宋体 / 用户导入 */
+val REC_FONT_MODES = listOf("系统默认", "思源宋体", "导入")
+
 @Serializable
 data class RecorderConfig(
     /** 比例标签，见 [RecAspect] */
@@ -53,14 +56,18 @@ data class RecorderConfig(
     val infoRatio: Float = 0.34f,
     /** 歌词全体偏移：正数 = 整体提前（快进），负数 = 延迟，单位毫秒 */
     val lyricOffsetMs: Long = 0L,
-    /** 自定义 LRC 全文；空 = 用当前歌曲原歌词，点「重置」回到空 */
+    /** 自定义 LRC 全文；空 = 用下载到的原歌词，点「重置」回到空 */
     val customLrc: String = "",
     /** 原声 / 减弱人声 */
     val vocalMode: String = "原声",
     /** 人声减弱强度 0–1，1 约等于伴奏 */
     val vocalStrength: Float = 0.75f,
-    /** 导入字体在私有目录的绝对路径，空 = 系统字体 */
+    /** 字体来源，见 [REC_FONT_MODES] */
+    val fontMode: String = "系统默认",
+    /** 导入字体在私有目录的绝对路径，空 = 未导入 */
     val fontPath: String = "",
+    /** 可变字体 wght 轴字重；系统默认字体不使用 */
+    val fontWeight: Int = WGHT_DEFAULT,
     /** 是否把译文一起录进画面 */
     val showTrans: Boolean = true,
     /** 视频码率 Mbps */
@@ -73,7 +80,9 @@ object RecorderPrefs {
 
     fun load(ctx: Context): RecorderConfig = runCatching {
         val raw = ctx.getSharedPreferences(SP, Context.MODE_PRIVATE).getString("cfg", "") ?: ""
-        if (raw.isBlank()) RecorderConfig() else json.decodeFromString<RecorderConfig>(raw)
+        val c = if (raw.isBlank()) RecorderConfig() else json.decodeFromString<RecorderConfig>(raw)
+        // 兼容旧版：以前只有 fontPath，没有 fontMode；有导入文件时迁移成「导入」
+        if (c.fontMode == "系统默认" && c.fontPath.isNotBlank()) c.copy(fontMode = "导入") else c
     }.getOrDefault(RecorderConfig())
 
     fun save(ctx: Context, c: RecorderConfig) {

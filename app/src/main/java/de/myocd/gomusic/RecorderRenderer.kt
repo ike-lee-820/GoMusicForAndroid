@@ -18,6 +18,16 @@ import kotlin.math.min
 import kotlin.math.PI
 import kotlin.math.sin
 
+/** 录制文字 Paint：统一注入字体来源与可变字体 wght 轴 */
+private fun recTextPaint(c: RecorderConfig, tf: Typeface?): Paint =
+    Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = tf ?: Typeface.DEFAULT
+        if (c.fontMode != "系统默认") {
+            val w = c.fontWeight.coerceIn(WGHT_MIN, WGHT_MAX)
+            runCatching { setFontVariationSettings("'wght' $w") }
+        }
+    }
+
 /** 一帧需要的全部素材。预览与正式编码共用，保证「所见即所得」。 */
 data class RecFrameState(
     val song: Song,
@@ -62,7 +72,7 @@ fun renderRecFrame(cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typefac
         RecStyle.CLASSIC -> drawClassic(cv, st, c, tf, w, h, pad, scale)
         RecStyle.DISC -> drawDisc(cv, st, c, tf, w, h, pad, scale)
     }
-    drawRecProgress(cv, st, w, h, pad, scale)
+    drawRecProgress(cv, st, w, h, pad, scale, c, tf)
 }
 
 /** 共用的模糊封面底 + 上下渐变遮罩 */
@@ -103,9 +113,8 @@ private fun drawClassic(
         cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
     }
 
-    val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val tp = recTextPaint(c, tf).apply {
         color = Color.WHITE
-        typeface = tf ?: Typeface.DEFAULT
         isFakeBoldText = true
     }
     tp.textSize = 30f * scale
@@ -147,9 +156,8 @@ private fun drawDisc(
         cp.color = Color.rgb(40, 38, 48)
         cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
     }
-    val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val tp = recTextPaint(c, tf).apply {
         color = Color.WHITE
-        typeface = tf ?: Typeface.DEFAULT
         textAlign = Paint.Align.CENTER
     }
     var ty = cy + coverSize + 26f * scale
@@ -196,7 +204,7 @@ private fun drawArcLyrics(
     val maxShift = ((lw - lineWPx) / 2f).coerceAtLeast(0f)
     val shiftPx = (rPx * (1f - cos(span * stepRad)) / 2f).coerceAtMost(maxShift)
     val edge = span + 1
-    val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = tf ?: Typeface.DEFAULT }
+    val lp = recTextPaint(c, tf)
     for (i in (act - edge).coerceAtLeast(0)..(act + edge).coerceAtMost(rows.lastIndex)) {
         val d = (i - act).toFloat()
         val th = d * stepRad
@@ -233,7 +241,7 @@ private fun drawRecLyrics(
     val act = recActiveRow(st, c.lyricOffsetMs)
     val base = c.lyricSizeSp.toFloat().coerceIn(10f, 48f) * scale
     val lineH = base * 1.95f
-    val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = tf ?: Typeface.DEFAULT }
+    val lp = recTextPaint(c, tf)
     for (d in -3..3) {
         val i = act + d
         if (i < 0 || i >= st.rows.size) continue
@@ -257,6 +265,7 @@ private fun drawRecLyrics(
 /** 两套样式共用的底部进度条与时间 */
 private fun drawRecProgress(
     cv: Canvas, st: RecFrameState, w: Float, h: Float, pad: Float, scale: Float,
+    c: RecorderConfig, tf: Typeface?,
 ) {
     val barY = h - 26f * scale
     val bp = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -265,7 +274,7 @@ private fun drawRecProgress(
     bp.color = Color.WHITE
     val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
     cv.drawRect(pad, barY, pad + (w - pad * 2f) * prog, barY + 3f * scale, bp)
-    val clock = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    val clock = recTextPaint(c, tf).apply {
         color = Color.argb(175, 255, 255, 255)
         textSize = 16f * scale
     }

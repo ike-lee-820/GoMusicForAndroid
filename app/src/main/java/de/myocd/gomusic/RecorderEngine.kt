@@ -49,12 +49,22 @@ object RecorderJobHolder {
  */
 class RecorderEngine(private val ctx: Context) {
 
-    fun render(job: RecJob, outFile: File, onProgress: (Int) -> Unit, cancelled: () -> Boolean): String {
+    fun render(job: RecJob, outFile: File, onProgress: (RecProgress) -> Unit, cancelled: () -> Boolean): String {
         val (w, h) = RecorderPrefs.dims(job.cfg)
         val fps = job.cfg.fps.coerceIn(15, 60)
         val strength = if (job.cfg.vocalMode == "减弱人声") job.cfg.vocalStrength else 0f
 
-        val audio = prepareAudio(job.audioFile, strength)
+        onProgress(RecProgress(30, "步骤 2/3 · 音频处理", "读取音轨与真实时长…"))
+        val audio = prepareAudio(job.audioFile, strength) { p, d ->
+            onProgress(RecProgress(30 + (p * 25 / 100), "步骤 2/3 · 音频处理", d))
+        }
+        onProgress(
+            RecProgress(
+                55,
+                "步骤 3/3 · 录制视频",
+                "素材就绪；音频首样本与视频首帧都对齐到 0",
+            )
+        )
         // 以音频文件真实时长为准：播放器的 durationMs 含缓冲估算，拿它当视频长度会让成品音画长短不一致。
         val durationMs = if (audio.durationUs > 0L) audio.durationUs / 1000L
             else if (job.durationMs > 0) job.durationMs else 180_000L
@@ -127,6 +137,13 @@ class RecorderEngine(private val ctx: Context) {
         }
 
         // 第一帧触发编码器输出格式；时间戳全部由 drain 改写，不再依赖墙上时钟
+        onProgress(
+            RecProgress(
+                55,
+                "步骤 3/3 · 录制视频",
+                "视频 ${w}×${h} · ${fps}fps · ${durationMs / 1000L}s，配置编码器…",
+            )
+        )
         drawFrame(0)
         var guard = 0
         while (!started && guard < 200 && !cancelled()) {
@@ -148,7 +165,13 @@ class RecorderEngine(private val ctx: Context) {
             drawFrame(i)
             drain(false)
             if (i % (fps / 2).coerceAtLeast(1) == 0)
-                onProgress((i * 100L / totalFrames).toInt().coerceIn(0, 99))
+                onProgress(
+                    RecProgress(
+                        55 + (i * 44L / totalFrames).toInt().coerceIn(0, 44),
+                        "步骤 3/3 · 录制视频",
+                        "第 $i / $totalFrames 帧（歌词按时间轴同步）",
+                    )
+                )
         }
         vcodec.signalEndOfInputStream()
         drain(true)
@@ -160,6 +183,7 @@ class RecorderEngine(private val ctx: Context) {
             var first = Long.MAX_VALUE
             for (s in audio.samples) if (s.ptsUs < first) first = s.ptsUs
             if (first == Long.MAX_VALUE) first = 0L
+            NmLog.note("音画对齐：视频首帧 PTS=0，音频首样本 PTS=${first}us，输出统一减去 first")
             val bi = MediaCodec.BufferInfo()
             for (s in audio.samples) {
                 if (cancelled()) break
@@ -171,12 +195,13 @@ class RecorderEngine(private val ctx: Context) {
         }
         runCatching { muxer.stop() }
         runCatching { muxer.release() }
-        onProgress(100)
+        onProgress(RecProgress(100, "完成", "视频与音频已封装，准备保存到 影片/GoMusic"))
         return outFile.absolutePath
     }
 
     /** 原声 = 直接搬运压缩样本；减弱人声 = 解码 → DSP → AAC 重编码 */
-    private fun prepareAudio(file: File, strength: Float): RecAudio {
+    private fun prepareAudio(file: File, strength: Float, onStage: (Int, String) -> Unit): RecAudio {
+        onStage(5, "读取音轨信息…")
         val ex = MediaExtractor()
         ex.setDataSource(file.absolutePath)
         var ai = -1
@@ -201,6 +226,7 @@ class RecorderEngine(private val ctx: Context) {
             inFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
 
         if (strength <= 0f) {
+            onStage(100, "原声：压缩样本直接封装，不重编码")
             val list = ArrayList<RecAudioSample>()
             val buf = ByteBuffer.allocate(256 * 1024)
             while (true) {
@@ -219,6 +245,7 @@ class RecorderEngine(private val ctx: Context) {
             return RecAudio(inFmt, list, durUs)
         }
 
+        onStage(15, "按强度 ${(strength * 100).toInt()}% 解码为 PCM…")
         // ---- Pass 1：解码成裸 PCM 文件（流式，不把整首歌放进内存） ----
         val mime = inFmt.getString(MediaFormat.KEY_MIME)!!
         val dec = MediaCodec.createDecoderByType(mime)
@@ -262,6 +289,7 @@ class RecorderEngine(private val ctx: Context) {
         runCatching { dec.stop() }
         runCatching { dec.release() }
         ex.release()
+        onStage(45, "中置抵消 / 低频回补处理人声…")
 
         // ---- Pass 2：逐块 DSP + AAC 编码 ----
         val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sr, ch)
@@ -298,6 +326,7 @@ class RecorderEngine(private val ctx: Context) {
             }
         }
 
+        onStage(65, "AAC 编码处理后的音频…")
         val frameSamples = ch * 2048
         val raw = ByteArray(frameSamples * 2)
         FileInputStream(pcm).use { fis ->
@@ -343,6 +372,7 @@ class RecorderEngine(private val ctx: Context) {
         runCatching { enc.stop() }
         runCatching { enc.release() }
         runCatching { pcm.delete() }
+        onStage(100, "音频处理完成")
         return RecAudio(encFmt, samples, durUs)
     }
 }

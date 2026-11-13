@@ -22,6 +22,10 @@ data class RecRecord(
     val progress: Int = 0,
     val output: String = "",
     val note: String = "",
+    /** 三段式生成的当前阶段，例如「步骤 1/3 · 下载素材」 */
+    val stage: String = "",
+    /** 当前阶段的详细进度文字，通知 / 录制页 / 列表都显示 */
+    val detail: String = "",
     val finishedAt: Long = 0L,
 )
 

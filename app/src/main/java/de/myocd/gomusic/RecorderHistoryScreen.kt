@@ -123,7 +123,7 @@ private fun RecHistoryCard(ctx: Context, r: RecRecord) {
             }
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt("后台录制中 ${r.progress}%", 12, Modifier.weight(1f), color = go.on)
+                Txt("${r.stage.ifBlank { "后台生成中" }} ${r.progress}%", 12, Modifier.weight(1f), color = go.on)
                 GoButton("取消") {
                     runCatching {
                         ctx.startService(
@@ -132,6 +132,10 @@ private fun RecHistoryCard(ctx: Context, r: RecRecord) {
                         )
                     }
                 }
+            }
+            if (r.detail.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Txt(r.detail, 11, color = go.muted, maxLines = 2)
             }
         } else {
             if (r.note.isNotBlank()) {

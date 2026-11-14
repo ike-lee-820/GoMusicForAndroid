@@ -2292,6 +2292,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         lyricLoadingFor = null
         lyric = emptyList()
         lyricLoading = true
+        // 26.11.35：本地歌重试要真正重读文件标签，不能只重放旧缓存
+        if (LocalAudio.isDevice(id)) LocalAudio.clearLyric(app, id)
         NmLog.note("歌词重试：id=$id")
         val item = controller?.currentMediaItem
         if (item == null) {
@@ -2353,7 +2355,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             lyricJob = viewModelScope.launch {
                 val t = try {
                     withContext(Dispatchers.IO) {
-                        LocalAudio.lyricOf(app, id).ifBlank { localLyrics(id) }
+                        LocalAudio.loadLyric(
+                            app, id, snapshots[id]?.audioUri ?: songMap[id]?.audioUri
+                        ).ifBlank { localLyrics(id) }
                     }
                 } catch (e: Exception) { "" }
                 if (curSsid == id) {

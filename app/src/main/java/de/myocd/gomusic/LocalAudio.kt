@@ -109,6 +109,23 @@ object LocalAudio {
     fun lyricOf(ctx: Context, id: String): String =
         runCatching { lyricFile(ctx, id).takeIf { it.isFile }?.readText().orEmpty() }.getOrDefault("")
 
+    /** 26.11.35：缓存为空时按 Uri 重新解一次标签，点「暂无歌词」重试才有效 */
+    fun loadLyric(ctx: Context, id: String, audioUri: String?): String {
+        val cached = lyricOf(ctx, id)
+        if (cached.isNotBlank()) return cached
+        val u = audioUri?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: return ""
+        val t = TagLyrics.best(ctx, u, 0L)?.text.orEmpty()
+        if (t.isNotBlank()) {
+            cacheLyric(ctx, id, t)
+            NmLog.note("本地歌词重试：重新解析标签得到 ${t.length} 字")
+        }
+        return t
+    }
+
+    fun clearLyric(ctx: Context, id: String) {
+        runCatching { lyricFile(ctx, id).takeIf { it.isFile }?.delete() }
+    }
+
     /** 读 Meta 生成 Song；无法解码时返回 null */
     fun songOf(ctx: Context, uri: Uri): Song? {
         val r = MediaMetadataRetriever()
@@ -149,18 +166,25 @@ object LocalAudio {
                 }
             }
 
-            // Android 的 MediaMetadataRetriever 没有 COMMENT 常量，
-            // 内嵌歌词只从这些文本字段里找 LRC 时间戳，找不到就只认同名 .lrc
-            val embedded = listOf(
-                MediaMetadataRetriever.METADATA_KEY_WRITER,
-                MediaMetadataRetriever.METADATA_KEY_AUTHOR,
-                MediaMetadataRetriever.METADATA_KEY_GENRE,
-                MediaMetadataRetriever.METADATA_KEY_COMPOSER,
-            ).firstNotNullOfOrNull { k ->
-                r.extractMetadata(k)?.takeIf { LRC_TAG.containsMatchIn(it) }
+            // 26.11.35：MediaMetadataRetriever 根本没有歌词 key，
+            // 旧版从 WRITER/AUTHOR/GENRE/COMPOSER 里找时间戳几乎永远落空。
+            // 改为直接解容器标签：ID3v2 USLT/SYLT、APEv2、FLAC/Ogg
+            // Vorbis Comment、MP4 ©lyr；纯文本自动补时间轴，交给现有 parseLrc。
+            val durationMs = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            val tagged = TagLyrics.best(ctx, uri, durationMs)
+            val sidecar = sidecarLrc(uri)
+            val lrc = sidecar ?: tagged?.text
+            if (!lrc.isNullOrBlank()) {
+                cacheLyric(ctx, id, lrc)
+                NmLog.note(
+                    "本地歌词：来源=${if (sidecar != null) "同名 .lrc" else (tagged?.source ?: "内嵌")}" +
+                        " 长度=${lrc.length} 行数=${lrc.lines().size}" +
+                        " 时间戳=${LRC_TAG.containsMatchIn(lrc)}"
+                )
+            } else {
+                NmLog.note("本地歌词：未读到内嵌标签，也没有同名 .lrc（已查 ID3v2/APEv2/FLAC/Ogg/MP4）")
             }
-            val lrc = sidecarLrc(uri) ?: embedded
-            if (!lrc.isNullOrBlank()) cacheLyric(ctx, id, lrc)
         } finally {
             r.release()
         }

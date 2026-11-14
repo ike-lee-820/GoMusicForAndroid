@@ -149,9 +149,17 @@ object LocalAudio {
                 }
             }
 
-            val lrc = sidecarLrc(uri)
-                ?: r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMMENT)
-                    ?.takeIf { LRC_TAG.containsMatchIn(it) }
+            // Android 的 MediaMetadataRetriever 没有 COMMENT 常量，
+            // 内嵌歌词只从这些文本字段里找 LRC 时间戳，找不到就只认同名 .lrc
+            val embedded = listOf(
+                MediaMetadataRetriever.METADATA_KEY_WRITER,
+                MediaMetadataRetriever.METADATA_KEY_AUTHOR,
+                MediaMetadataRetriever.METADATA_KEY_GENRE,
+                MediaMetadataRetriever.METADATA_KEY_COMPOSER,
+            ).firstNotNullOfOrNull { k ->
+                r.extractMetadata(k)?.takeIf { LRC_TAG.containsMatchIn(it) }
+            }
+            val lrc = sidecarLrc(uri) ?: embedded
             if (!lrc.isNullOrBlank()) cacheLyric(ctx, id, lrc)
         } finally {
             r.release()

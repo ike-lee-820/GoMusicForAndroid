@@ -5,7 +5,6 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.RectF
@@ -153,12 +152,16 @@ private object RecFrameCache {
         val act = recActiveRow(st, c.lyricOffsetMs)
         val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
         val bucket = (prog * w / 2f).toInt()
-        // 雨 / 雪是循环动画：按 50ms 相位桶 + 8 级能量桶取签名，
-        // 同一桶内直接复用整帧，避免逐帧全量重画把编码拖回实时速度。
-        val dynamic = if (c.bgMode == "雨季" || c.bgMode == "雪天") {
-            val phase = ((st.positionMs % 1800L) * 36L / 1800L).toInt()
-            "$phase/${(st.energy * 8f).toInt().coerceIn(0, 8)}"
-        } else ""
+        // 雨季严格按参考 WebGL：uTime 按 60fps 帧计数逐帧递增，不复用整帧；
+        // 雪天仍按 50ms 相位桶 + 8 级能量桶复用，避免拖慢编码。
+        val dynamic = when (c.bgMode) {
+            "雨季" -> (st.positionMs * 60L / 1000L).toString()
+            "雪天" -> {
+                val phase = ((st.positionMs % 1800L) * 36L / 1800L).toInt()
+                "$phase/${(st.energy * 8f).toInt().coerceIn(0, 8)}"
+            }
+            else -> ""
+        }
         return listOf(
             act, bucket, c.style, c.bgMode, c.lyricSizeSp, c.infoSizeSp, c.showTrans,
             c.lyricOffsetMs, c.infoRatio, c.fontMode, c.fontWeight, c.fontPath,
@@ -188,8 +191,8 @@ private object RecFrameCache {
         fullSig = sig
     }
 
-    /** 静态层：背景效果 + 左侧封面与歌曲信息。整首歌只生成一次。 */
-    private fun staticBitmap(
+    /** 静态层：只画左侧封面与歌曲信息，背景透明，整首歌只生成一次。 */
+    private fun infoBitmap(
         st: RecFrameState, c: RecorderConfig, tf: Typeface?, w: Int, h: Int,
     ): Bitmap {
         val key = StaticKey(
@@ -211,9 +214,9 @@ private object RecFrameCache {
         val old = staticBmp
         if (old != null && !old.isRecycled && staticKey == key) return old
         val b = bitmap(old, w, h)
+        b.eraseColor(Color.TRANSPARENT)
         val cv = Canvas(b)
         val scale = h / 1080f
-        drawBackground(cv, st.cover, w.toFloat(), h.toFloat(), scale, c.bgMode)
         val pad = 28f * scale
         when (RecStyle.of(c.style)) {
             RecStyle.CLASSIC -> drawClassicInfo(cv, st, c, tf, w.toFloat(), h.toFloat(), pad, scale)
@@ -224,12 +227,39 @@ private object RecFrameCache {
         return b
     }
 
+    /** 非雨季的背景（封面底 + 略微模糊）只生成一次；雨季由 RainGlsl 逐帧输出。 */
+    private var backBmp: Bitmap? = null
+    private var backKey: String? = null
+
+    private fun staticBackground(
+        st: RecFrameState, c: RecorderConfig, w: Int, h: Int, scale: Float,
+    ): Bitmap {
+        val key = listOf(System.identityHashCode(st.cover), c.bgMode, w, h).joinToString("|")
+        val old = backBmp
+        if (old != null && !old.isRecycled && backKey == key) return old
+        val b = bitmap(old, w, h)
+        drawBackground(Canvas(b), st.cover, w.toFloat(), h.toFloat(), scale, c.bgMode)
+        backBmp = b
+        backKey = key
+        return b
+    }
+
     private fun drawFull(
         cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?, w: Float, h: Float,
     ) {
         val scale = h / 1080f
         val pad = 28f * scale
-        cv.drawBitmap(staticBitmap(st, c, tf, w.toInt(), h.toInt()), 0f, 0f, null)
+        // 雨季严格走参考 WebGL 着色器：uTime 按 60fps 帧计数，每帧单独渲染。
+        // 着色器不可用时退回静态封面底，不会整屏空白。
+        val rain = if (c.bgMode == "雨季") {
+            RainGlsl.render(st.cover, w.toInt(), h.toInt(), st.positionMs * 60f / 1000f)
+        } else null
+        if (rain != null && !rain.isRecycled) {
+            cv.drawBitmap(rain, 0f, 0f, null)
+        } else {
+            cv.drawBitmap(staticBackground(st, c, w.toInt(), h.toInt(), scale), 0f, 0f, null)
+        }
+        cv.drawBitmap(infoBitmap(st, c, tf, w.toInt(), h.toInt()), 0f, 0f, null)
         drawParticles(cv, c.bgMode, st.positionMs, st.energy, w, h, scale)
         val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
         when (RecStyle.of(c.style)) {
@@ -254,7 +284,7 @@ private object RecFrameCache {
      * 只压一层很淡的暗渐变保证文字可读。四种效果都只在这张封面底上叠加：
      * - 高斯模糊：封面 + 极淡雾面
      * - 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的光泽，不再切成上下两片卡片
-     * - 雨季：玻璃上的水滴，水滴内取清晰封面并局部放大折射（curtains.js 雨特效思路）
+     * - 雨季：整屏由 Lavender-z/demo 的 WebGL 着色器逐帧输出（专辑封面作 dispImage）
      * - 雪天：柔边雪片随音频能量改变下落速度 / 风 / 亮度（sn.html 的 AUDIO REACTIVE）
      */
     private var backCoverId = 0
@@ -322,10 +352,6 @@ private object RecFrameCache {
                 cv.drawRect(0f, 0f, w, h, mist)
             }
             "液态玻璃" -> drawGlass(cv, w, h, scale)
-            "雨季" -> {
-                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(18, 30, 62, 112) }
-                cv.drawRect(0f, 0f, w, h, t)
-            }
             "雪天" -> {
                 val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(14, 170, 205, 255) }
                 cv.drawRect(0f, 0f, w, h, t)
@@ -410,59 +436,8 @@ private object RecFrameCache {
     private fun drawParticles(
         cv: Canvas, mode: String, tMs: Long, energy: Float, w: Float, h: Float, scale: Float,
     ) {
-        when (mode) {
-            "雨季" -> drawRain(cv, tMs, w, h, scale)
-            "雪天" -> drawSnow(cv, tMs, energy, w, h, scale)
-        }
-    }
-
-    /**
-     * 雨季：参考 Lavender-z/demo 雨特效的 WebGL 思路 —— 背景是一张图，
-     * 水滴位置扰动取样 UV、水滴内清晰、水滴外模糊。Canvas 版用
-     * BitmapShader(清晰封面) + 每滴一个局部放大 Matrix 实现折射，
-     * 共享同一个 shader 对象，逐帧零分配。
-     */
-    private fun drawRain(cv: Canvas, tMs: Long, w: Float, h: Float, scale: Float) {
-        val shader = backShader ?: return
-        val clear = backClear ?: return
-        val sx = w / clear.width.toFloat()
-        val sy = h / clear.height.toFloat()
-        val m = Matrix()
-        val lensPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.shader = shader }
-        val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 1.1f * scale
-            color = Color.argb(105, 255, 255, 255)
-        }
-        val spec = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 255, 255, 255) }
-        val trail = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(38, 220, 238, 255)
-            strokeWidth = 1.3f * scale
-        }
-        for (i in 0 until 42) {
-            val a = hash11(i * 1.13f + 3.7f)
-            val b = hash11(i * 2.71f + 11.2f)
-            val c = hash11(i * 4.37f + 27.9f)
-            val d = hash11(i * 7.19f + 5.4f)
-            val depth = 0.55f + c * 1.15f
-            val r = (3.4f + b * 7.6f) * scale * depth
-            val x = a * w
-            val speed = 0.45f + d * 0.85f
-            val y = ((b * h + tMs * 0.001f * speed * 330f * scale) % (h + r * 4f)) - r * 2f
-            val lens = 1.18f + c * 0.28f
-            val dx = (a - 0.5f) * r * 1.6f
-            val dy = -r * 0.35f
-            m.setScale(sx * lens, sy * lens)
-            m.postTranslate(x * (1f - lens) + dx, y * (1f - lens) + dy)
-            shader.setLocalMatrix(m)
-            cv.drawLine(x, y - r, x - r * 0.12f, y - r * (2.2f + speed * 2.6f), trail)
-            lensPaint.alpha = (190 + (c * 55).toInt()).coerceAtMost(255)
-            cv.drawCircle(x, y, r, lensPaint)
-            cv.drawCircle(x, y, r, edge)
-            cv.drawCircle(x - r * 0.3f, y - r * 0.32f, r * 0.16f, spec)
-        }
-        val fog = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 220, 235, 255) }
-        cv.drawRect(0f, 0f, w, h, fog)
+        // 雨季由 RainGlsl 的 WebGL 着色器逐帧生成，不再叠加任何自绘水滴/线条。
+        if (mode == "雪天") drawSnow(cv, tMs, energy, w, h, scale)
     }
 
     /** 柔边雪片贴图：中心白、边缘透明，避免旧版「实心白点」的塑料感。 */

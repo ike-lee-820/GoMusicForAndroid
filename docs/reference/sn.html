@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>音乐天气特效 · 飘雪</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background:
+      radial-gradient(120% 90% at 50% 0%, #1a2a44 0%, #0b1220 45%, #04060b 100%);
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+
+  .ui { position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+        display: flex; gap: 10px; z-index: 10; }
+  .ui button {
+    padding: 9px 18px; border-radius: 999px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,.14);
+    background: rgba(255,255,255,.05);
+    color: #a9c3e4; font-size: 13px; letter-spacing: .5px;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    transition: .22s ease;
+  }
+  .ui button:hover { background: rgba(255,255,255,.12); color: #fff; }
+  .hint { position: fixed; top: 34px; left: 50%; transform: translateX(-50%);
+          color: #5c7292; font-size: 11px; letter-spacing: 5px; z-index: 10; }
+</style>
+</head>
+<body>
+<div class="hint">A U D I O · R E A C T I V E</div>
+<canvas id="stage"></canvas>
+
+<div class="ui">
+  <button id="playBtn">▶ 播放音乐</button>
+</div>
+
+<audio id="audio" src="" crossorigin="anonymous" loop></audio>
+
+<script>
+(() => {
+'use strict';
+
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d', { alpha: true });
+
+let W = 0, H = 0, DPR = 1;
+let time = 0;
+let last = performance.now();
+let rafId = 0;
+
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const rand  = (a, b) => a + Math.random() * (b - a);
+const lerp  = (a, b, t) => a + (b - a) * t;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+
+function makeSnowSprite(radius) {
+  const S = Math.ceil(radius * 2.6) + 4;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const cx = S / 2, cy = S / 2;
+  const R = radius * 1.25;
+  const grd = g.createRadialGradient(cx, cy, 0, cx, cy, R);
+  grd.addColorStop(0.00, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.50, 'rgba(246,251,255,0.96)');
+  grd.addColorStop(0.80, 'rgba(222,239,255,0.42)');
+  grd.addColorStop(1.00, 'rgba(205,230,255,0)');
+  g.fillStyle = grd;
+  g.beginPath();
+  g.arc(cx, cy, R, 0, Math.PI * 2);
+  g.fill();
+  return c;
+}
+
+const SNOW_LAYERS = [
+  { r: 3.6, speed: 78, alpha: 0.95, swayAmp: 22, drift: 100, spawn: 0.18 },
+  { r: 2.1, speed: 48, alpha: 0.72, swayAmp: 14, drift: 74,  spawn: 0.32 },
+  { r: 1.1, speed: 26, alpha: 0.42, swayAmp: 8,  drift: 50,  spawn: 0.50 },
+];
+const snowSprites = SNOW_LAYERS.map(l => makeSnowSprite(l.r));
+
+const snow = {
+  flakes: [],
+  wind: 0.1,
+  intensity: 0.55,
+  max: 450,
+
+  pickLayer() {
+    const r = Math.random();
+    let acc = 0;
+    for (let i = 0; i < SNOW_LAYERS.length; i++) {
+      acc += SNOW_LAYERS[i].spawn;
+      if (r <= acc) return i;
+    }
+    return SNOW_LAYERS.length - 1;
+  },
+
+  reset(f, initial) {
+    f.layer    = this.pickLayer();
+    const L    = SNOW_LAYERS[f.layer];
+    f.speed    = L.speed * rand(0.8, 1.25);
+    f.alpha    = L.alpha * rand(0.75, 1.0);
+    f.swayAmp  = L.swayAmp * rand(0.6, 1.3);
+    f.swayFreq = rand(0.6, 1.8);
+    f.phase    = rand(0, Math.PI * 2);
+    f.drift    = L.drift;
+    f.x = rand(-0.1, 1.1) * W;
+    f.y = initial ? rand(-0.15, 1) * H : rand(-0.15, -0.02) * H;
+    return f;
+  },
+
+  update(dt) {
+    const target = Math.round(this.max * this.intensity);
+    while (this.flakes.length < target) this.flakes.push(this.reset({}, true));
+    while (this.flakes.length > target) this.flakes.pop();
+
+    for (let i = 0; i < this.flakes.length; i++) {
+      const f = this.flakes[i];
+      f.x += (Math.sin(time * f.swayFreq + f.phase) * f.swayAmp
+              + this.wind * f.drift) * dt;
+      f.y += f.speed * dt;
+      if (f.y > H + 30 || f.x < -60 || f.x > W + 60) this.reset(f, false);
+    }
+  },
+
+  render() {
+    for (let i = 0; i < this.flakes.length; i++) {
+      const f = this.flakes[i];
+      const sp = snowSprites[f.layer];
+      const twinkle = 0.9 + 0.1 * Math.sin(time * 2.2 + f.phase);
+      ctx.globalAlpha = f.alpha * twinkle;
+      ctx.drawImage(sp, f.x - sp.width / 2, f.y - sp.height / 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+};
+
+let analyser = null, freqData = null, audioCtx = null;
+const audio = document.getElementById('audio');
+const energy = { bass: 0, mid: 0, high: 0 };
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = audioCtx.createMediaElementSource(audio);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.78;
+  src.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+}
+
+function updateAudio() {
+  if (!analyser) return;
+  analyser.getByteFrequencyData(freqData);
+  const n = freqData.length;
+
+  let b = 0, m = 0, h = 0;
+  for (let i = 1; i < 8; i++) b += freqData[i];
+  b /= 7 * 255;
+  for (let i = 8; i < 60; i++) m += freqData[i];
+  m /= 52 * 255;
+  for (let i = 60; i < n * 0.8; i++) h += freqData[i];
+  h /= (Math.floor(n * 0.8) - 60) * 255;
+
+  energy.bass = lerp(energy.bass, b, 0.28);
+  energy.mid  = lerp(energy.mid,  m, 0.20);
+  energy.high = lerp(energy.high, h, 0.16);
+}
+
+function drive() {
+  const breathe = 0.5 + 0.5 * Math.sin(time * 0.3);
+  snow.intensity = clamp(0.32 + energy.mid * 0.85 + breathe * 0.10, 0.15, 1);
+  snow.wind      = clamp(Math.sin(time * 0.16) * 0.4 + energy.high * 0.75, -0.8, 0.8);
+}
+
+function frame(now) {
+  rafId = requestAnimationFrame(frame);
+
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  time += dt;
+
+  updateAudio();
+  drive();
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+  snow.update(dt);
+  snow.render();
+}
+
+window.addEventListener('resize', resize);
+
+document.getElementById('playBtn').addEventListener('click', async (e) => {
+  try {
+    initAudio();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    if (audio.paused) { await audio.play(); e.target.textContent = '⏸ 暂停'; }
+    else { audio.pause(); e.target.textContent = '▶ 播放音乐'; }
+  } catch (err) {
+    console.warn('请先在 <audio src=""> 填入音频地址', err);
+  }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    cancelAnimationFrame(rafId);
+  } else {
+    last = performance.now();
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(frame);
+  }
+});
+
+resize();
+rafId = requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

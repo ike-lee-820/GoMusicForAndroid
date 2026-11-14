@@ -203,14 +203,13 @@ object RainGlsl {
     private var lastTime = -1f
 
     /**
-     * 26.11.29：专辑封面完整置入纹理，原始宽高比不变 —— 不拉伸、不裁切。
-     * 四周用同一封面等比放大后的模糊版本补齐（与录制帧的封面底一致），
-     * 片元着色器采样 dispImage 得到的仍是「以专辑封面为背景」的雨景。
-     * 垂直翻转：WebGL 纹理 t=0 在左下、Android Bitmap 第 0 行在顶部，
-     * glReadPixels 后再翻回来即可与 demo 的取样方向一致。
-     * 注意：VERTEX_SHADER / FRAGMENT_SHADER 逐字未改，只调整 CPU 侧纹理准备。
+     * 26.11.31：传入的是「已经做好比例的专辑封面底」（RecorderRenderer.makeBackdrop
+     * 的产物），这里只按 w:h 等比缩到 1024 以内并垂直翻转，不再做 contain/cover、
+     * 不再叠 1/10 缩略图 ——  Repeated 处理正是雨季画面错乱的来源。
+     * WebGL 纹理 t=0 在左下、Bitmap 第 0 行在顶部，翻转后取样方向与 demo 一致。
+     * VERTEX_SHADER / FRAGMENT_SHADER 逐字未改。
      */
-    private fun coverTexture(cover: Bitmap, w: Int, h: Int): Bitmap {
+    private fun bgTexture(bg: Bitmap, w: Int, h: Int): Bitmap {
         val ratio = w.toFloat() / h.coerceAtLeast(1).toFloat()
         val maxSide = 1024
         val tw: Int
@@ -222,49 +221,31 @@ object RainGlsl {
             th = maxSide
             tw = (maxSide * ratio).toInt().coerceAtLeast(1)
         }
-        val cw = cover.width.toFloat()
-        val ch = cover.height.toFloat()
-        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val flat = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
-        val fc = Canvas(flat)
-        // 垫底：等比放大铺满，再缩小放大做柔和模糊（模糊的是延伸背景，不是封面主体）
-        val sf = kotlin.math.max(tw / cw, th / ch)
-        val fw = cw * sf
-        val fh = ch * sf
-        fc.drawBitmap(cover, null, RectF((tw - fw) / 2f, (th - fh) / 2f, (tw + fw) / 2f, (th + fh) / 2f), p)
-        val bw = (tw / 10).coerceAtLeast(2)
-        val bh = (th / 10).coerceAtLeast(2)
-        val small = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
-        Canvas(small).drawBitmap(flat, null, RectF(0f, 0f, bw.toFloat(), bh.toFloat()), p)
-        fc.drawBitmap(small, null, RectF(0f, 0f, tw.toFloat(), th.toFloat()), p)
-        small.recycle()
-        // 主体：contain，完整等比、不裁切
-        val s = kotlin.math.min(tw / cw, th / ch)
-        val dw = cw * s
-        val dh = ch * s
-        fc.drawBitmap(cover, null, RectF((tw - dw) / 2f, (th - dh) / 2f, (tw + dw) / 2f, (th + dh) / 2f), p)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        Canvas(flat).drawBitmap(bg, null, RectF(0f, 0f, tw.toFloat(), th.toFloat()), p)
         val flip = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
-        val flipC = Canvas(flip)
-        flipC.scale(1f, -1f, tw / 2f, th / 2f)
-        flipC.drawBitmap(flat, 0f, 0f, null)
+        val fc = Canvas(flip)
+        fc.scale(1f, -1f, tw / 2f, th / 2f)
+        fc.drawBitmap(flat, 0f, 0f, null)
         flat.recycle()
         return flip
     }
 
     /** 每帧调用一次；uTime 在内部每渲染一帧 +1，与 demo 的 time.value++ 完全一致。 */
     @Synchronized
-    fun render(cover: Bitmap?, w: Int, h: Int): Bitmap? {
-        if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return null
+    fun render(background: Bitmap, w: Int, h: Int): Bitmap? {
+        if (background.isRecycled || w <= 0 || h <= 0) return null
         if (!ensure(w, h)) return null
         val d = display ?: return null
         val s = surface ?: return null
         val c = context ?: return null
         if (!EGL14.eglMakeCurrent(d, s, s, c)) return null
 
-        val key = "${System.identityHashCode(cover)}:$w:$h"
+        val key = "${System.identityHashCode(background)}:$w:$h"
         if (key != coverKey) {
-            // 封面完整置入纹理（不拉伸、不裁切），GLSL 与 demo 一字不改。
-            val texBmp = coverTexture(cover, w, h)
+            // 已按比例做好的封面底直接上传，GLSL 与 demo 一字不改。
+            val texBmp = bgTexture(background, w, h)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, texBmp, 0)
             texBmp.recycle()

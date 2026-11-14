@@ -39,8 +39,12 @@ data class RecFrameState(
     val rows: List<LyricRow>,
     val positionMs: Long,
     val durationMs: Long,
-    /** 雪天用：当前时刻的音频能量 0–1；预览与无包络时用 0.35 */
+    /** 兼容旧调用；雪天改用下面三个频段 */
     val energy: Float = 0.35f,
+    /** 对应 sn.html 的 energy.bass / mid / high，每 100ms 一组，0–1 */
+    val bass: Float = 0f,
+    val mid: Float = 0f,
+    val high: Float = 0f,
 )
 
 /** 按全体偏移算出当前高亮行 */
@@ -187,14 +191,9 @@ private object RecFrameCache {
         val posQ = (recLyricPos(st, c.lyricOffsetMs) * 24f).toInt()
         val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
         val bucket = (prog * w / 2f).toInt()
-        // 雨季严格按参考 WebGL：uTime 按 60fps 帧计数逐帧递增，不复用整帧；
-        // 雪天仍按 50ms 相位桶 + 8 级能量桶复用，避免拖慢编码。
+        // 雨季 / 雪天都是逐帧动画，禁用整帧复用；左侧信息静态层仍然复用。
         val dynamic = when (c.bgMode) {
-            "雨季" -> (st.positionMs * 60L / 1000L).toString()
-            "雪天" -> {
-                val phase = ((st.positionMs % 1800L) * 36L / 1800L).toInt()
-                "$phase/${(st.energy * 8f).toInt().coerceIn(0, 8)}"
-            }
+            "雨季", "雪天" -> st.positionMs.toString()
             else -> ""
         }
         return listOf(
@@ -262,43 +261,22 @@ private object RecFrameCache {
         return b
     }
 
-    /** 判断 GL 读回结果是不是「一整块纯色 / 全黑 / 全透明」，即无效帧。 */
-    private fun isFlatColor(b: Bitmap): Boolean {
+    /**
+     * 只判断 GL 是否交回空帧。专辑封面本身可能大面积同色（米色底插画），
+     * 旧版按「5x5 采样亮度差 < 4」判纯色会把正常雨景误丢，只剩一块背景色。
+     */
+    private fun isBlankGl(b: Bitmap): Boolean {
         if (b.isRecycled || b.width < 2 || b.height < 2) return true
         val w = b.width
         val h = b.height
-        val pts = 5
-        var minL = 255
-        var maxL = 0
         var visible = 0
-        for (j in 0 until pts) {
-            for (i in 0 until pts) {
-                val c = b.getPixel(i * (w - 1) / (pts - 1), j * (h - 1) / (pts - 1))
-                val a = (c ushr 24) and 0xFF
-                val l = (((c ushr 16) and 0xFF) * 3 + ((c ushr 8) and 0xFF) * 6 + (c and 0xFF)) / 10
-                if (l < minL) minL = l
-                if (l > maxL) maxL = l
-                if (a > 8) visible++
+        for (j in 0 until 5) {
+            for (i in 0 until 5) {
+                val c = b.getPixel(i * (w - 1) / 4, j * (h - 1) / 4)
+                if (((c ushr 24) and 0xFF) > 8) visible++
             }
         }
-        return visible < pts * pts / 4 || (maxL - minL) < 4
-    }
-
-    /** 非雨季的背景（封面底 + 略微模糊）只生成一次；雨季由 RainGlsl 逐帧输出。 */
-    private var backBmp: Bitmap? = null
-    private var backKey: String? = null
-
-    private fun staticBackground(
-        st: RecFrameState, c: RecorderConfig, w: Int, h: Int, scale: Float,
-    ): Bitmap {
-        val key = listOf(System.identityHashCode(st.cover), c.bgMode, w, h).joinToString("|")
-        val old = backBmp
-        if (old != null && !old.isRecycled && backKey == key) return old
-        val b = bitmap(old, w, h)
-        drawBackground(Canvas(b), st.cover, w.toFloat(), h.toFloat(), scale, c.bgMode)
-        backBmp = b
-        backKey = key
-        return b
+        return visible < 7
     }
 
     private fun drawFull(
@@ -306,18 +284,29 @@ private object RecFrameCache {
     ) {
         val scale = h / 1080f
         val pad = 28f * scale
-        // 26.11.30：先铺按比例正确绘制的专辑封面底；雨季着色器输出有效时
-        // 整屏覆盖（参考实现的最终画面），GL 读回空帧/纯色时保留封面底，
-        // 不再出现「只有一块被拉伸的背景色」。
-        cv.drawBitmap(staticBackground(st, c, w.toInt(), h.toInt(), scale), 0f, 0f, null)
-        if (c.bgMode == "雨季") {
-            val rain = RainGlsl.render(st.cover, w.toInt(), h.toInt())
-            if (rain != null && !rain.isRecycled && !isFlatColor(rain)) {
-                cv.drawBitmap(rain, 0f, 0f, null)
+        val base = makeBackdrop(st.cover, w.toInt(), h.toInt(), c.bgMode)
+        if (base == null) {
+            // 没有封面时也不留一整块死背景色
+            val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = LinearGradient(
+                    0f, 0f, w, h,
+                    Color.rgb(26, 24, 32), Color.rgb(10, 9, 13), Shader.TileMode.CLAMP,
+                )
             }
+            cv.drawRect(0f, 0f, w, h, gp)
+        } else if (c.bgMode == "雨季") {
+            // 参考实现的 fragment 输出的就是「被雨滴折射后的背景图」本身：
+            // 把已经按比例做好的封面底作为 dispImage 上传，GL 输出即该模式背景。
+            // 读回空帧时保留封面底，绝不在上面整屏盖一块纯色。
+            val gl = RainGlsl.render(base, w.toInt(), h.toInt())
+            val useGl = gl != null && !gl.isRecycled && !isBlankGl(gl)
+            val bg: Bitmap = if (useGl) gl!! else base
+            cv.drawBitmap(bg, 0f, 0f, null)
+        } else {
+            cv.drawBitmap(base, 0f, 0f, null)
         }
         cv.drawBitmap(infoBitmap(st, c, tf, w.toInt(), h.toInt()), 0f, 0f, null)
-        drawParticles(cv, c.bgMode, st.positionMs, st.energy, w, h, scale)
+        if (c.bgMode == "雪天") drawSnowLayer(cv, st, w, h)
         val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
         when (RecStyle.of(c.style)) {
             RecStyle.CLASSIC -> drawClassicLyrics(
@@ -335,124 +324,73 @@ private object RecFrameCache {
         drawProgress(cv, st, w, h, pad, scale, c, tf)
     }
 
-    /**
-     * 26.11.26：背景一律以「专辑封面」为底。
-     * 封面完整按比例显示（不拉伸不裁切），四周用同源模糊封面补齐，
-     * 只压一层很淡的暗渐变保证文字可读。四种效果都只在这张封面底上叠加：
-     * - 高斯模糊：清晰封面 + 一层轻模糊
-     * - 雨季：整屏由 Lavender-z/demo 的 WebGL 着色器逐帧输出（专辑封面作 dispImage）
-     * - 雪天：柔边雪片随音频能量改变下落速度 / 风 / 亮度（sn.html 的 AUDIO REACTIVE）
-     */
     private var backCoverId = 0
     private var backW = 0
     private var backH = 0
-    private var backClear: Bitmap? = null
-    private var backBlur: Bitmap? = null
-    private var backShader: BitmapShader? = null
-    private var flakeBmp: Bitmap? = null
+    private var backMode = ""
+    private var backBmp: Bitmap? = null
 
-    /** 封面底图只按「封面对象 + 输出尺寸」生成一次（清晰底 + 轻模糊底）。 */
-    private fun backdrop(cover: Bitmap?, w: Int, h: Int): Boolean {
-        if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return false
+    /**
+     * 26.11.31：背景只生成一张，直接就是输出尺寸，不再缩半再放大拉伸。
+     * ① 四周用同一封面等比放大铺满（比例不变，只裁切延伸区）并模糊补齐；
+     * ② 中央完整封面 contain 居中，原始宽高比不变、不拉伸不裁切；
+     * ③ 高斯模式只叠一层轻模糊，不再整屏盖 1/10 缩略图；
+     * ④ 一层很淡的暗渐变保证文字可读。
+     * 三种模式共用这一张底，雨季交给着色器折射，雪天在之上叠透明雪层。
+     */
+    private fun makeBackdrop(cover: Bitmap?, w: Int, h: Int, mode: String): Bitmap? {
+        if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return null
         val id = System.identityHashCode(cover)
-        if (backCoverId == id && backW == w && backH == h &&
-            backClear != null && !backClear!!.isRecycled
-        ) return true
-        // 26.11.30：宽和高必须乘同一个系数。旧版分别 coerceIn(480, 1280)，
-        // 小尺寸预览下 16:9 会被压成 1:1，再铺满整帧时封面被横向拉伸。
-        val bw = w / 2f
-        val bh = h / 2f
-        val k = when {
-            min(bw, bh) < 480f -> 480f / min(bw, bh)
-            max(bw, bh) > 1280f -> 1280f / max(bw, bh)
-            else -> 1f
+        if (backCoverId == id && backW == w && backH == h && backMode == mode &&
+            backBmp != null && !backBmp!!.isRecycled
+        ) return backBmp
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(out)
+        val cw = cover.width.toFloat()
+        val ch = cover.height.toFloat()
+        // ① 等比放大（cover 语义，只裁切不变形）→ 模糊，作为四周延伸
+        val edge = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val sf = max(w / cw, h / ch)
+        val fw = cw * sf
+        val fh = ch * sf
+        Canvas(edge).drawBitmap(
+            cover, null,
+            RectF((w - fw) / 2f, (h - fh) / 2f, (w + fw) / 2f, (h + fh) / 2f), p,
+        )
+        val edgeBlur = blurSmall(edge, 6)
+        cv.drawBitmap(edgeBlur, 0f, 0f, null)
+        edge.recycle()
+        edgeBlur.recycle()
+        // ② 主体：contain，完整、等比、不拉伸
+        val s = min(w / cw, h / ch)
+        val dw = cw * s
+        val dh = ch * s
+        cv.drawBitmap(
+            cover, null,
+            RectF((w - dw) / 2f, (h - dh) / 2f, (w + dw) / 2f, (h + dh) / 2f), p,
+        )
+        // ③ 高斯模糊：只叠一层轻模糊，封面轮廓仍看得见
+        if (mode == "高斯模糊") {
+            val soft = blurSmall(out, 2)
+            val bp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 90 }
+            cv.drawBitmap(soft, 0f, 0f, bp)
+            soft.recycle()
         }
-        val sw = (bw * k).toInt().coerceAtLeast(2)
-        val sh = (bh * k).toInt().coerceAtLeast(2)
-        val clear = fitSmall(cover, sw, sh)
-        val blur = blurSmall(clear, 2)
-        backClear?.let { if (!it.isRecycled) it.recycle() }
-        backBlur?.let { if (!it.isRecycled) it.recycle() }
-        backClear = clear
-        backBlur = blur
-        backShader = BitmapShader(clear, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        // ④ 很淡的暗渐变
+        val shade = Paint(Paint.ANTI_ALIAS_FLAG)
+        shade.shader = LinearGradient(
+            0f, 0f, 0f, h.toFloat(),
+            Color.argb(6, 0, 0, 0), Color.argb(60, 0, 0, 0), Shader.TileMode.CLAMP,
+        )
+        cv.drawRect(0f, 0f, w.toFloat(), h.toFloat(), shade)
+        backBmp?.let { if (!it.isRecycled) it.recycle() }
+        backBmp = out
         backCoverId = id
         backW = w
         backH = h
-        return true
-    }
-
-    /**
-     * 26.11.29：封面完整显示，原始宽高比不变 —— 不拉伸、不裁切。
-     * 四周用同一张封面等比放大后的模糊版本补齐，保证铺满画面且不留黑边；
-     * 主体封面用 min 缩放居中绘制，任何输出比例下都不会变形。
-     */
-    private fun fitSmall(cover: Bitmap, sw: Int, sh: Int): Bitmap {
-        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        val cw = cover.width.toFloat()
-        val ch = cover.height.toFloat()
-        val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
-        val cv = Canvas(out)
-        // 垫底：等比放大铺满（被裁切的是模糊延伸背景，不是封面主体）
-        val sf = max(sw / cw, sh / ch)
-        val fw = cw * sf
-        val fh = ch * sf
-        cv.drawBitmap(cover, null, RectF((sw - fw) / 2f, (sh - fh) / 2f, (sw + fw) / 2f, (sh + fh) / 2f), p)
-        // 缩到 1/10 再放大回来，得到柔和的模糊延伸（不引原生库）
-        val bw = (sw / 10).coerceAtLeast(2)
-        val bh = (sh / 10).coerceAtLeast(2)
-        val small = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
-        Canvas(small).drawBitmap(out, null, RectF(0f, 0f, bw.toFloat(), bh.toFloat()), p)
-        cv.drawBitmap(small, null, RectF(0f, 0f, sw.toFloat(), sh.toFloat()), p)
-        small.recycle()
-        cv.drawColor(Color.argb(34, 0, 0, 0))
-        // 主体：contain，完整、等比、不裁切
-        val s = min(sw / cw, sh / ch)
-        val dw = cw * s
-        val dh = ch * s
-        cv.drawBitmap(cover, null, RectF((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f), p)
+        backMode = mode
         return out
-    }
-
-    private fun drawBackground(
-        cv: Canvas, cover: Bitmap?, w: Float, h: Float, scale: Float, mode: String,
-    ) {
-        if (!backdrop(cover, w.toInt(), h.toInt())) {
-            // 没有封面时也不留一整块死背景色
-            val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                shader = LinearGradient(
-                    0f, 0f, w, h,
-                    Color.rgb(26, 24, 32), Color.rgb(10, 9, 13), Shader.TileMode.CLAMP,
-                )
-            }
-            cv.drawRect(0f, 0f, w, h, gp)
-            return
-        }
-        val clear = backClear ?: return
-        val full = RectF(0f, 0f, w, h)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        // 26.11.28：所有模式都以清晰可辨的专辑封面打底，不再整屏糊成一团。
-        cv.drawBitmap(clear, null, full, p)
-        if (mode == "高斯模糊") {
-            // 高斯模糊 = 清晰封面 + 一层适度模糊，封面轮廓仍看得见。
-            val bp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 120 }
-            backBlur?.let { cv.drawBitmap(it, null, full, bp) }
-            val mist = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 255, 255, 255) }
-            cv.drawRect(0f, 0f, w, h, mist)
-        }
-        // 只留很淡的暗渐变保证文字可读，不再把封面压到看不见。
-        val shade = Paint(Paint.ANTI_ALIAS_FLAG)
-        shade.shader = LinearGradient(
-            0f, 0f, 0f, h,
-            Color.argb(6, 0, 0, 0), Color.argb(72, 0, 0, 0), Shader.TileMode.CLAMP,
-        )
-        cv.drawRect(0f, 0f, w, h, shade)
-        when (mode) {
-            "雪天" -> {
-                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 170, 205, 255) }
-                cv.drawRect(0f, 0f, w, h, t)
-            }
-        }
     }
 
     /** 小图上做水平 + 垂直盒式模糊；radius=1 即「略微模糊」。 */
@@ -500,78 +438,31 @@ private object RecFrameCache {
         return out
     }
 
-    private fun frac(x: Float): Float = x - kotlin.math.floor(x)
-    private fun hash11(n: Float): Float = frac(kotlin.math.sin(n * 127.1f) * 43758.5453f)
+    private var snow: SnowEffect? = null
+    private var snowW = 0
+    private var snowH = 0
+    private var snowLastMs = -1L
 
-    private fun drawParticles(
-        cv: Canvas, mode: String, tMs: Long, energy: Float, w: Float, h: Float, scale: Float,
-    ) {
-        // 雨季由 RainGlsl 的 WebGL 着色器逐帧生成，不再叠加任何自绘水滴/线条。
-        if (mode == "雪天") drawSnow(cv, tMs, energy, w, h, scale)
-    }
-
-    /** 柔边雪片贴图：中心白、边缘透明，避免旧版「实心白点」的塑料感。 */
-    private fun snowFlake(): Bitmap {
-        flakeBmp?.let { if (!it.isRecycled) return it }
-        val s = 64
-        val b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        p.shader = RadialGradient(
-            s / 2f, s / 2f, s / 2f,
-            Color.argb(235, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP,
-        )
-        Canvas(b).drawCircle(s / 2f, s / 2f, s / 2f, p)
-        flakeBmp = b
-        return b
-    }
-
-    /** 雪天 = AUDIO REACTIVE：能量驱动下落速度、风幅与整体亮度。 */
-    private fun drawSnow(
-        cv: Canvas, tMs: Long, energy: Float, w: Float, h: Float, scale: Float,
-    ) {
-        val flake = snowFlake()
-        val e = energy.coerceIn(0f, 1f)
-        val wind = (7f + 30f * e) * scale
-        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        val crystal = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 1f * scale
-            color = Color.argb(150, 255, 255, 255)
+    /** 雪天：把 sn.html 的 canvas 透明层贴到封面底之上，绝不整屏替换背景。 */
+    private fun drawSnowLayer(cv: Canvas, st: RecFrameState, w: Float, h: Float) {
+        var e = snow
+        if (e == null || snowW != w.toInt() || snowH != h.toInt()) {
+            e = SnowEffect(w, h)
+            snow = e
+            snowW = w.toInt()
+            snowH = h.toInt()
+            snowLastMs = -1L
         }
-        for (i in 0 until 78) {
-            val a = hash11(i * 1.7f + 1.1f)
-            val b = hash11(i * 3.3f + 9.4f)
-            val c = hash11(i * 5.9f + 21.7f)
-            val d = hash11(i * 8.1f + 4.2f)
-            val depth = 0.35f + c * 1.35f
-            val r = (1.8f + d * 4.6f) * scale * depth
-            val speed = (0.4f + b * 0.8f) * (0.55f + 1.25f * e)
-            val y = ((a * h + tMs * 0.001f * speed * 105f * scale) % (h + r * 4f)) - r * 2f
-            val x = b * w + kotlin.math.sin(tMs * 0.00072f + i * 0.9f) * wind * depth +
-                kotlin.math.sin(tMs * 0.00019f + i * 0.37f) * 7f * scale
-            p.alpha = (105 + (depth * 70).toInt() + (e * 35).toInt()).coerceAtMost(245)
-            cv.drawBitmap(flake, null, RectF(x - r, y - r, x + r, y + r), p)
-            if (depth > 1.25f && i % 7 == 0) {
-                val rr = r * 1.5f
-                cv.save()
-                cv.translate(x, y)
-                cv.rotate((tMs * 0.02f + i * 17f) % 360f)
-                for (k in 0 until 3) {
-                    val th = k * 60f * PI.toFloat() / 180f
-                    cv.drawLine(
-                        -kotlin.math.cos(th) * rr, -kotlin.math.sin(th) * rr,
-                        kotlin.math.cos(th) * rr, kotlin.math.sin(th) * rr, crystal,
-                    )
-                }
-                cv.restore()
-            }
+        val dt = if (snowLastMs < 0) 1f / 60f else (st.positionMs - snowLastMs) / 1000f
+        if (snowLastMs < 0 || dt < 0f || dt > 1.5f) {
+            // 预览固定显示时长一半、或帧回退：等价于在该时刻重新打开页面
+            e.seek(st.positionMs / 1000f)
+            e.step(1f / 60f, st.bass, st.mid, st.high)
+        } else {
+            e.step(dt, st.bass, st.mid, st.high)
         }
-        if (e > 0.55f) {
-            val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(((e - 0.55f) * 26f).toInt().coerceAtMost(14), 215, 235, 255)
-            }
-            cv.drawRect(0f, 0f, w, h, glow)
-        }
+        snowLastMs = st.positionMs
+        e.renderTo(cv)
     }
 
     /** 经典：封面与三行歌曲信息都从同一个 x 起排，字号由 infoSizeSp 单独控制。 */

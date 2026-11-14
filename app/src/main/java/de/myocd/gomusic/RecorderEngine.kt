@@ -132,6 +132,7 @@ class RecorderEngine(private val ctx: Context) {
             v
         } else null
         fun energyAt(ms: Long): Float = envelope?.at(ms) ?: 0.35f
+        fun bandsAt(ms: Long): FloatArray = envelope?.bands(ms) ?: floatArrayOf(0f, 0f, 0f)
 
         val vfmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
         vfmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
@@ -202,7 +203,11 @@ class RecorderEngine(private val ctx: Context) {
                         val posMs = i * 1000L / fps
                         renderRecFrame(
                             c,
-                            RecFrameState(job.song, job.cover, job.rows, posMs, durationMs, energyAt(posMs)),
+                            val bands = bandsAt(posMs)
+                            RecFrameState(
+                                job.song, job.cover, job.rows, posMs, durationMs,
+                                energyAt(posMs), bands[0], bands[1], bands[2],
+                            ),
                             job.cfg,
                             job.typeface,
                         )

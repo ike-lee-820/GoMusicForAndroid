@@ -4,8 +4,13 @@ import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
@@ -47,6 +52,36 @@ fun recActiveRow(st: RecFrameState, offsetMs: Long): Int {
         if (st.rows[i].timeMs >= 0 && st.rows[i].timeMs <= t) idx = i else break
     }
     return idx
+}
+
+/** 切行滚动时长：整列歌词在这段时间内滑到新位置，而不是硬切。 */
+private const val REC_LYRIC_SCROLL_MS = 420f
+
+/**
+ * 连续的「当前行位置」（浮点行索引）。
+ * 纯函数，只由时间轴决定：预览跳到任意时刻、帧重排、整帧缓存都安全。
+ * 行切换后 REC_LYRIC_SCROLL_MS 内用 easeOutCubic 从上一行滑到本行，之后稳定停在整数行。
+ */
+fun recLyricPos(st: RecFrameState, offsetMs: Long): Float {
+    val rows = st.rows
+    if (rows.isEmpty()) return 0f
+    val t = st.positionMs - offsetMs
+    if (t < 0) return -1f
+    var idx = -1
+    for (i in rows.indices) {
+        if (rows[i].timeMs >= 0 && rows[i].timeMs <= t) idx = i else break
+    }
+    if (idx < 0) return -1f
+    val since = (t - rows[idx].timeMs.coerceAtLeast(0L)).toFloat()
+    val a = (since / REC_LYRIC_SCROLL_MS).coerceIn(0f, 1f)
+    val eased = 1f - (1f - a) * (1f - a) * (1f - a)
+    return (idx - 1f + eased).coerceAtLeast(-1f)
+}
+
+/** 0–1 聚焦度：所在行 1、相邻行平滑衰减到 0，用来插值字号 / 透明度 / 粗细。 */
+private fun recFocus(d: Float): Float {
+    val x = (1f - abs(d)).coerceIn(0f, 1f)
+    return x * x * (3f - 2f * x)
 }
 
 /** 帧渲染统计：静态层预渲染 + 相同帧复用到底省了多少帧。 */
@@ -149,7 +184,7 @@ private object RecFrameCache {
     private fun frameSig(
         st: RecFrameState, c: RecorderConfig, w: Int, h: Int, tf: Typeface?,
     ): String {
-        val act = recActiveRow(st, c.lyricOffsetMs)
+        val posQ = (recLyricPos(st, c.lyricOffsetMs) * 24f).toInt()
         val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
         val bucket = (prog * w / 2f).toInt()
         // 雨季严格按参考 WebGL：uTime 按 60fps 帧计数逐帧递增，不复用整帧；
@@ -160,10 +195,12 @@ private object RecFrameCache {
                 val phase = ((st.positionMs % 1800L) * 36L / 1800L).toInt()
                 "$phase/${(st.energy * 8f).toInt().coerceIn(0, 8)}"
             }
+            // 玻璃反光缓慢流动，8 个相位一档：有动态又不会把整帧复用率打到 0
+            "液态玻璃" -> "g${((st.positionMs % 1600L) / 200L).toInt()}"
             else -> ""
         }
         return listOf(
-            act, bucket, c.style, c.bgMode, c.lyricSizeSp, c.infoSizeSp, c.showTrans,
+            posQ, bucket, c.style, c.bgMode, c.lyricSizeSp, c.infoSizeSp, c.showTrans,
             c.lyricOffsetMs, c.infoRatio, c.fontMode, c.fontWeight, c.fontPath,
             System.identityHashCode(tf), st.rows.size, st.song.title, w, h, dynamic,
         ).joinToString("|")
@@ -405,29 +442,118 @@ private object RecFrameCache {
     }
 
     /**
-     * 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的斜向光泽。
-     * 26.11.26 起删掉上下两片圆角玻璃卡片和中间色带矩形 —— 不分割。
+     * 液态玻璃：整层连续凸透镜折射 + 边缘色散 + 玻璃截面高光 / 内阴影。
+     * 26.11.27 起不再用「把模糊图放大 2.5% 再盖一层雾面」的假玻璃：
+     * - 40 个同心环带按 r² 连续放大，环带是圆环不是方块，所以整屏不分割
+     * - 只在 r > 0.52R 的边缘环带做红/蓝反向偏移色散，中心保持干净
+     * - 径向亮边 + 暗内阴影给出玻璃厚度，斜向窄高光给出镜面反射
+     * 折射源是「略微模糊的专辑封面」，整层就是一张玻璃，不切成卡片。
      */
     private fun drawGlass(cv: Canvas, w: Float, h: Float, scale: Float) {
-        val soft = backBlur ?: return
-        // 1) 整层再柔化一次并轻微放大，模拟玻璃折射
-        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 160 }
-        val d = 0.025f
-        cv.drawBitmap(soft, null, RectF(-w * d, -h * d, w * (1f + d), h * (1f + d)), p)
-        // 2) 整屏雾面
-        val mist = Paint(Paint.ANTI_ALIAS_FLAG)
-        mist.shader = LinearGradient(
-            0f, 0f, w, h,
-            Color.argb(24, 255, 255, 255), Color.argb(50, 255, 255, 255), Shader.TileMode.CLAMP,
-        )
-        cv.drawRect(0f, 0f, w, h, mist)
-        // 3) 一条贯穿全屏的斜向光泽（不是独立玻璃块）
-        val g = Paint(Paint.ANTI_ALIAS_FLAG)
-        g.shader = LinearGradient(
-            0f, h * 0.16f, w, h * 0.64f,
-            Color.argb(0, 255, 255, 255), Color.argb(32, 255, 255, 255), Shader.TileMode.CLAMP,
-        )
-        cv.drawRect(0f, 0f, w, h, g)
+        val base = backBlur ?: return
+        val cx = w / 2f
+        val cy = h / 2f
+        val rMax = kotlin.math.hypot(cx.toDouble(), cy.toDouble()).toFloat()
+
+        // 步骤一：连续径向折射
+        val rings = 40
+        val ringPath = Path()
+        for (k in rings downTo 1) {
+            val r0 = rMax * (k - 1) / rings
+            val r1 = rMax * k / rings
+            val q = (r0 + r1) / 2f / rMax
+            val zoom = 1f + 0.085f * q * q
+            ringPath.reset()
+            ringPath.addCircle(cx, cy, r1, Path.Direction.CW)
+            ringPath.addCircle(cx, cy, r0, Path.Direction.CCW)
+            ringPath.fillType = Path.FillType.EVEN_ODD
+            cv.save()
+            cv.clipPath(ringPath)
+            val dw = w * zoom
+            val dh = h * zoom
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                alpha = (232 - (q * 42f).toInt()).coerceIn(150, 255)
+            }
+            cv.drawBitmap(base, null, RectF(cx - dw / 2f, cy - dh / 2f, cx + dw / 2f, cy + dh / 2f), p)
+            cv.restore()
+        }
+
+        // 步骤二：边缘色散：红 / 蓝通道反向偏移后以 SCREEN 叠加，只在边缘环带生效
+        val edgePath = Path().apply {
+            addCircle(cx, cy, rMax * 1.02f, Path.Direction.CW)
+            addCircle(cx, cy, rMax * 0.52f, Path.Direction.CCW)
+            fillType = Path.FillType.EVEN_ODD
+        }
+        val redM = ColorMatrix(floatArrayOf(
+            1f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 0.55f, 0f,
+        ))
+        val blueM = ColorMatrix(floatArrayOf(
+            0f, 0f, 0f, 0f, 0f,
+            0f, 0f, 0f, 0f, 0f,
+            0f, 0f, 1f, 0f, 0f,
+            0f, 0f, 0f, 0.55f, 0f,
+        ))
+        val disp = 2.4f * scale
+        cv.save()
+        cv.clipPath(edgePath)
+        for (triple in listOf(
+            Triple(redM, disp, disp * 0.4f),
+            Triple(blueM, -disp, -disp * 0.4f),
+        )) {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                colorFilter = ColorMatrixColorFilter(triple.first)
+                xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+            }
+            val dx = triple.second
+            val dy = triple.third
+            cv.drawBitmap(base, null, RectF(dx, dy, w + dx, h + dy), p)
+        }
+        cv.restore()
+
+        // 步骤三：玻璃截面：中心透明、边缘亮的高光环 + 一圈暗内阴影
+        val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                cx, cy, rMax,
+                intArrayOf(
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(5, 255, 255, 255),
+                    Color.argb(62, 255, 255, 255),
+                ),
+                floatArrayOf(0f, 0.72f, 1f), Shader.TileMode.CLAMP,
+            )
+        }
+        cv.drawRect(0f, 0f, w, h, rim)
+        val inner = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                cx, cy, rMax,
+                intArrayOf(
+                    Color.argb(0, 0, 0, 0),
+                    Color.argb(0, 0, 0, 0),
+                    Color.argb(54, 0, 0, 0),
+                ),
+                floatArrayOf(0f, 0.86f, 1f), Shader.TileMode.CLAMP,
+            )
+        }
+        cv.drawRect(0f, 0f, w, h, inner)
+
+        // 步骤四：一道贯穿整屏的窄镜面高光（不是独立玻璃块）
+        val spec = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, h * 0.06f, w, h * 0.56f,
+                intArrayOf(
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(48, 255, 255, 255),
+                    Color.argb(0, 255, 255, 255),
+                ),
+                floatArrayOf(0f, 0.36f, 0.50f, 0.64f), Shader.TileMode.CLAMP,
+            )
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+        }
+        cv.drawRect(0f, 0f, w, h, spec)
     }
 
     private fun frac(x: Float): Float = x - kotlin.math.floor(x)
@@ -438,6 +564,42 @@ private object RecFrameCache {
     ) {
         // 雨季由 RainGlsl 的 WebGL 着色器逐帧生成，不再叠加任何自绘水滴/线条。
         if (mode == "雪天") drawSnow(cv, tMs, energy, w, h, scale)
+        if (mode == "液态玻璃") drawGlassFlow(cv, tMs, w, h, scale)
+    }
+
+    /** 玻璃表面缓慢横移的柔和反光：让整层玻璃有动态，但只画两个渐变，不拖慢编码。 */
+    private fun drawGlassFlow(cv: Canvas, tMs: Long, w: Float, h: Float, scale: Float) {
+        val phase = (tMs % 1600L) / 1600f
+        val cx = -w * 0.18f + phase * w * 1.36f
+        val cy = h * 0.30f
+        val r = w * 0.46f
+        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                cx, cy, r,
+                intArrayOf(
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(30, 255, 255, 255),
+                    Color.argb(0, 255, 255, 255),
+                ),
+                floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP,
+            )
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+        }
+        cv.drawRect(0f, 0f, w, h, glow)
+        val streak = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                cx - r, 0f, cx + r, h,
+                intArrayOf(
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(34, 255, 255, 255),
+                    Color.argb(0, 255, 255, 255),
+                ),
+                floatArrayOf(0f, 0.42f, 0.51f, 0.62f), Shader.TileMode.CLAMP,
+            )
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+        }
+        cv.drawRect(0f, 0f, w, h, streak)
     }
 
     /** 柔边雪片贴图：中心白、边缘透明，避免旧版「实心白点」的塑料感。 */
@@ -585,7 +747,7 @@ private object RecFrameCache {
         cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
         lx: Float, lw: Float, centerY: Float, h: Float, scale: Float,
     ) {
-        val act = recActiveRow(st, c.lyricOffsetMs)
+        val pos = recLyricPos(st, c.lyricOffsetMs)
         val base = c.lyricSizeSp.toFloat()
             .coerceIn(REC_LYRIC_MIN_SP.toFloat(), REC_LYRIC_MAX_SP.toFloat()) * scale
         val hasTrans = c.showTrans && st.rows.any { !it.trans.isNullOrBlank() }
@@ -593,16 +755,16 @@ private object RecFrameCache {
         val visible = (h * 0.78f / lineH).toInt().coerceIn(3, 7)
         val half = visible / 2
         val lp = recTextPaint(c, tf).apply { textAlign = Paint.Align.LEFT }
-        for (d in -half..half) {
-            val i = act + d
-            if (i < 0 || i >= st.rows.size) continue
+        val lo = kotlin.math.floor(pos).toInt() - half - 1
+        val hi = kotlin.math.ceil(pos).toInt() + half + 1
+        for (i in lo.coerceAtLeast(0)..hi.coerceAtMost(st.rows.lastIndex)) {
+            val d = i - pos
+            val focus = recFocus(d)
             val row = st.rows[i]
             val y = centerY + d * lineH
-            val active = d == 0
-            lp.color = if (active) Color.WHITE
-            else Color.argb((130 - abs(d) * 28).coerceAtLeast(35), 255, 255, 255)
-            lp.textSize = if (active) base * 1.12f else base * 0.86f
-            lp.isFakeBoldText = active
+            lp.color = Color.argb((72 + 183 * focus).toInt().coerceIn(0, 255), 255, 255, 255)
+            lp.textSize = base * (0.84f + 0.30f * focus)
+            lp.isFakeBoldText = focus > 0.6f
             val lines = wrapRecLines(row.text, lp, lw, 3)
             var ly = y - (lines.size - 1) * base * 0.55f
             for (l in lines) {
@@ -612,7 +774,7 @@ private object RecFrameCache {
             if (c.showTrans && !row.trans.isNullOrBlank()) {
                 lp.textSize = base * 0.56f
                 lp.isFakeBoldText = false
-                lp.color = Color.argb(if (active) 190 else 90, 210, 210, 225)
+                lp.color = Color.argb((64 + 126 * focus).toInt().coerceIn(0, 255), 210, 210, 225)
                 val tl = wrapRecLines(row.trans!!, lp, lw, 2)
                 var ty = ly + base * 0.12f
                 for (t in tl) {
@@ -630,7 +792,7 @@ private object RecFrameCache {
     ) {
         val rows = st.rows
         if (rows.isEmpty()) return
-        val act = recActiveRow(st, c.lyricOffsetMs).coerceAtLeast(0).coerceAtMost(rows.lastIndex)
+        val pos = recLyricPos(st, c.lyricOffsetMs)
         val base = c.lyricSizeSp.toFloat()
             .coerceIn(REC_LYRIC_MIN_SP.toFloat(), REC_LYRIC_MAX_SP.toFloat()) * scale
         val hasTrans = c.showTrans && rows.any { !it.trans.isNullOrBlank() }
@@ -646,21 +808,24 @@ private object RecFrameCache {
         val shiftPx = (rPx * (1f - cos(span * stepRad)) / 2f).coerceAtMost(maxShift)
         val edge = span + 1
         val lp = recTextPaint(c, tf)
-        for (i in (act - edge).coerceAtLeast(0)..(act + edge).coerceAtMost(rows.lastIndex)) {
-            val d = (i - act).toFloat()
+        val lo = kotlin.math.floor(pos).toInt() - edge - 1
+        val hi = kotlin.math.ceil(pos).toInt() + edge + 1
+        for (i in lo.coerceAtLeast(0)..hi.coerceAtMost(rows.lastIndex)) {
+            val d = i - pos
             val th = d * stepRad
             val x = -rPx * (1f - cos(th)) + shiftPx
             val y = rPx * sin(th)
             val t = (abs(d) / span.toFloat()).coerceIn(0f, 1f)
             val fade = 1f - t * t * (3f - 2f * t)
-            val isCur = i == act
-            val alpha = (255f * (0.18f + 0.82f * fade) * (if (isCur) 1f else 0.55f))
+            val focus = recFocus(d)
+            val isCur = focus > 0.75f
+            val alpha = (255f * (0.18f + 0.82f * fade) * (0.55f + 0.45f * focus))
                 .toInt().coerceIn(0, 255)
             val row = rows[i]
             cv.save()
             cv.translate(lx + x, centerY + y)
             cv.rotate(th * 180f / PI.toFloat(), 0f, rowSpan * 0.5f)
-            lp.textSize = if (isCur) base * 1.12f else base * 0.86f
+            lp.textSize = base * (0.86f + 0.26f * focus)
             lp.isFakeBoldText = isCur
             lp.color = Color.argb(alpha, 255, 255, 255)
             val lines = wrapRecLines(row.text, lp, lineWPx, 2)

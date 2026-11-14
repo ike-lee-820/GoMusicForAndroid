@@ -264,6 +264,28 @@ private object RecFrameCache {
         return b
     }
 
+    /** 判断 GL 读回结果是不是「一整块纯色 / 全黑 / 全透明」，即无效帧。 */
+    private fun isFlatColor(b: Bitmap): Boolean {
+        if (b.isRecycled || b.width < 2 || b.height < 2) return true
+        val w = b.width
+        val h = b.height
+        val pts = 5
+        var minL = 255
+        var maxL = 0
+        var visible = 0
+        for (j in 0 until pts) {
+            for (i in 0 until pts) {
+                val c = b.getPixel(i * (w - 1) / (pts - 1), j * (h - 1) / (pts - 1))
+                val a = (c ushr 24) and 0xFF
+                val l = (((c ushr 16) and 0xFF) * 3 + ((c ushr 8) and 0xFF) * 6 + (c and 0xFF)) / 10
+                if (l < minL) minL = l
+                if (l > maxL) maxL = l
+                if (a > 8) visible++
+            }
+        }
+        return visible < pts * pts / 4 || (maxL - minL) < 4
+    }
+
     /** 非雨季的背景（封面底 + 略微模糊）只生成一次；雨季由 RainGlsl 逐帧输出。 */
     private var backBmp: Bitmap? = null
     private var backKey: String? = null
@@ -286,15 +308,16 @@ private object RecFrameCache {
     ) {
         val scale = h / 1080f
         val pad = 28f * scale
-        // 雨季严格走参考 WebGL 着色器：每渲染一帧 uTime +1，每帧单独渲染。
-        // 着色器不可用时退回静态封面底，不会整屏空白。
-        val rain = if (c.bgMode == "雨季") {
-            RainGlsl.render(st.cover, w.toInt(), h.toInt())
-        } else null
-        if (rain != null && !rain.isRecycled) {
-            cv.drawBitmap(rain, 0f, 0f, null)
-        } else {
-            cv.drawBitmap(staticBackground(st, c, w.toInt(), h.toInt(), scale), 0f, 0f, null)
+        // 26.11.29：无论雨季着色器是否可用，专辑封面底始终先铺一层。
+        // 旧版把整屏交给 GL 输出；后台录制进程里 pbuffer / 纹理一旦失效，
+        // glReadPixels 读回的纯色会把封面整个盖掉，表现就是「只有一个背景色」。
+        // 现在 GL 只作为雨滴层叠加，纯色/全黑输出一律丢弃，封面永远可见。
+        cv.drawBitmap(staticBackground(st, c, w.toInt(), h.toInt(), scale), 0f, 0f, null)
+        if (c.bgMode == "雨季") {
+            val rain = RainGlsl.render(st.cover, w.toInt(), h.toInt())
+            if (rain != null && !rain.isRecycled && !isFlatColor(rain)) {
+                cv.drawBitmap(rain, 0f, 0f, null)
+            }
         }
         cv.drawBitmap(infoBitmap(st, c, tf, w.toInt(), h.toInt()), 0f, 0f, null)
         drawParticles(cv, c.bgMode, st.positionMs, st.energy, w, h, scale)
@@ -317,7 +340,7 @@ private object RecFrameCache {
 
     /**
      * 26.11.26：背景一律以「专辑封面」为底。
-     * center-crop 后降采样到约 1/6，做半径 1 的盒式模糊（略微模糊）再铺满整屏，
+     * 封面完整按比例显示（不拉伸不裁切），四周用同源模糊封面补齐，
      * 只压一层很淡的暗渐变保证文字可读。四种效果都只在这张封面底上叠加：
      * - 高斯模糊：清晰封面 + 一层轻模糊
      * - 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的光泽，不再切成上下两片卡片
@@ -343,7 +366,7 @@ private object RecFrameCache {
         // 改为最多 1/2 降采样（上限 1280），只做很轻的盒式模糊。
         val sw = (w / 2).coerceIn(480, 1280)
         val sh = (h / 2).coerceIn(480, 1280)
-        val clear = cropSmall(cover, sw, sh)
+        val clear = fitSmall(cover, sw, sh)
         val blur = blurSmall(clear, 2)
         backClear?.let { if (!it.isRecycled) it.recycle() }
         backBlur?.let { if (!it.isRecycled) it.recycle() }
@@ -356,25 +379,52 @@ private object RecFrameCache {
         return true
     }
 
-    private fun cropSmall(cover: Bitmap, sw: Int, sh: Int): Bitmap {
-        val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+    /**
+     * 26.11.29：封面完整显示，原始宽高比不变 —— 不拉伸、不裁切。
+     * 四周用同一张封面等比放大后的模糊版本补齐，保证铺满画面且不留黑边；
+     * 主体封面用 min 缩放居中绘制，任何输出比例下都不会变形。
+     */
+    private fun fitSmall(cover: Bitmap, sw: Int, sh: Int): Bitmap {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val cw = cover.width.toFloat()
         val ch = cover.height.toFloat()
-        val s = max(sw / cw, sh / ch)
+        val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(out)
+        // 垫底：等比放大铺满（被裁切的是模糊延伸背景，不是封面主体）
+        val sf = max(sw / cw, sh / ch)
+        val fw = cw * sf
+        val fh = ch * sf
+        cv.drawBitmap(cover, null, RectF((sw - fw) / 2f, (sh - fh) / 2f, (sw + fw) / 2f, (sh + fh) / 2f), p)
+        // 缩到 1/10 再放大回来，得到柔和的模糊延伸（不引原生库）
+        val bw = (sw / 10).coerceAtLeast(2)
+        val bh = (sh / 10).coerceAtLeast(2)
+        val small = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        Canvas(small).drawBitmap(out, null, RectF(0f, 0f, bw.toFloat(), bh.toFloat()), p)
+        cv.drawBitmap(small, null, RectF(0f, 0f, sw.toFloat(), sh.toFloat()), p)
+        small.recycle()
+        cv.drawColor(Color.argb(34, 0, 0, 0))
+        // 主体：contain，完整、等比、不裁切
+        val s = min(sw / cw, sh / ch)
         val dw = cw * s
         val dh = ch * s
-        val dx = (sw - dw) / 2f
-        val dy = (sh - dh) / 2f
-        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        Canvas(out).drawBitmap(cover, null, RectF(dx, dy, dx + dw, dy + dh), p)
+        cv.drawBitmap(cover, null, RectF((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f), p)
         return out
     }
 
     private fun drawBackground(
         cv: Canvas, cover: Bitmap?, w: Float, h: Float, scale: Float, mode: String,
     ) {
-        cv.drawColor(Color.rgb(12, 11, 16))
-        if (!backdrop(cover, w.toInt(), h.toInt())) return
+        if (!backdrop(cover, w.toInt(), h.toInt())) {
+            // 没有封面时也不留一整块死背景色
+            val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = LinearGradient(
+                    0f, 0f, w, h,
+                    Color.rgb(26, 24, 32), Color.rgb(10, 9, 13), Shader.TileMode.CLAMP,
+                )
+            }
+            cv.drawRect(0f, 0f, w, h, gp)
+            return
+        }
         val clear = backClear ?: return
         val full = RectF(0f, 0f, w, h)
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -449,118 +499,40 @@ private object RecFrameCache {
     }
 
     /**
-     * 液态玻璃：整层连续凸透镜折射 + 边缘色散 + 玻璃截面高光 / 内阴影。
-     * 26.11.27 起不再用「把模糊图放大 2.5% 再盖一层雾面」的假玻璃：
-     * - 40 个同心环带按 r² 连续放大，环带是圆环不是方块，所以整屏不分割
-     * - 只在 r > 0.52R 的边缘环带做红/蓝反向偏移色散，中心保持干净
-     * - 径向亮边 + 暗内阴影给出玻璃厚度，斜向窄高光给出镜面反射
-     * 折射源是「略微模糊的专辑封面」，整层就是一张玻璃，不切成卡片。
+     * 26.11.29：液态玻璃回归「背景为专辑封面，上面整个一层玻璃模糊，不分割」。
+     * 26.11.27 的 40 圈 clipPath 折射 + 红/蓝通道 SCREEN 色散，在清晰封面上
+     * 会叠出同心圆重影和彩色错位，观感就是「更错乱」。这里去掉环带与通道分离，
+     * 只保留一次整层磨砂、极淡顶部高光与连续亮边；GLSL 雨景不受影响。
      */
     private fun drawGlass(cv: Canvas, w: Float, h: Float, scale: Float) {
-        // 玻璃下面用清晰封面，折射源不再是一张 1/6 缩略图。
-        val base = backClear ?: return
+        val blur = backBlur ?: backClear ?: return
+        val glass = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 104 }
+        cv.drawBitmap(blur, null, RectF(0f, 0f, w, h), glass)
+        // 顶部极淡高光，给出玻璃厚度，不产生任何结构性条纹
+        val sheen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, 0f, 0f, h * 0.55f,
+                Color.argb(24, 255, 255, 255), Color.argb(0, 255, 255, 255),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        cv.drawRect(0f, 0f, w, h * 0.55f, sheen)
+        // 整层连续的边缘亮环
         val cx = w / 2f
         val cy = h / 2f
         val rMax = kotlin.math.hypot(cx.toDouble(), cy.toDouble()).toFloat()
-
-        // 步骤一：连续径向折射
-        val rings = 40
-        val ringPath = Path()
-        for (k in rings downTo 1) {
-            val r0 = rMax * (k - 1) / rings
-            val r1 = rMax * k / rings
-            val q = (r0 + r1) / 2f / rMax
-            val zoom = 1f + 0.032f * q * q
-            ringPath.reset()
-            ringPath.addCircle(cx, cy, r1, Path.Direction.CW)
-            ringPath.addCircle(cx, cy, r0, Path.Direction.CCW)
-            ringPath.fillType = Path.FillType.EVEN_ODD
-            cv.save()
-            cv.clipPath(ringPath)
-            val dw = w * zoom
-            val dh = h * zoom
-            // 环带之间不叠加半透明层，避免整屏发雾；玻璃感交给高光与色散。
-            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-            cv.drawBitmap(base, null, RectF(cx - dw / 2f, cy - dh / 2f, cx + dw / 2f, cy + dh / 2f), p)
-            cv.restore()
-        }
-
-        // 步骤二：边缘色散：红 / 蓝通道反向偏移后以 SCREEN 叠加，只在边缘环带生效
-        val edgePath = Path().apply {
-            addCircle(cx, cy, rMax * 1.02f, Path.Direction.CW)
-            addCircle(cx, cy, rMax * 0.52f, Path.Direction.CCW)
-            fillType = Path.FillType.EVEN_ODD
-        }
-        val redM = ColorMatrix(floatArrayOf(
-            1f, 0f, 0f, 0f, 0f,
-            0f, 0f, 0f, 0f, 0f,
-            0f, 0f, 0f, 0f, 0f,
-            0f, 0f, 0f, 0.55f, 0f,
-        ))
-        val blueM = ColorMatrix(floatArrayOf(
-            0f, 0f, 0f, 0f, 0f,
-            0f, 0f, 0f, 0f, 0f,
-            0f, 0f, 1f, 0f, 0f,
-            0f, 0f, 0f, 0.55f, 0f,
-        ))
-        val disp = 1.8f * scale
-        cv.save()
-        cv.clipPath(edgePath)
-        for (triple in listOf(
-            Triple(redM, disp, disp * 0.4f),
-            Triple(blueM, -disp, -disp * 0.4f),
-        )) {
-            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                colorFilter = ColorMatrixColorFilter(triple.first)
-                xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
-            }
-            val dx = triple.second
-            val dy = triple.third
-            cv.drawBitmap(base, null, RectF(dx, dy, w + dx, h + dy), p)
-        }
-        cv.restore()
-
-        // 步骤三：玻璃截面：中心透明、边缘亮的高光环 + 一圈暗内阴影
         val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             shader = RadialGradient(
                 cx, cy, rMax,
                 intArrayOf(
                     Color.argb(0, 255, 255, 255),
-                    Color.argb(5, 255, 255, 255),
-                    Color.argb(42, 255, 255, 255),
+                    Color.argb(0, 255, 255, 255),
+                    Color.argb(16, 255, 255, 255),
                 ),
-                floatArrayOf(0f, 0.72f, 1f), Shader.TileMode.CLAMP,
+                floatArrayOf(0f, 0.84f, 1f), Shader.TileMode.CLAMP,
             )
         }
         cv.drawRect(0f, 0f, w, h, rim)
-        val inner = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = RadialGradient(
-                cx, cy, rMax,
-                intArrayOf(
-                    Color.argb(0, 0, 0, 0),
-                    Color.argb(0, 0, 0, 0),
-                    Color.argb(32, 0, 0, 0),
-                ),
-                floatArrayOf(0f, 0.86f, 1f), Shader.TileMode.CLAMP,
-            )
-        }
-        cv.drawRect(0f, 0f, w, h, inner)
-
-        // 步骤四：一道贯穿整屏的窄镜面高光（不是独立玻璃块）
-        val spec = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = LinearGradient(
-                0f, h * 0.06f, w, h * 0.56f,
-                intArrayOf(
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(32, 255, 255, 255),
-                    Color.argb(0, 255, 255, 255),
-                ),
-                floatArrayOf(0f, 0.36f, 0.50f, 0.64f), Shader.TileMode.CLAMP,
-            )
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
-        }
-        cv.drawRect(0f, 0f, w, h, spec)
     }
 
     private fun frac(x: Float): Float = x - kotlin.math.floor(x)

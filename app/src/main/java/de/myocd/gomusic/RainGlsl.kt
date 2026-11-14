@@ -203,9 +203,12 @@ object RainGlsl {
     private var lastTime = -1f
 
     /**
-     * 按输出宽高比 center-crop（等价 curtains.js 的 dispImageMatrix 覆盖裁剪），
-     * 并把 Bitmap 垂直翻转：WebGL 纹理 t=0 在左下、Android Bitmap 第 0 行在顶部，
+     * 26.11.29：专辑封面完整置入纹理，原始宽高比不变 —— 不拉伸、不裁切。
+     * 四周用同一封面等比放大后的模糊版本补齐（与录制帧的封面底一致），
+     * 片元着色器采样 dispImage 得到的仍是「以专辑封面为背景」的雨景。
+     * 垂直翻转：WebGL 纹理 t=0 在左下、Android Bitmap 第 0 行在顶部，
      * glReadPixels 后再翻回来即可与 demo 的取样方向一致。
+     * 注意：VERTEX_SHADER / FRAGMENT_SHADER 逐字未改，只调整 CPU 侧纹理准备。
      */
     private fun coverTexture(cover: Bitmap, w: Int, h: Int): Bitmap {
         val ratio = w.toFloat() / h.coerceAtLeast(1).toFloat()
@@ -221,27 +224,30 @@ object RainGlsl {
         }
         val cw = cover.width.toFloat()
         val ch = cover.height.toFloat()
-        val src = if (cw / ch > ratio) {
-            val sw = ch * ratio
-            RectF((cw - sw) / 2f, 0f, (cw + sw) / 2f, ch)
-        } else {
-            val sh = cw / ratio
-            RectF(0f, (ch - sh) / 2f, cw, (ch + sh) / 2f)
-        }
-        val rect = Rect(
-            src.left.toInt().coerceIn(0, cover.width - 1),
-            src.top.toInt().coerceIn(0, cover.height - 1),
-            src.right.toInt().coerceIn(1, cover.width),
-            src.bottom.toInt().coerceIn(1, cover.height),
-        )
-        val cropped = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        Canvas(cropped).drawBitmap(cover, rect, RectF(0f, 0f, tw.toFloat(), th.toFloat()), p)
+        val flat = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        val fc = Canvas(flat)
+        // 垫底：等比放大铺满，再缩小放大做柔和模糊（模糊的是延伸背景，不是封面主体）
+        val sf = kotlin.math.max(tw / cw, th / ch)
+        val fw = cw * sf
+        val fh = ch * sf
+        fc.drawBitmap(cover, null, RectF((tw - fw) / 2f, (th - fh) / 2f, (tw + fw) / 2f, (th + fh) / 2f), p)
+        val bw = (tw / 10).coerceAtLeast(2)
+        val bh = (th / 10).coerceAtLeast(2)
+        val small = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        Canvas(small).drawBitmap(flat, null, RectF(0f, 0f, bw.toFloat(), bh.toFloat()), p)
+        fc.drawBitmap(small, null, RectF(0f, 0f, tw.toFloat(), th.toFloat()), p)
+        small.recycle()
+        // 主体：contain，完整等比、不裁切
+        val s = kotlin.math.min(tw / cw, th / ch)
+        val dw = cw * s
+        val dh = ch * s
+        fc.drawBitmap(cover, null, RectF((tw - dw) / 2f, (th - dh) / 2f, (tw + dw) / 2f, (th + dh) / 2f), p)
         val flip = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
-        val fc = Canvas(flip)
-        fc.scale(1f, -1f, tw / 2f, th / 2f)
-        fc.drawBitmap(cropped, 0f, 0f, null)
-        cropped.recycle()
+        val flipC = Canvas(flip)
+        flipC.scale(1f, -1f, tw / 2f, th / 2f)
+        flipC.drawBitmap(flat, 0f, 0f, null)
+        flat.recycle()
         return flip
     }
 

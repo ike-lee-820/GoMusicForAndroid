@@ -286,10 +286,10 @@ private object RecFrameCache {
     ) {
         val scale = h / 1080f
         val pad = 28f * scale
-        // 雨季严格走参考 WebGL 着色器：uTime 按 60fps 帧计数，每帧单独渲染。
+        // 雨季严格走参考 WebGL 着色器：每渲染一帧 uTime +1，每帧单独渲染。
         // 着色器不可用时退回静态封面底，不会整屏空白。
         val rain = if (c.bgMode == "雨季") {
-            RainGlsl.render(st.cover, w.toInt(), h.toInt(), st.positionMs * 60f / 1000f)
+            RainGlsl.render(st.cover, w.toInt(), h.toInt())
         } else null
         if (rain != null && !rain.isRecycled) {
             cv.drawBitmap(rain, 0f, 0f, null)
@@ -319,7 +319,7 @@ private object RecFrameCache {
      * 26.11.26：背景一律以「专辑封面」为底。
      * center-crop 后降采样到约 1/6，做半径 1 的盒式模糊（略微模糊）再铺满整屏，
      * 只压一层很淡的暗渐变保证文字可读。四种效果都只在这张封面底上叠加：
-     * - 高斯模糊：封面 + 极淡雾面
+     * - 高斯模糊：清晰封面 + 一层轻模糊
      * - 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的光泽，不再切成上下两片卡片
      * - 雨季：整屏由 Lavender-z/demo 的 WebGL 着色器逐帧输出（专辑封面作 dispImage）
      * - 雪天：柔边雪片随音频能量改变下落速度 / 风 / 亮度（sn.html 的 AUDIO REACTIVE）
@@ -332,17 +332,19 @@ private object RecFrameCache {
     private var backShader: BitmapShader? = null
     private var flakeBmp: Bitmap? = null
 
-    /** 封面底图只按「封面对象 + 输出尺寸」生成一次，两张小图合计不到 1MB。 */
+    /** 封面底图只按「封面对象 + 输出尺寸」生成一次（清晰底 + 轻模糊底）。 */
     private fun backdrop(cover: Bitmap?, w: Int, h: Int): Boolean {
         if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return false
         val id = System.identityHashCode(cover)
         if (backCoverId == id && backW == w && backH == h &&
             backClear != null && !backClear!!.isRecycled
         ) return true
-        val sw = (w / 6).coerceIn(96, 480)
-        val sh = (h / 6).coerceIn(96, 480)
+        // 26.11.28：旧版缩到 1/6 再放大 6 倍，封面细节全丢，看起来就是「太糊」。
+        // 改为最多 1/2 降采样（上限 1280），只做很轻的盒式模糊。
+        val sw = (w / 2).coerceIn(480, 1280)
+        val sh = (h / 2).coerceIn(480, 1280)
         val clear = cropSmall(cover, sw, sh)
-        val blur = blurSmall(clear, 1)
+        val blur = blurSmall(clear, 2)
         backClear?.let { if (!it.isRecycled) it.recycle() }
         backBlur?.let { if (!it.isRecycled) it.recycle() }
         backClear = clear
@@ -373,24 +375,29 @@ private object RecFrameCache {
     ) {
         cv.drawColor(Color.rgb(12, 11, 16))
         if (!backdrop(cover, w.toInt(), h.toInt())) return
-        val base = backBlur ?: return
+        val clear = backClear ?: return
+        val full = RectF(0f, 0f, w, h)
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        cv.drawBitmap(base, null, RectF(0f, 0f, w, h), p)
-        // 旧版是 110→215 的黑渐变，封面几乎看不见；这里只留很淡的一层。
+        // 26.11.28：所有模式都以清晰可辨的专辑封面打底，不再整屏糊成一团。
+        cv.drawBitmap(clear, null, full, p)
+        if (mode == "高斯模糊") {
+            // 高斯模糊 = 清晰封面 + 一层适度模糊，封面轮廓仍看得见。
+            val bp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 120 }
+            backBlur?.let { cv.drawBitmap(it, null, full, bp) }
+            val mist = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 255, 255, 255) }
+            cv.drawRect(0f, 0f, w, h, mist)
+        }
+        // 只留很淡的暗渐变保证文字可读，不再把封面压到看不见。
         val shade = Paint(Paint.ANTI_ALIAS_FLAG)
         shade.shader = LinearGradient(
             0f, 0f, 0f, h,
-            Color.argb(38, 0, 0, 0), Color.argb(135, 0, 0, 0), Shader.TileMode.CLAMP,
+            Color.argb(6, 0, 0, 0), Color.argb(72, 0, 0, 0), Shader.TileMode.CLAMP,
         )
         cv.drawRect(0f, 0f, w, h, shade)
         when (mode) {
-            "高斯模糊" -> {
-                val mist = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(16, 255, 255, 255) }
-                cv.drawRect(0f, 0f, w, h, mist)
-            }
             "液态玻璃" -> drawGlass(cv, w, h, scale)
             "雪天" -> {
-                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(14, 170, 205, 255) }
+                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 170, 205, 255) }
                 cv.drawRect(0f, 0f, w, h, t)
             }
         }
@@ -450,7 +457,8 @@ private object RecFrameCache {
      * 折射源是「略微模糊的专辑封面」，整层就是一张玻璃，不切成卡片。
      */
     private fun drawGlass(cv: Canvas, w: Float, h: Float, scale: Float) {
-        val base = backBlur ?: return
+        // 玻璃下面用清晰封面，折射源不再是一张 1/6 缩略图。
+        val base = backClear ?: return
         val cx = w / 2f
         val cy = h / 2f
         val rMax = kotlin.math.hypot(cx.toDouble(), cy.toDouble()).toFloat()
@@ -462,7 +470,7 @@ private object RecFrameCache {
             val r0 = rMax * (k - 1) / rings
             val r1 = rMax * k / rings
             val q = (r0 + r1) / 2f / rMax
-            val zoom = 1f + 0.085f * q * q
+            val zoom = 1f + 0.032f * q * q
             ringPath.reset()
             ringPath.addCircle(cx, cy, r1, Path.Direction.CW)
             ringPath.addCircle(cx, cy, r0, Path.Direction.CCW)
@@ -471,9 +479,8 @@ private object RecFrameCache {
             cv.clipPath(ringPath)
             val dw = w * zoom
             val dh = h * zoom
-            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                alpha = (232 - (q * 42f).toInt()).coerceIn(150, 255)
-            }
+            // 环带之间不叠加半透明层，避免整屏发雾；玻璃感交给高光与色散。
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
             cv.drawBitmap(base, null, RectF(cx - dw / 2f, cy - dh / 2f, cx + dw / 2f, cy + dh / 2f), p)
             cv.restore()
         }
@@ -496,7 +503,7 @@ private object RecFrameCache {
             0f, 0f, 1f, 0f, 0f,
             0f, 0f, 0f, 0.55f, 0f,
         ))
-        val disp = 2.4f * scale
+        val disp = 1.8f * scale
         cv.save()
         cv.clipPath(edgePath)
         for (triple in listOf(
@@ -520,7 +527,7 @@ private object RecFrameCache {
                 intArrayOf(
                     Color.argb(0, 255, 255, 255),
                     Color.argb(5, 255, 255, 255),
-                    Color.argb(62, 255, 255, 255),
+                    Color.argb(42, 255, 255, 255),
                 ),
                 floatArrayOf(0f, 0.72f, 1f), Shader.TileMode.CLAMP,
             )
@@ -532,7 +539,7 @@ private object RecFrameCache {
                 intArrayOf(
                     Color.argb(0, 0, 0, 0),
                     Color.argb(0, 0, 0, 0),
-                    Color.argb(54, 0, 0, 0),
+                    Color.argb(32, 0, 0, 0),
                 ),
                 floatArrayOf(0f, 0.86f, 1f), Shader.TileMode.CLAMP,
             )
@@ -546,7 +553,7 @@ private object RecFrameCache {
                 intArrayOf(
                     Color.argb(0, 255, 255, 255),
                     Color.argb(0, 255, 255, 255),
-                    Color.argb(48, 255, 255, 255),
+                    Color.argb(32, 255, 255, 255),
                     Color.argb(0, 255, 255, 255),
                 ),
                 floatArrayOf(0f, 0.36f, 0.50f, 0.64f), Shader.TileMode.CLAMP,

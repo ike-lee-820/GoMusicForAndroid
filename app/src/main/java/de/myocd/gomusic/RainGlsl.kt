@@ -1,7 +1,11 @@
 package de.myocd.gomusic
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
@@ -26,6 +30,10 @@ import java.nio.ShortBuffer
  * 这里用 EGL14 pbuffer + GLES20 做同一件事：40×40 网格、每帧 uTime 加 1，
  * dispImage 绑成专辑封面（demo 里是 unsplash 图），uMouse 固定 0。
  * 渲染结果 glReadPixels 成 Bitmap，交给录制帧画布。
+ *
+ * 26.11.28：浏览器桌面 GPU 把 mediump 当 fp32 用，手机 GPU 的 mediump 是 fp16，
+ * N12 噪声与 sin 采样在 fp16 下会退化成条带花屏。片元着色器改用 highp
+ * （GL_FRAGMENT_PRECISION_HIGH 保护），公式、常量、层数、采样数全部不变。
  */
 object RainGlsl {
 
@@ -60,7 +68,11 @@ object RainGlsl {
 
     private val FRAGMENT_SHADER = """
       #ifdef GL_ES
+      #ifdef GL_FRAGMENT_PRECISION_HIGH
+      precision highp float;
+      #else
       precision mediump float;
+      #endif
       #endif
       
       #define PI2 6.28318530718
@@ -182,15 +194,60 @@ object RainGlsl {
     private var ibo = 0
     private var tex = 0
     private var coverId = 0
+    private var coverKey = ""
+    private var frame = 0f
     private var idxCount = 0
     private var bytesBuf: ByteBuffer? = null
     private var pxBuf: IntArray? = null
     private var outBmp: Bitmap? = null
     private var lastTime = -1f
 
-    /** 每帧调用一次；uTime 由调用方按 60fps 帧计数传入，与 demo 的 time.value++ 一致。 */
+    /**
+     * 按输出宽高比 center-crop（等价 curtains.js 的 dispImageMatrix 覆盖裁剪），
+     * 并把 Bitmap 垂直翻转：WebGL 纹理 t=0 在左下、Android Bitmap 第 0 行在顶部，
+     * glReadPixels 后再翻回来即可与 demo 的取样方向一致。
+     */
+    private fun coverTexture(cover: Bitmap, w: Int, h: Int): Bitmap {
+        val ratio = w.toFloat() / h.coerceAtLeast(1).toFloat()
+        val maxSide = 1024
+        val tw: Int
+        val th: Int
+        if (ratio >= 1f) {
+            tw = maxSide
+            th = (maxSide / ratio).toInt().coerceAtLeast(1)
+        } else {
+            th = maxSide
+            tw = (maxSide * ratio).toInt().coerceAtLeast(1)
+        }
+        val cw = cover.width.toFloat()
+        val ch = cover.height.toFloat()
+        val src = if (cw / ch > ratio) {
+            val sw = ch * ratio
+            RectF((cw - sw) / 2f, 0f, (cw + sw) / 2f, ch)
+        } else {
+            val sh = cw / ratio
+            RectF(0f, (ch - sh) / 2f, cw, (ch + sh) / 2f)
+        }
+        val rect = Rect(
+            src.left.toInt().coerceIn(0, cover.width - 1),
+            src.top.toInt().coerceIn(0, cover.height - 1),
+            src.right.toInt().coerceIn(1, cover.width),
+            src.bottom.toInt().coerceIn(1, cover.height),
+        )
+        val cropped = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        Canvas(cropped).drawBitmap(cover, rect, RectF(0f, 0f, tw.toFloat(), th.toFloat()), p)
+        val flip = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+        val fc = Canvas(flip)
+        fc.scale(1f, -1f, tw / 2f, th / 2f)
+        fc.drawBitmap(cropped, 0f, 0f, null)
+        cropped.recycle()
+        return flip
+    }
+
+    /** 每帧调用一次；uTime 在内部每渲染一帧 +1，与 demo 的 time.value++ 完全一致。 */
     @Synchronized
-    fun render(cover: Bitmap?, w: Int, h: Int, uTime: Float): Bitmap? {
+    fun render(cover: Bitmap?, w: Int, h: Int): Bitmap? {
         if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return null
         if (!ensure(w, h)) return null
         val d = display ?: return null
@@ -198,18 +255,15 @@ object RainGlsl {
         val c = context ?: return null
         if (!EGL14.eglMakeCurrent(d, s, s, c)) return null
 
-        val cid = System.identityHashCode(cover)
-        if (cid != coverId) {
-            // WebGL 纹理坐标原点在左下；上传前把封面垂直翻转，读取后再翻回来，
-            // 使最终 Bitmap 与 demo 的取样方向一致（不改变 shader 源码）。
-            val flip = Bitmap.createBitmap(
-                cover, 0, 0, cover.width, cover.height,
-                Matrix().apply { preScale(1f, -1f) }, false,
-            )
+        val key = "${System.identityHashCode(cover)}:$w:$h"
+        if (key != coverKey) {
+            // curtains.js 的 dispImageMatrix 会按平面比例 cover 裁剪图片；
+            // 这里在 CPU 侧完成同一件事，GLSL 与 demo 一字不改。
+            val texBmp = coverTexture(cover, w, h)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
-            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, flip, 0)
-            flip.recycle()
-            coverId = cid
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, texBmp, 0)
+            texBmp.recycle()
+            coverKey = key
         }
 
         GLES20.glViewport(0, 0, w, h)
@@ -232,7 +286,10 @@ object RainGlsl {
         mat4("dispImageMatrix")
 
         val lt = GLES20.glGetUniformLocation(program, "uTime")
-        if (lt >= 0) GLES20.glUniform1f(lt, uTime)
+        if (lt >= 0) {
+            frame += 1f // demo: plane.onRender(() => plane.uniforms.time.value++)
+            GLES20.glUniform1f(lt, frame)
+        }
         val lr = GLES20.glGetUniformLocation(program, "uReso")
         if (lr >= 0) GLES20.glUniform2f(lr, w.toFloat(), h.toFloat())
         val lm = GLES20.glGetUniformLocation(program, "uMouse")
@@ -249,7 +306,7 @@ object RainGlsl {
         if (lb >= 0) GLES20.glUniform1i(lb, 1)
 
         GLES20.glDrawElements(GLES20.GL_TRIANGLES, idxCount, GLES20.GL_UNSIGNED_SHORT, 0)
-        lastTime = uTime
+        lastTime = frame
 
         val size = w * h * 4
         var bb = bytesBuf
@@ -407,6 +464,7 @@ object RainGlsl {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         coverId = 0
+        coverKey = ""
         return true
     }
 
@@ -430,6 +488,7 @@ object RainGlsl {
         ibo = 0
         tex = 0
         coverId = 0
+        coverKey = ""
         lastTime = -1f
     }
 }

@@ -59,7 +59,10 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         // Android 9 及以下写公共下载目录需要存储权限
         if (Build.VERSION.SDK_INT < 29) storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        if (savedInstanceState == null) vm.handleLink(intent?.data)
+        if (savedInstanceState == null) {
+            vm.handleLink(intent?.data)
+            intent?.let { vm.playExternalAudio(it) }
+        }
         setContent {
             // 「仅通话暂停」需要电话状态权限，由设置面板触发
             LaunchedEffect(vm.needPhonePerm) {
@@ -116,6 +119,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         vm.handleLink(intent.data)
+        vm.playExternalAudio(intent)
     }
 }
 

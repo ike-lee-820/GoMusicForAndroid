@@ -1150,6 +1150,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 网易云歌曲：点封面进专辑页（走网易云，不查本地库） */
     fun openNmSongAlbum(s: Song) {
+        // 26.11.34：本地文件只按文件里的 Meta 展示，点封面不跳页、不联网查询
+        if (s.source == SRC_DEVICE || LocalAudio.isDevice(s.ssid)) return
         if (s.source != SRC_NETEASE) {
             stack.add(Screen.Album(s.artist, s.album))
             return
@@ -1180,6 +1182,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 网易云歌曲：点歌手进歌手页（走网易云，不查本地库） */
     fun openNmSongArtist(s: Song) {
+        // 26.11.34：本地文件只按文件里的 Meta 展示，点歌手不跳页、不联网查询
+        if (s.source == SRC_DEVICE || LocalAudio.isDevice(s.ssid)) return
         if (s.source != SRC_NETEASE) {
             stack.add(Screen.Artist(s.artist))
             return
@@ -1916,24 +1920,33 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 只靠 prefs 的话，replaceMediaItem 拿到的是同一个 uri，
      * ExoPlayer 认为没变化，于是「音质切了，音源还是原来那份」。
      */
-    private fun toItem(s: Song): MediaItem = MediaItem.Builder()
-        .setMediaId(s.ssid)
-        .setUri("gomusic:///${s.ssid}?q=${quality}&nl=${prefs.nmLevel}")
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(s.title)
-                .setArtist(s.artist)
-                .setAlbumTitle(s.album)
-                .setArtworkUri(artworkUri(s.coverUrl))
-                .build()
-        )
-        .build()
+    private fun toItem(s: Song): MediaItem {
+        // 26.11.34：系统送进来的本地音频直接用文件 Uri，不走占位地址，
+        // 也就不会去服务端取地址 / 探测音质。其余歌曲仍按音质参数解析。
+        val uri = s.audioUri?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            ?: Uri.parse("gomusic:///${s.ssid}?q=${quality}&nl=${prefs.nmLevel}")
+        return MediaItem.Builder()
+            .setMediaId(s.ssid)
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(s.title)
+                    .setArtist(s.artist)
+                    .setAlbumTitle(s.album)
+                    .setArtworkUri(artworkUri(s.coverUrl))
+                    .build()
+            )
+            .build()
+    }
 
     fun playSongs(list: List<Song>, index: Int) {
         if (list.isEmpty()) return
         // 先记下整份队列：导入歌单里的歌可能不在主曲库，
         // 播放器与「点封面/歌手」都要以这一份为准
         queueSongs = list.associateBy { it.ssid }
+        // 26.11.34：本地音乐也要进快照，否则播放历史里查不到这首歌
+        rememberSongs(list)
         keepNetease(list)
         val c = controller
         if (c == null) {
@@ -2331,6 +2344,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             prefs.playCounts = m
             pushHistory(id) // 本站与网易云统一记录
             rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
+        }
+        // 26.11.34：设备本地音频 —— 信息全在文件里，绝不发网络请求
+        if (LocalAudio.isDevice(id)) {
+            qualities = emptyList()
+            qualitiesAbsent = emptySet()
+            updateCover(snapshots[id]?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
+            lyricJob = viewModelScope.launch {
+                val t = try {
+                    withContext(Dispatchers.IO) {
+                        LocalAudio.lyricOf(app, id).ifBlank { localLyrics(id) }
+                    }
+                } catch (e: Exception) { "" }
+                if (curSsid == id) {
+                    lyric = lyricLines(t)
+                    lyricLoading = false
+                    lyricSsid = id
+                }
+                if (lyricLoadingFor == id) lyricLoadingFor = null
+            }
+            return
         }
         updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
         // 缓存里没有译文时，从随下载保存的文件里调回来（离线播放尤其需要）
@@ -3054,6 +3087,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun albumLink(artist: String, album: String) =
         "$BASE/?p=alb&ar=${Uri.encode(artist)}&al=${Uri.encode(album)}"
     fun artistLink(artist: String) = "$BASE/?p=art&ar=${Uri.encode(artist)}"
+
+    /**
+     * 26.11.34：系统「打开方式 / 分享」送来的本地音频。
+     * 读文件 Meta 后直接播放，并记入播放历史；全程不发网络请求。
+     */
+    fun playExternalAudio(intent: Intent) {
+        val uris = LocalAudio.urisFrom(intent)
+        if (uris.isEmpty()) return
+        val songs = uris.mapNotNull { u ->
+            LocalAudio.takeReadable(app, u)
+            LocalAudio.songOf(app, u)
+        }
+        if (songs.isEmpty()) {
+            toast("无法读取这个音频文件")
+            return
+        }
+        rememberSongs(songs)
+        playSongs(songs, 0)
+        toast("正在播放本地音乐：${songs[0].title}")
+    }
 
     fun handleLink(u: Uri?) {
         if (u == null) return

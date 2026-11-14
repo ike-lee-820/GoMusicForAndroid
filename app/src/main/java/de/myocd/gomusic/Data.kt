@@ -49,6 +49,8 @@ data class Song(
      * 本站曲库没有 MV 数据源，默认 0。
      */
     val mvId: Long = 0,
+    /** 26.11.34：设备本地音频文件 Uri（source = device 时有效），播放器直接用它播放 */
+    val audioUri: String? = null,
 )
 
 @Serializable

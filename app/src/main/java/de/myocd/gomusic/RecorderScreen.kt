@@ -307,7 +307,7 @@ fun RecorderScreen(vm: MainViewModel) {
                     { persist(cfg.copy(infoRatio = (cfg.infoRatio - 0.05f).coerceIn(0.18f, 0.60f))) },
                     { persist(cfg.copy(infoRatio = (cfg.infoRatio + 0.05f).coerceIn(0.18f, 0.60f))) })
                 RecChips("背景", cfg.bgMode, REC_BG_MODES) { persist(cfg.copy(bgMode = it)) }
-                Txt("背景只用一张专辑封面：原始尺寸居中、不缩放不拉伸，整层轻微模糊；雨季、雪天只叠加在背景之上", 11, color = go.muted)
+                Txt("背景只用一张专辑封面：等比放大铺满（只裁切边缘、不拉伸不变形），整层轻微模糊；雨季、雪天只叠加在背景之上", 11, color = go.muted)
                 RecStep("信息字号", "${cfg.infoSizeSp} sp（$REC_INFO_MIN_SP–$REC_INFO_MAX_SP）",
                     { persist(cfg.copy(infoSizeSp = (cfg.infoSizeSp - 2).coerceIn(REC_INFO_MIN_SP, REC_INFO_MAX_SP))) },
                     { persist(cfg.copy(infoSizeSp = (cfg.infoSizeSp + 2).coerceIn(REC_INFO_MIN_SP, REC_INFO_MAX_SP))) })

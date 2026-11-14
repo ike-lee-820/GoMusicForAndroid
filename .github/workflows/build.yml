@@ -26,6 +26,8 @@ jobs:
           # 思源宋体按 30MB 分片存在仓库里，构建前 cat 合并成完整字体。
           # 少了这一步 R.font.song 就不存在，Fonts.kt 会编译失败
           cat app/fontchunks/song.ttf.00 app/fontchunks/song.ttf.01 > app/src/main/res/font/song.ttf
+          # 26.11.33：内置可变思源黑体（同样分片存放，构建前合并）
+          cat app/fontchunks/hei.otf.00 app/fontchunks/hei.otf.01 > app/src/main/res/font/hei.ttf
           ls -l app/src/main/res/font/
       - name: Build debug APK
         id: b

@@ -36,8 +36,8 @@ val REC_QUALITIES = listOf(
     "jyeffect", "dolby", "vivid", "jymaster", "sky",
 )
 
-/** 录制字体来源：系统默认 / 内置可变思源宋体 / 用户导入 */
-val REC_FONT_MODES = listOf("系统默认", "思源宋体", "导入")
+/** 录制字体来源：系统默认 / 内置可变思源宋体 / 内置可变思源黑体 / 用户导入 */
+val REC_FONT_MODES = listOf("系统默认", "思源宋体", "思源黑体", "导入")
 
 /** 背景效果：三种都以专辑封面为底；雨季玻璃雨滴折射、雪天按 sn.html 原实现随音频能量飘落 */
 val REC_BG_MODES = listOf("高斯模糊", "雨季", "雪天")

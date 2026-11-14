@@ -152,6 +152,7 @@ object RecorderFlow {
     /** 录制 Canvas 用的 Typeface；字重轴由 RecorderRenderer 统一写到 Paint 上 */
     fun recTypeface(ctx: Context, c: RecorderConfig): Typeface = when (c.fontMode) {
         "思源宋体" -> runCatching { ctx.resources.getFont(R.font.song) }.getOrDefault(Typeface.DEFAULT)
+        "思源黑体" -> runCatching { ctx.resources.getFont(R.font.hei) }.getOrDefault(Typeface.DEFAULT)
         "导入" -> if (c.fontPath.isNotBlank())
             runCatching { Typeface.createFromFile(c.fontPath) }.getOrDefault(Typeface.DEFAULT)
         else Typeface.DEFAULT

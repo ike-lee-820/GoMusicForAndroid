@@ -199,7 +199,8 @@ private object RecFrameCache {
         return listOf(
             posQ, bucket, c.style, c.bgMode, c.lyricSizeSp, c.infoSizeSp, c.showTrans,
             c.lyricOffsetMs, c.infoRatio, c.fontMode, c.fontWeight, c.fontPath,
-            System.identityHashCode(tf), st.rows.size, st.song.title, w, h, dynamic,
+            System.identityHashCode(tf), System.identityHashCode(st.cover),
+            st.rows.size, st.song.title, w, h, dynamic,
         ).joinToString("|")
     }
 
@@ -299,6 +300,25 @@ private object RecFrameCache {
         return variance < 9f && diff / n > 18f
     }
 
+
+    /** GL 输出整屏灰板 / 纯色覆盖：与封面底平均颜色明显不符时丢弃，绝不盖住背景。 */
+    private fun isGrayPlate(gl: Bitmap, base: Bitmap): Boolean {
+        var dr = 0f; var dg = 0f; var db = 0f; var n = 0
+        for (j in 0 until 5) {
+            for (i in 0 until 5) {
+                val x = i * (gl.width - 1) / 4
+                val y = j * (gl.height - 1) / 4
+                val a = gl.getPixel(x, y)
+                val b = base.getPixel(min(x, base.width - 1), min(y, base.height - 1))
+                dr += abs(((a ushr 16) and 0xFF) - ((b ushr 16) and 0xFF))
+                dg += abs(((a ushr 8) and 0xFF) - ((b ushr 8) and 0xFF))
+                db += abs((a and 0xFF) - (b and 0xFF))
+                n++
+            }
+        }
+        return (dr + dg + db) / (3f * n) > 58f
+    }
+
     private fun drawFull(
         cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?, w: Float, h: Float,
     ) {
@@ -319,7 +339,7 @@ private object RecFrameCache {
             // 把已经按比例做好的封面底作为 dispImage 上传，GL 输出即该模式背景。
             // 读回空帧时保留封面底，绝不在上面整屏盖一块纯色。
             val gl = RainGlsl.render(base, w.toInt(), h.toInt())
-            val useGl = gl != null && !gl.isRecycled && !isBlankGl(gl) && !isBadGl(gl, base)
+            val useGl = gl != null && !gl.isRecycled && !isBlankGl(gl) && !isBadGl(gl, base) && !isGrayPlate(gl, base)
             val bg: Bitmap = if (useGl) gl!! else base
             cv.drawBitmap(bg, 0f, 0f, null)
         } else {
@@ -351,36 +371,11 @@ private object RecFrameCache {
     private var backBmp: Bitmap? = null
 
     /**
-     * 26.11.32：背景只有一张专辑封面。
-     * 封面按原始像素 1:1 居中绘制（不缩放、不裁切、不拉伸），
-     * 四周用从封面取出的同色填充，然后对整帧做一次轻微盒式模糊。
-     * 全程只有一次 drawBitmap：没有放大版、没有 contain 缩放版、
-     * 没有整屏缩略糊层、没有第二张图。
+     * 26.11.33：背景只有一张专辑封面。
+     * 以同一个缩放系数把封面等比放大到铺满输出（center-crop），只裁掉边缘，
+     * 不拉伸、不变形、不留纯色边；整帧只做一次轻微盒式模糊。
+     * 全程只有一次 drawBitmap：没有第二张图、没有缩略糊层、没有 contain 小图。
      */
-    private fun dominantColor(b: Bitmap): Int {
-        val step = max(1, min(b.width, b.height) / 12)
-        var r = 0L; var g = 0L; var bl = 0L; var n = 0
-        var y = step / 2
-        while (y < b.height) {
-            var x = step / 2
-            while (x < b.width) {
-                val c = b.getPixel(x, y)
-                r += (c ushr 16) and 0xFF
-                g += (c ushr 8) and 0xFF
-                bl += c and 0xFF
-                n++
-                x += step
-            }
-            y += step
-        }
-        if (n == 0) return Color.rgb(24, 22, 30)
-        return Color.rgb(
-            (r / n * 0.62).toInt().coerceIn(0, 255),
-            (g / n * 0.62).toInt().coerceIn(0, 255),
-            (bl / n * 0.62).toInt().coerceIn(0, 255),
-        )
-    }
-
     private fun makeBackdrop(cover: Bitmap?, w: Int, h: Int, mode: String): Bitmap? {
         if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return null
         val id = System.identityHashCode(cover)
@@ -389,10 +384,15 @@ private object RecFrameCache {
         ) return backBmp
         val flat = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val cv = Canvas(flat)
-        cv.drawColor(dominantColor(cover))
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        // 唯一一次 drawBitmap：原始尺寸、原始比例、不做任何 scale
-        cv.drawBitmap(cover, (w - cover.width) / 2f, (h - cover.height) / 2f, p)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val scale = max(w.toFloat() / cover.width, h.toFloat() / cover.height)
+        val dw = cover.width * scale
+        val dh = cover.height * scale
+        // 唯一一次 drawBitmap：等比缩放，长边/短边同系数，超出的部分裁掉
+        cv.drawBitmap(
+            cover, null,
+            RectF((w - dw) / 2f, (h - dh) / 2f, (w + dw) / 2f, (h + dh) / 2f), p,
+        )
         val out = blurSmall(flat, 3)
         flat.recycle()
         // 极淡暗渐变只保证文字可读，不引入任何第二张图
@@ -483,44 +483,60 @@ private object RecFrameCache {
         e.renderTo(cv)
     }
 
-    /** 经典：只画三行歌曲信息，不再重复贴一张小封面。 */
     private fun drawClassicInfo(
         cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
         w: Float, h: Float, pad: Float, scale: Float,
     ) {
         val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
+        val coverSize = min(infoW - pad * 2f, h * 0.42f).coerceAtLeast(40f)
+        val cx = pad
+        val cy = h * 0.18f
+        val cp = Paint(Paint.ANTI_ALIAS_FLAG)
+        val coverBmp = st.cover
+        if (coverBmp != null && !coverBmp.isRecycled) {
+            cv.drawBitmap(coverBmp, null, RectF(cx, cy, cx + coverSize, cy + coverSize), cp)
+        } else {
+            cp.color = Color.rgb(40, 38, 48)
+            cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
+        }
         val base = c.infoSizeSp.toFloat().coerceIn(REC_INFO_MIN_SP.toFloat(), REC_INFO_MAX_SP.toFloat()) * scale
         val maxTextW = infoW - pad * 2f
-        val top = h * 0.34f
         val tp = recTextPaint(c, tf).apply { textAlign = Paint.Align.LEFT }
         tp.color = Color.WHITE
         tp.isFakeBoldText = true
         tp.textSize = base * 1.35f
-        cv.drawText(ellipsizeRec(st.song.title, tp, maxTextW), pad, top, tp)
+        cv.drawText(ellipsizeRec(st.song.title, tp, maxTextW), pad, cy + coverSize + base * 1.9f, tp)
         tp.isFakeBoldText = false
         tp.textSize = base * 0.95f
         tp.color = Color.argb(205, 255, 255, 255)
-        cv.drawText(ellipsizeRec(st.song.artist, tp, maxTextW), pad, top + base * 1.6f, tp)
+        cv.drawText(ellipsizeRec(st.song.artist, tp, maxTextW), pad, cy + coverSize + base * 3.1f, tp)
         tp.textSize = base * 0.88f
-        cv.drawText(ellipsizeRec(st.song.album, tp, maxTextW), pad, top + base * 2.7f, tp)
+        cv.drawText(ellipsizeRec(st.song.album, tp, maxTextW), pad, cy + coverSize + base * 4.1f, tp)
     }
 
-    /**
-     * 圆盘 = 横屏播放器歌词模式：左侧只画三行歌曲信息，不再重复贴一张小封面；
-     * 右侧圆弧歌词几何保持不变。
-     */
     private fun drawDiscInfo(
         cv: Canvas, st: RecFrameState, c: RecorderConfig, tf: Typeface?,
         w: Float, h: Float, pad: Float, scale: Float,
     ) {
         val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
+        val coverSize = min(infoW * 0.66f, h * 0.56f).coerceAtLeast(40f)
+        val cx = pad
+        val cy = (h - coverSize) / 2f - h * 0.08f
+        val cp = Paint(Paint.ANTI_ALIAS_FLAG)
+        val coverBmp = st.cover
+        if (coverBmp != null && !coverBmp.isRecycled) {
+            cv.drawBitmap(coverBmp, null, RectF(cx, cy, cx + coverSize, cy + coverSize), cp)
+        } else {
+            cp.color = Color.rgb(40, 38, 48)
+            cv.drawRoundRect(RectF(cx, cy, cx + coverSize, cy + coverSize), 16f * scale, 16f * scale, cp)
+        }
         val base = c.infoSizeSp.toFloat().coerceIn(REC_INFO_MIN_SP.toFloat(), REC_INFO_MAX_SP.toFloat()) * scale
         val maxTextW = infoW - pad * 2f
         val tp = recTextPaint(c, tf).apply {
             color = Color.WHITE
             textAlign = Paint.Align.LEFT
         }
-        var ty = h * 0.40f
+        var ty = cy + coverSize + base * 1.35f
         tp.textSize = base * 0.86f
         tp.color = Color.argb(185, 255, 255, 255)
         cv.drawText(ellipsizeRec(st.song.artist, tp, maxTextW), pad, ty, tp)

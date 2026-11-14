@@ -201,9 +201,9 @@ class RecorderEngine(private val ctx: Context) {
                     var ok = false
                     try {
                         val posMs = i * 1000L / fps
+                        val bands = bandsAt(posMs)
                         renderRecFrame(
                             c,
-                            val bands = bandsAt(posMs)
                             RecFrameState(
                                 job.song, job.cover, job.rows, posMs, durationMs,
                                 energyAt(posMs), bands[0], bands[1], bands[2],

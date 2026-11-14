@@ -195,8 +195,6 @@ private object RecFrameCache {
                 val phase = ((st.positionMs % 1800L) * 36L / 1800L).toInt()
                 "$phase/${(st.energy * 8f).toInt().coerceIn(0, 8)}"
             }
-            // 玻璃反光缓慢流动，8 个相位一档：有动态又不会把整帧复用率打到 0
-            "液态玻璃" -> "g${((st.positionMs % 1600L) / 200L).toInt()}"
             else -> ""
         }
         return listOf(
@@ -308,10 +306,9 @@ private object RecFrameCache {
     ) {
         val scale = h / 1080f
         val pad = 28f * scale
-        // 26.11.29：无论雨季着色器是否可用，专辑封面底始终先铺一层。
-        // 旧版把整屏交给 GL 输出；后台录制进程里 pbuffer / 纹理一旦失效，
-        // glReadPixels 读回的纯色会把封面整个盖掉，表现就是「只有一个背景色」。
-        // 现在 GL 只作为雨滴层叠加，纯色/全黑输出一律丢弃，封面永远可见。
+        // 26.11.30：先铺按比例正确绘制的专辑封面底；雨季着色器输出有效时
+        // 整屏覆盖（参考实现的最终画面），GL 读回空帧/纯色时保留封面底，
+        // 不再出现「只有一块被拉伸的背景色」。
         cv.drawBitmap(staticBackground(st, c, w.toInt(), h.toInt(), scale), 0f, 0f, null)
         if (c.bgMode == "雨季") {
             val rain = RainGlsl.render(st.cover, w.toInt(), h.toInt())
@@ -343,7 +340,6 @@ private object RecFrameCache {
      * 封面完整按比例显示（不拉伸不裁切），四周用同源模糊封面补齐，
      * 只压一层很淡的暗渐变保证文字可读。四种效果都只在这张封面底上叠加：
      * - 高斯模糊：清晰封面 + 一层轻模糊
-     * - 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的光泽，不再切成上下两片卡片
      * - 雨季：整屏由 Lavender-z/demo 的 WebGL 着色器逐帧输出（专辑封面作 dispImage）
      * - 雪天：柔边雪片随音频能量改变下落速度 / 风 / 亮度（sn.html 的 AUDIO REACTIVE）
      */
@@ -362,10 +358,17 @@ private object RecFrameCache {
         if (backCoverId == id && backW == w && backH == h &&
             backClear != null && !backClear!!.isRecycled
         ) return true
-        // 26.11.28：旧版缩到 1/6 再放大 6 倍，封面细节全丢，看起来就是「太糊」。
-        // 改为最多 1/2 降采样（上限 1280），只做很轻的盒式模糊。
-        val sw = (w / 2).coerceIn(480, 1280)
-        val sh = (h / 2).coerceIn(480, 1280)
+        // 26.11.30：宽和高必须乘同一个系数。旧版分别 coerceIn(480, 1280)，
+        // 小尺寸预览下 16:9 会被压成 1:1，再铺满整帧时封面被横向拉伸。
+        val bw = w / 2f
+        val bh = h / 2f
+        val k = when {
+            min(bw, bh) < 480f -> 480f / min(bw, bh)
+            max(bw, bh) > 1280f -> 1280f / max(bw, bh)
+            else -> 1f
+        }
+        val sw = (bw * k).toInt().coerceAtLeast(2)
+        val sh = (bh * k).toInt().coerceAtLeast(2)
         val clear = fitSmall(cover, sw, sh)
         val blur = blurSmall(clear, 2)
         backClear?.let { if (!it.isRecycled) it.recycle() }
@@ -445,7 +448,6 @@ private object RecFrameCache {
         )
         cv.drawRect(0f, 0f, w, h, shade)
         when (mode) {
-            "液态玻璃" -> drawGlass(cv, w, h, scale)
             "雪天" -> {
                 val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 170, 205, 255) }
                 cv.drawRect(0f, 0f, w, h, t)
@@ -498,43 +500,6 @@ private object RecFrameCache {
         return out
     }
 
-    /**
-     * 26.11.29：液态玻璃回归「背景为专辑封面，上面整个一层玻璃模糊，不分割」。
-     * 26.11.27 的 40 圈 clipPath 折射 + 红/蓝通道 SCREEN 色散，在清晰封面上
-     * 会叠出同心圆重影和彩色错位，观感就是「更错乱」。这里去掉环带与通道分离，
-     * 只保留一次整层磨砂、极淡顶部高光与连续亮边；GLSL 雨景不受影响。
-     */
-    private fun drawGlass(cv: Canvas, w: Float, h: Float, scale: Float) {
-        val blur = backBlur ?: backClear ?: return
-        val glass = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 104 }
-        cv.drawBitmap(blur, null, RectF(0f, 0f, w, h), glass)
-        // 顶部极淡高光，给出玻璃厚度，不产生任何结构性条纹
-        val sheen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = LinearGradient(
-                0f, 0f, 0f, h * 0.55f,
-                Color.argb(24, 255, 255, 255), Color.argb(0, 255, 255, 255),
-                Shader.TileMode.CLAMP,
-            )
-        }
-        cv.drawRect(0f, 0f, w, h * 0.55f, sheen)
-        // 整层连续的边缘亮环
-        val cx = w / 2f
-        val cy = h / 2f
-        val rMax = kotlin.math.hypot(cx.toDouble(), cy.toDouble()).toFloat()
-        val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = RadialGradient(
-                cx, cy, rMax,
-                intArrayOf(
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(16, 255, 255, 255),
-                ),
-                floatArrayOf(0f, 0.84f, 1f), Shader.TileMode.CLAMP,
-            )
-        }
-        cv.drawRect(0f, 0f, w, h, rim)
-    }
-
     private fun frac(x: Float): Float = x - kotlin.math.floor(x)
     private fun hash11(n: Float): Float = frac(kotlin.math.sin(n * 127.1f) * 43758.5453f)
 
@@ -543,42 +508,6 @@ private object RecFrameCache {
     ) {
         // 雨季由 RainGlsl 的 WebGL 着色器逐帧生成，不再叠加任何自绘水滴/线条。
         if (mode == "雪天") drawSnow(cv, tMs, energy, w, h, scale)
-        if (mode == "液态玻璃") drawGlassFlow(cv, tMs, w, h, scale)
-    }
-
-    /** 玻璃表面缓慢横移的柔和反光：让整层玻璃有动态，但只画两个渐变，不拖慢编码。 */
-    private fun drawGlassFlow(cv: Canvas, tMs: Long, w: Float, h: Float, scale: Float) {
-        val phase = (tMs % 1600L) / 1600f
-        val cx = -w * 0.18f + phase * w * 1.36f
-        val cy = h * 0.30f
-        val r = w * 0.46f
-        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = RadialGradient(
-                cx, cy, r,
-                intArrayOf(
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(30, 255, 255, 255),
-                    Color.argb(0, 255, 255, 255),
-                ),
-                floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP,
-            )
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
-        }
-        cv.drawRect(0f, 0f, w, h, glow)
-        val streak = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            shader = LinearGradient(
-                cx - r, 0f, cx + r, h,
-                intArrayOf(
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(0, 255, 255, 255),
-                    Color.argb(34, 255, 255, 255),
-                    Color.argb(0, 255, 255, 255),
-                ),
-                floatArrayOf(0f, 0.42f, 0.51f, 0.62f), Shader.TileMode.CLAMP,
-            )
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
-        }
-        cv.drawRect(0f, 0f, w, h, streak)
     }
 
     /** 柔边雪片贴图：中心白、边缘透明，避免旧版「实心白点」的塑料感。 */

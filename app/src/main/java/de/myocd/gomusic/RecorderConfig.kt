@@ -39,8 +39,8 @@ val REC_QUALITIES = listOf(
 /** 录制字体来源：系统默认 / 内置可变思源宋体 / 用户导入 */
 val REC_FONT_MODES = listOf("系统默认", "思源宋体", "导入")
 
-/** 背景效果：四种都以专辑封面为底（略微模糊）；雨季为玻璃雨滴折射、雪天随音频能量飘落、液态玻璃为整层磨砂 */
-val REC_BG_MODES = listOf("高斯模糊", "液态玻璃", "雨季", "雪天")
+/** 背景效果：三种都以专辑封面为底（略微模糊）；雨季为玻璃雨滴折射、雪天随音频能量飘落 */
+val REC_BG_MODES = listOf("高斯模糊", "雨季", "雪天")
 
 /** 字号范围：歌词 8–96sp、信息区 10–64sp，两者互不影响 */
 const val REC_LYRIC_MIN_SP = 8
@@ -93,7 +93,9 @@ object RecorderPrefs {
 
     fun load(ctx: Context): RecorderConfig = runCatching {
         val raw = ctx.getSharedPreferences(SP, Context.MODE_PRIVATE).getString("cfg", "") ?: ""
-        val c = if (raw.isBlank()) RecorderConfig() else json.decodeFromString<RecorderConfig>(raw)
+        val c0 = if (raw.isBlank()) RecorderConfig() else json.decodeFromString<RecorderConfig>(raw)
+        // 26.11.30：液态玻璃已移除，旧配置回退到高斯模糊
+        val c = if (c0.bgMode !in REC_BG_MODES) c0.copy(bgMode = "高斯模糊") else c0
         // 兼容旧版：以前只有 fontPath，没有 fontMode；有导入文件时迁移成「导入」
         if (c.fontMode == "系统默认" && c.fontPath.isNotBlank()) c.copy(fontMode = "导入") else c
     }.getOrDefault(RecorderConfig())

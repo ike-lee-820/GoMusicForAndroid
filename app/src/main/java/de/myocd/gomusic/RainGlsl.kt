@@ -263,8 +263,7 @@ object RainGlsl {
 
         val key = "${System.identityHashCode(cover)}:$w:$h"
         if (key != coverKey) {
-            // curtains.js 的 dispImageMatrix 会按平面比例 cover 裁剪图片；
-            // 这里在 CPU 侧完成同一件事，GLSL 与 demo 一字不改。
+            // 封面完整置入纹理（不拉伸、不裁切），GLSL 与 demo 一字不改。
             val texBmp = coverTexture(cover, w, h)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, texBmp, 0)
@@ -273,6 +272,10 @@ object RainGlsl {
         }
 
         GLES20.glViewport(0, 0, w, h)
+        // 26.11.30：pbuffer 不会自动清屏，后台进程里残留帧会被 glReadPixels
+        // 读回成纯色/旧帧；先清屏，绘制完成后再同步读回。GLSL 一字未改。
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glUseProgram(program)
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
         val aPos = GLES20.glGetAttribLocation(program, "aVertexPosition")
@@ -312,6 +315,7 @@ object RainGlsl {
         if (lb >= 0) GLES20.glUniform1i(lb, 1)
 
         GLES20.glDrawElements(GLES20.GL_TRIANGLES, idxCount, GLES20.GL_UNSIGNED_SHORT, 0)
+        GLES20.glFinish()
         lastTime = frame
 
         val size = w * h * 4

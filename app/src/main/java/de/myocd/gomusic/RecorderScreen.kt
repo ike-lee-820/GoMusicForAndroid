@@ -307,6 +307,7 @@ fun RecorderScreen(vm: MainViewModel) {
                     { persist(cfg.copy(infoRatio = (cfg.infoRatio - 0.05f).coerceIn(0.18f, 0.60f))) },
                     { persist(cfg.copy(infoRatio = (cfg.infoRatio + 0.05f).coerceIn(0.18f, 0.60f))) })
                 RecChips("背景", cfg.bgMode, REC_BG_MODES) { persist(cfg.copy(bgMode = it)) }
+                Txt("四种背景都以专辑封面为底（略微模糊）：雨季是玻璃雨滴折射，雪天随音乐能量飘落，液态玻璃是整层磨砂不分割", 11, color = go.muted)
                 RecStep("信息字号", "${cfg.infoSizeSp} sp（$REC_INFO_MIN_SP–$REC_INFO_MAX_SP）",
                     { persist(cfg.copy(infoSizeSp = (cfg.infoSizeSp - 2).coerceIn(REC_INFO_MIN_SP, REC_INFO_MAX_SP))) },
                     { persist(cfg.copy(infoSizeSp = (cfg.infoSizeSp + 2).coerceIn(REC_INFO_MIN_SP, REC_INFO_MAX_SP))) })

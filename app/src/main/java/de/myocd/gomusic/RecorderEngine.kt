@@ -122,6 +122,17 @@ class RecorderEngine(private val ctx: Context) {
             else if (job.durationMs > 0) job.durationMs else 180_000L
         val totalFrames = ((durationMs / 1000f) * fps).roundToInt().coerceIn(1, 60 * 60 * fps)
 
+        // 雪天 = AUDIO REACTIVE：只解码算每 100ms 的 RMS 包络，不改音轨、不重编码。
+        // 原声直封装路径同样适用；拿不到包络就退回固定能量 0.35。
+        val envelope = if (job.cfg.bgMode == "雪天") {
+            val v = runCatching { RecAudioEnergy.of(job.audioFile, durationMs) }
+                .onFailure { NmLog.note("雪天音频包络不可用，改用基准能量：${it.message}") }
+                .getOrNull()
+            if (v != null) NmLog.note("雪天音频包络：${v.size} 段（每 100ms 一段）")
+            v
+        } else null
+        fun energyAt(ms: Long): Float = envelope?.at(ms) ?: 0.35f
+
         val vfmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
         vfmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
         vfmt.setInteger(MediaFormat.KEY_BIT_RATE, job.cfg.bitrateMbps.coerceIn(2, 24) * 1_000_000)
@@ -191,7 +202,7 @@ class RecorderEngine(private val ctx: Context) {
                         val posMs = i * 1000L / fps
                         renderRecFrame(
                             c,
-                            RecFrameState(job.song, job.cover, job.rows, posMs, durationMs),
+                            RecFrameState(job.song, job.cover, job.rows, posMs, durationMs, energyAt(posMs)),
                             job.cfg,
                             job.typeface,
                         )

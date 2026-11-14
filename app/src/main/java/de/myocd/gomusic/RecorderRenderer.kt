@@ -1,10 +1,13 @@
 package de.myocd.gomusic
 
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -32,6 +35,8 @@ data class RecFrameState(
     val rows: List<LyricRow>,
     val positionMs: Long,
     val durationMs: Long,
+    /** 雪天用：当前时刻的音频能量 0–1；预览与无包络时用 0.35 */
+    val energy: Float = 0.35f,
 )
 
 /** 按全体偏移算出当前高亮行 */
@@ -148,7 +153,12 @@ private object RecFrameCache {
         val act = recActiveRow(st, c.lyricOffsetMs)
         val prog = if (st.durationMs > 0) (st.positionMs.toFloat() / st.durationMs).coerceIn(0f, 1f) else 0f
         val bucket = (prog * w / 2f).toInt()
-        val dynamic = if (c.bgMode == "雨季" || c.bgMode == "雪天") st.positionMs.toString() else ""
+        // 雨 / 雪是循环动画：按 50ms 相位桶 + 8 级能量桶取签名，
+        // 同一桶内直接复用整帧，避免逐帧全量重画把编码拖回实时速度。
+        val dynamic = if (c.bgMode == "雨季" || c.bgMode == "雪天") {
+            val phase = ((st.positionMs % 1800L) * 36L / 1800L).toInt()
+            "$phase/${(st.energy * 8f).toInt().coerceIn(0, 8)}"
+        } else ""
         return listOf(
             act, bucket, c.style, c.bgMode, c.lyricSizeSp, c.infoSizeSp, c.showTrans,
             c.lyricOffsetMs, c.infoRatio, c.fontMode, c.fontWeight, c.fontPath,
@@ -220,7 +230,7 @@ private object RecFrameCache {
         val scale = h / 1080f
         val pad = 28f * scale
         cv.drawBitmap(staticBitmap(st, c, tf, w.toInt(), h.toInt()), 0f, 0f, null)
-        drawParticles(cv, c.bgMode, st.positionMs, w, h, scale)
+        drawParticles(cv, c.bgMode, st.positionMs, st.energy, w, h, scale)
         val infoW = (w * c.infoRatio.coerceIn(0.18f, 0.60f)).coerceAtMost(w * 0.60f)
         when (RecStyle.of(c.style)) {
             RecStyle.CLASSIC -> drawClassicLyrics(
@@ -239,55 +249,98 @@ private object RecFrameCache {
     }
 
     /**
-     * 背景：封面降采样 + 盒式模糊近似高斯，再放大铺满；四种模式共用这套底。
-     * 液态玻璃叠静态折射高光，雨季 / 雪天只叠一层色调，粒子在 drawParticles 逐帧画。
+     * 26.11.26：背景一律以「专辑封面」为底。
+     * center-crop 后降采样到约 1/6，做半径 1 的盒式模糊（略微模糊）再铺满整屏，
+     * 只压一层很淡的暗渐变保证文字可读。四种效果都只在这张封面底上叠加：
+     * - 高斯模糊：封面 + 极淡雾面
+     * - 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的光泽，不再切成上下两片卡片
+     * - 雨季：玻璃上的水滴，水滴内取清晰封面并局部放大折射（curtains.js 雨特效思路）
+     * - 雪天：柔边雪片随音频能量改变下落速度 / 风 / 亮度（sn.html 的 AUDIO REACTIVE）
      */
+    private var backCoverId = 0
+    private var backW = 0
+    private var backH = 0
+    private var backClear: Bitmap? = null
+    private var backBlur: Bitmap? = null
+    private var backShader: BitmapShader? = null
+    private var flakeBmp: Bitmap? = null
+
+    /** 封面底图只按「封面对象 + 输出尺寸」生成一次，两张小图合计不到 1MB。 */
+    private fun backdrop(cover: Bitmap?, w: Int, h: Int): Boolean {
+        if (cover == null || cover.isRecycled || w <= 0 || h <= 0) return false
+        val id = System.identityHashCode(cover)
+        if (backCoverId == id && backW == w && backH == h &&
+            backClear != null && !backClear!!.isRecycled
+        ) return true
+        val sw = (w / 6).coerceIn(96, 480)
+        val sh = (h / 6).coerceIn(96, 480)
+        val clear = cropSmall(cover, sw, sh)
+        val blur = blurSmall(clear, 1)
+        backClear?.let { if (!it.isRecycled) it.recycle() }
+        backBlur?.let { if (!it.isRecycled) it.recycle() }
+        backClear = clear
+        backBlur = blur
+        backShader = BitmapShader(clear, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        backCoverId = id
+        backW = w
+        backH = h
+        return true
+    }
+
+    private fun cropSmall(cover: Bitmap, sw: Int, sh: Int): Bitmap {
+        val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+        val cw = cover.width.toFloat()
+        val ch = cover.height.toFloat()
+        val s = max(sw / cw, sh / ch)
+        val dw = cw * s
+        val dh = ch * s
+        val dx = (sw - dw) / 2f
+        val dy = (sh - dh) / 2f
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        Canvas(out).drawBitmap(cover, null, RectF(dx, dy, dx + dw, dy + dh), p)
+        return out
+    }
+
     private fun drawBackground(
         cv: Canvas, cover: Bitmap?, w: Float, h: Float, scale: Float, mode: String,
     ) {
         cv.drawColor(Color.rgb(12, 11, 16))
-        val coverBmp = cover
-        if (coverBmp != null && !coverBmp.isRecycled) {
-            val sw = (w / 20f).toInt().coerceIn(12, 160)
-            val sh = (h / 20f).toInt().coerceIn(12, 160)
-            val small = runCatching { Bitmap.createScaledBitmap(coverBmp, sw, sh, true) }.getOrNull()
-            if (small != null) {
-                val blurred = blurSmall(small)
-                val p = Paint(Paint.ANTI_ALIAS_FLAG + Paint.FILTER_BITMAP_FLAG).apply {
-                    alpha = if (mode == "高斯模糊") 95 else 82
-                }
-                cv.drawBitmap(blurred, null, RectF(0f, 0f, w, h), p)
-                blurred.recycle()
-                small.recycle()
-            }
-        }
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-        fill.shader = LinearGradient(
+        if (!backdrop(cover, w.toInt(), h.toInt())) return
+        val base = backBlur ?: return
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        cv.drawBitmap(base, null, RectF(0f, 0f, w, h), p)
+        // 旧版是 110→215 的黑渐变，封面几乎看不见；这里只留很淡的一层。
+        val shade = Paint(Paint.ANTI_ALIAS_FLAG)
+        shade.shader = LinearGradient(
             0f, 0f, 0f, h,
-            Color.argb(110, 0, 0, 0), Color.argb(215, 0, 0, 0), Shader.TileMode.CLAMP,
+            Color.argb(38, 0, 0, 0), Color.argb(135, 0, 0, 0), Shader.TileMode.CLAMP,
         )
-        cv.drawRect(0f, 0f, w, h, fill)
+        cv.drawRect(0f, 0f, w, h, shade)
         when (mode) {
+            "高斯模糊" -> {
+                val mist = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(16, 255, 255, 255) }
+                cv.drawRect(0f, 0f, w, h, mist)
+            }
             "液态玻璃" -> drawGlass(cv, w, h, scale)
             "雨季" -> {
-                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(38, 36, 78, 140) }
+                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(18, 30, 62, 112) }
                 cv.drawRect(0f, 0f, w, h, t)
             }
             "雪天" -> {
-                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(26, 190, 215, 255) }
+                val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(14, 170, 205, 255) }
                 cv.drawRect(0f, 0f, w, h, t)
             }
         }
     }
 
-    /** 小图上做一次水平 + 垂直盒式模糊，像素量只有几千，静态层生成时算一次。 */
-    private fun blurSmall(src: Bitmap): Bitmap {
+    /** 小图上做水平 + 垂直盒式模糊；radius=1 即「略微模糊」。 */
+    private fun blurSmall(src: Bitmap, radius: Int): Bitmap {
         val w = src.width
         val h = src.height
         val px = IntArray(w * h)
         src.getPixels(px, 0, w, 0, 0, w, h)
         val tmp = IntArray(w * h)
-        val r = 2
+        val r = radius.coerceIn(1, 8)
         for (y in 0 until h) {
             for (x in 0 until w) {
                 var sa = 0L; var sr = 0L; var sg = 0L; var sb = 0L; var n = 0
@@ -325,62 +378,154 @@ private object RecFrameCache {
         return out
     }
 
-    /** 液态玻璃：模糊底上叠两片圆角玻璃与折射色带，全部静态。 */
+    /**
+     * 液态玻璃：整屏一层磨砂玻璃 + 一条贯穿全屏的斜向光泽。
+     * 26.11.26 起删掉上下两片圆角玻璃卡片和中间色带矩形 —— 不分割。
+     */
     private fun drawGlass(cv: Canvas, w: Float, h: Float, scale: Float) {
-        val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        p.shader = LinearGradient(
+        val soft = backBlur ?: return
+        // 1) 整层再柔化一次并轻微放大，模拟玻璃折射
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { alpha = 160 }
+        val d = 0.025f
+        cv.drawBitmap(soft, null, RectF(-w * d, -h * d, w * (1f + d), h * (1f + d)), p)
+        // 2) 整屏雾面
+        val mist = Paint(Paint.ANTI_ALIAS_FLAG)
+        mist.shader = LinearGradient(
             0f, 0f, w, h,
-            Color.argb(0, 255, 255, 255), Color.argb(55, 255, 255, 255), Shader.TileMode.CLAMP,
+            Color.argb(24, 255, 255, 255), Color.argb(50, 255, 255, 255), Shader.TileMode.CLAMP,
         )
-        cv.drawRect(0f, 0f, w, h, p)
-        p.shader = null
-        val r = 40f * scale
-        val top = RectF(w * 0.05f, h * 0.07f, w * 0.95f, h * 0.28f)
-        val bottom = RectF(w * 0.05f, h * 0.72f, w * 0.95f, h * 0.93f)
-        p.color = Color.argb(26, 255, 255, 255)
-        cv.drawRoundRect(top, r, r, p)
-        cv.drawRoundRect(bottom, r, r, p)
-        val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 1.6f * scale
-            color = Color.argb(75, 255, 255, 255)
-        }
-        cv.drawRoundRect(top, r, r, edge)
-        cv.drawRoundRect(bottom, r, r, edge)
+        cv.drawRect(0f, 0f, w, h, mist)
+        // 3) 一条贯穿全屏的斜向光泽（不是独立玻璃块）
         val g = Paint(Paint.ANTI_ALIAS_FLAG)
         g.shader = LinearGradient(
-            0f, h * 0.1f, w, h * 0.9f,
-            Color.argb(45, 120, 200, 255), Color.argb(35, 220, 150, 255), Shader.TileMode.CLAMP,
+            0f, h * 0.16f, w, h * 0.64f,
+            Color.argb(0, 255, 255, 255), Color.argb(32, 255, 255, 255), Shader.TileMode.CLAMP,
         )
-        cv.drawRoundRect(RectF(w * 0.08f, h * 0.30f, w * 0.92f, h * 0.70f), r, r, g)
+        cv.drawRect(0f, 0f, w, h, g)
     }
 
-    /** 雨季 / 雪天的逐帧粒子；数量固定、无随机对象分配，静态层仍然复用。 */
+    private fun frac(x: Float): Float = x - kotlin.math.floor(x)
+    private fun hash11(n: Float): Float = frac(kotlin.math.sin(n * 127.1f) * 43758.5453f)
+
     private fun drawParticles(
-        cv: Canvas, mode: String, tMs: Long, w: Float, h: Float, scale: Float,
+        cv: Canvas, mode: String, tMs: Long, energy: Float, w: Float, h: Float, scale: Float,
     ) {
-        if (mode == "雨季") {
-            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(110, 220, 235, 255)
-                strokeWidth = 1.4f * scale
+        when (mode) {
+            "雨季" -> drawRain(cv, tMs, w, h, scale)
+            "雪天" -> drawSnow(cv, tMs, energy, w, h, scale)
+        }
+    }
+
+    /**
+     * 雨季：参考 Lavender-z/demo 雨特效的 WebGL 思路 —— 背景是一张图，
+     * 水滴位置扰动取样 UV、水滴内清晰、水滴外模糊。Canvas 版用
+     * BitmapShader(清晰封面) + 每滴一个局部放大 Matrix 实现折射，
+     * 共享同一个 shader 对象，逐帧零分配。
+     */
+    private fun drawRain(cv: Canvas, tMs: Long, w: Float, h: Float, scale: Float) {
+        val shader = backShader ?: return
+        val clear = backClear ?: return
+        val sx = w / clear.width.toFloat()
+        val sy = h / clear.height.toFloat()
+        val m = Matrix()
+        val lensPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.shader = shader }
+        val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1.1f * scale
+            color = Color.argb(105, 255, 255, 255)
+        }
+        val spec = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 255, 255, 255) }
+        val trail = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(38, 220, 238, 255)
+            strokeWidth = 1.3f * scale
+        }
+        for (i in 0 until 42) {
+            val a = hash11(i * 1.13f + 3.7f)
+            val b = hash11(i * 2.71f + 11.2f)
+            val c = hash11(i * 4.37f + 27.9f)
+            val d = hash11(i * 7.19f + 5.4f)
+            val depth = 0.55f + c * 1.15f
+            val r = (3.4f + b * 7.6f) * scale * depth
+            val x = a * w
+            val speed = 0.45f + d * 0.85f
+            val y = ((b * h + tMs * 0.001f * speed * 330f * scale) % (h + r * 4f)) - r * 2f
+            val lens = 1.18f + c * 0.28f
+            val dx = (a - 0.5f) * r * 1.6f
+            val dy = -r * 0.35f
+            m.setScale(sx * lens, sy * lens)
+            m.postTranslate(x * (1f - lens) + dx, y * (1f - lens) + dy)
+            shader.setLocalMatrix(m)
+            cv.drawLine(x, y - r, x - r * 0.12f, y - r * (2.2f + speed * 2.6f), trail)
+            lensPaint.alpha = (190 + (c * 55).toInt()).coerceAtMost(255)
+            cv.drawCircle(x, y, r, lensPaint)
+            cv.drawCircle(x, y, r, edge)
+            cv.drawCircle(x - r * 0.3f, y - r * 0.32f, r * 0.16f, spec)
+        }
+        val fog = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(10, 220, 235, 255) }
+        cv.drawRect(0f, 0f, w, h, fog)
+    }
+
+    /** 柔边雪片贴图：中心白、边缘透明，避免旧版「实心白点」的塑料感。 */
+    private fun snowFlake(): Bitmap {
+        flakeBmp?.let { if (!it.isRecycled) return it }
+        val s = 64
+        val b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.shader = RadialGradient(
+            s / 2f, s / 2f, s / 2f,
+            Color.argb(235, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP,
+        )
+        Canvas(b).drawCircle(s / 2f, s / 2f, s / 2f, p)
+        flakeBmp = b
+        return b
+    }
+
+    /** 雪天 = AUDIO REACTIVE：能量驱动下落速度、风幅与整体亮度。 */
+    private fun drawSnow(
+        cv: Canvas, tMs: Long, energy: Float, w: Float, h: Float, scale: Float,
+    ) {
+        val flake = snowFlake()
+        val e = energy.coerceIn(0f, 1f)
+        val wind = (7f + 30f * e) * scale
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val crystal = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1f * scale
+            color = Color.argb(150, 255, 255, 255)
+        }
+        for (i in 0 until 78) {
+            val a = hash11(i * 1.7f + 1.1f)
+            val b = hash11(i * 3.3f + 9.4f)
+            val c = hash11(i * 5.9f + 21.7f)
+            val d = hash11(i * 8.1f + 4.2f)
+            val depth = 0.35f + c * 1.35f
+            val r = (1.8f + d * 4.6f) * scale * depth
+            val speed = (0.4f + b * 0.8f) * (0.55f + 1.25f * e)
+            val y = ((a * h + tMs * 0.001f * speed * 105f * scale) % (h + r * 4f)) - r * 2f
+            val x = b * w + kotlin.math.sin(tMs * 0.00072f + i * 0.9f) * wind * depth +
+                kotlin.math.sin(tMs * 0.00019f + i * 0.37f) * 7f * scale
+            p.alpha = (105 + (depth * 70).toInt() + (e * 35).toInt()).coerceAtMost(245)
+            cv.drawBitmap(flake, null, RectF(x - r, y - r, x + r, y + r), p)
+            if (depth > 1.25f && i % 7 == 0) {
+                val rr = r * 1.5f
+                cv.save()
+                cv.translate(x, y)
+                cv.rotate((tMs * 0.02f + i * 17f) % 360f)
+                for (k in 0 until 3) {
+                    val th = k * 60f * PI.toFloat() / 180f
+                    cv.drawLine(
+                        -kotlin.math.cos(th) * rr, -kotlin.math.sin(th) * rr,
+                        kotlin.math.cos(th) * rr, kotlin.math.sin(th) * rr, crystal,
+                    )
+                }
+                cv.restore()
             }
-            val phase = (tMs / 12f) % h
-            for (i in 0 until 56) {
-                val seed = i * 97.13f
-                val x = ((sin(seed) * 0.5f + 0.5f) * w + phase * 0.35f) % (w + 40f) - 20f
-                val y = ((cos(seed * 1.7f) * 0.5f + 0.5f) * h + phase * 2.2f + i * 37f) % h
-                cv.drawLine(x, y, x - 8f * scale, y + 26f * scale, p)
+        }
+        if (e > 0.55f) {
+            val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(((e - 0.55f) * 26f).toInt().coerceAtMost(14), 215, 235, 255)
             }
-        } else if (mode == "雪天") {
-            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(190, 255, 255, 255) }
-            val phase = tMs / 30f
-            for (i in 0 until 64) {
-                val seed = i * 53.7f
-                val x = (sin(seed) * 0.5f + 0.5f) * w + sin(phase * 0.02f + i) * 12f * scale
-                val y = ((cos(seed * 2.3f) * 0.5f + 0.5f) * h +
-                    phase * (1.2f + (i % 5) * 0.4f)) % h
-                cv.drawCircle(x, y, (1.2f + (i % 4) * 0.9f) * scale, p)
-            }
+            cv.drawRect(0f, 0f, w, h, glow)
         }
     }
 

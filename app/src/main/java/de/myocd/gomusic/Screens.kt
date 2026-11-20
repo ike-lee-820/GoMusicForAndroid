@@ -484,11 +484,11 @@ fun MiniPlayerRail(vm: MainViewModel) {
         VS(4)
         Txt(s.artist, 11, color = go.muted, align = TextAlign.Center, maxLines = 2)
         VS(10)
-        IconBtn(
-            if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+        PIconBtn(
+            if (vm.isPlaying) "pause" else "play",
             if (vm.isPlaying) "暂停" else "播放", size = 44.dp,
         ) { vm.togglePlay() }
-        IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表") { vm.showQueue = true }
+        PIconBtn("queue", "播放列表") { vm.showQueue = true }
     }
 }
 
@@ -541,11 +541,11 @@ fun MiniPlayer(vm: MainViewModel) {
             Txt(s.title, 15, weight = FontWeight.Medium, maxLines = 1)
             Txt(s.artist, 12, color = go.muted, maxLines = 1)
         }
-        IconBtn(
-            if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+        PIconBtn(
+            if (vm.isPlaying) "pause" else "play",
             if (vm.isPlaying) "暂停" else "播放", size = 44.dp,
         ) { vm.togglePlay() }
-        IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表") { vm.showQueue = true }
+        PIconBtn("queue", "播放列表") { vm.showQueue = true }
     }
 }
 
@@ -1913,16 +1913,16 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 .height(40.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconBtn(Icons.Outlined.Share, "分享", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+            PIconBtn("share", "分享", size = 24.dp, minHit = 34.dp, tint = Color.White) {
                 shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
             }
             HS(6)
-            IconBtn(Icons.Outlined.Download, "下载", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+            PIconBtn("download", "下载", size = 24.dp, minHit = 34.dp, tint = Color.White) {
                 vm.download(listOf(s))
             }
             HS(6)
-            IconBtn(
-                Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单",
+            PIconBtn(
+                "add", "加入歌单",
                 size = 24.dp, minHit = 34.dp, tint = Color.White,
             ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
             // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
@@ -1950,8 +1950,8 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 active = vm.surroundOn,
             )
             HS(6)
-            IconBtn(
-                Icons.Outlined.Videocam, "录制视频",
+            PIconBtn(
+                "record", "录制视频",
                 size = 24.dp, minHit = 34.dp, tint = Color.White,
             ) { vm.showRecorder = true }
             HS(6)
@@ -1977,26 +1977,26 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 color = Color.White.copy(alpha = 0.65f),
             )
             HS(10)
-            IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.prev() }
+            PIconBtn("prev", "上一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.prev() }
             HS(6)
-            IconBtn(
-                if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+            PIconBtn(
+                if (vm.isPlaying) "pause" else "play",
                 if (vm.isPlaying) "暂停" else "播放",
                 size = 34.dp, minHit = 34.dp, tint = Color.Black, bg = Color.White,
             ) { vm.togglePlay() }
             HS(6)
-            IconBtn(Icons.Outlined.SkipNext, "下一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.next() }
+            PIconBtn("next", "下一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.next() }
             HS(10)
-            IconBtn(
-                Icons.AutoMirrored.Outlined.PlaylistPlay, "播放列表",
+            PIconBtn(
+                "queue", "播放列表",
                 size = 24.dp, minHit = 34.dp, tint = Color.White,
             ) { vm.showQueue = true }
             HS(6)
-            IconBtn(
+            PIconBtn(
                 when (vm.playMode) {
-                    0 -> Icons.Outlined.Repeat
-                    1 -> Icons.Outlined.Shuffle
-                    else -> Icons.Outlined.RepeatOne
+                    0 -> "repeat"
+                    1 -> "shuffle"
+                    else -> "repeat_one"
                 },
                 listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
                 size = 24.dp, minHit = 34.dp, tint = Color.White,
@@ -2125,11 +2125,11 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
 
             VS(8)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                IconBtn(Icons.Outlined.Share, "分享") {
+                PIconBtn("share", "分享") {
                     shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
                 }
-                IconBtn(Icons.Outlined.Download, "下载") { vm.download(listOf(s)) }
-                IconBtn(Icons.AutoMirrored.Outlined.PlaylistAdd, "加入歌单") {
+                PIconBtn("download", "下载") { vm.download(listOf(s)) }
+                PIconBtn("add", "加入歌单") {
                     vm.pick(listOf(s.ssid), s.title, s.coverUrl)
                 }
                 // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
@@ -2154,8 +2154,8 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     { vm.showSurround = true }, tint = go.on, size = 24.dp, hit = 36.dp,
                     active = vm.surroundOn,
                 )
-                IconBtn(
-                    Icons.Outlined.Videocam, "录制视频",
+                PIconBtn(
+                    "record", "录制视频",
                     size = 24.dp, minHit = 36.dp, tint = go.on,
                 ) { vm.showRecorder = true }
                 QualityMenu(vm)
@@ -2173,22 +2173,22 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
             ) {
-                IconBtn(
+                PIconBtn(
                     when (vm.playMode) {
-                        0 -> Icons.Outlined.Repeat
-                        1 -> Icons.Outlined.Shuffle
-                        else -> Icons.Outlined.RepeatOne
+                        0 -> "repeat"
+                        1 -> "shuffle"
+                        else -> "repeat_one"
                     },
                     listOf("列表循环", "随机播放", "单曲循环")[vm.playMode], size = 44.dp,
                 ) { vm.cycleMode() }
-                IconBtn(Icons.Outlined.SkipPrevious, "上一首", size = 44.dp) { vm.prev() }
-                IconBtn(
-                    if (vm.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                PIconBtn("prev", "上一首", size = 44.dp) { vm.prev() }
+                PIconBtn(
+                    if (vm.isPlaying) "pause" else "play",
                     if (vm.isPlaying) "暂停" else "播放",
                     size = 56.dp, tint = OnPrimary, bg = go.primary,
                 ) { vm.togglePlay() }
-                IconBtn(Icons.Outlined.SkipNext, "下一首", size = 44.dp) { vm.next() }
-                IconBtn(Icons.AutoMirrored.Outlined.QueueMusic, "播放列表", size = 44.dp) { vm.showQueue = true }
+                PIconBtn("next", "下一首", size = 44.dp) { vm.next() }
+                PIconBtn("queue", "播放列表", size = 44.dp) { vm.showQueue = true }
             }
             VS(16)
         }
@@ -2238,13 +2238,7 @@ fun TransIconButton(
 }
 
 /**
- * MV 按钮：图标用 Canvas 自绘，画的是 Material Icons 的 music_video
- * （显示器外框 + 里面的音符）。
- *
- * 之前画的是「摄像机 + 播放三角」，和一排 Material 图标放在一起很跳，
- * 而且桌面端用的是 music_video，两端还不一样。这里照着 music_video 画：
- * 图标扩展里的视频类图标取不到（VideoLibrary / Movie 都报 Unresolved
- * reference），自绘不依赖图标名，两端也能一致。
+ * MV 按钮：改用统一图标包的 mv 蒙版，与桌面端及同一排按钮共用同一套图形。
  */
 @Composable
 fun MvIconButton(
@@ -2253,47 +2247,7 @@ fun MvIconButton(
     size: Dp = 24.dp,
     hit: Dp = 36.dp,
 ) {
-    Box(
-        Modifier.size(hit).clickScale(true, onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(size)) {
-            // 按 24dp 的设计网格画，u 是「一格」对应的像素
-            val u = this.size.width / 24f
-            val line = Stroke(width = glyphLineWidth(this.size.width))
-            // 显示器外框
-            drawRoundRect(
-                color = tint,
-                topLeft = Offset(2f * u, 4f * u),
-                size = Size(20f * u, 16f * u),
-                cornerRadius = CornerRadius(2f * u, 2f * u),
-                style = line,
-            )
-            // 音符头
-            drawOval(
-                color = tint,
-                topLeft = Offset(5.9f * u, 13.4f * u),
-                size = Size(6.2f * u, 5.2f * u),
-            )
-            // 符干
-            drawRect(
-                color = tint,
-                topLeft = Offset(11.4f * u, 7.2f * u),
-                size = Size(1.5f * u, 9.6f * u),
-            )
-            // 符尾
-            drawPath(
-                Path().apply {
-                    moveTo(12.9f * u, 7.2f * u)
-                    lineTo(18.4f * u, 9.1f * u)
-                    lineTo(18.4f * u, 11.1f * u)
-                    lineTo(12.9f * u, 9.3f * u)
-                    close()
-                },
-                color = tint,
-            )
-        }
-    }
+    PIconBtn("mv", "MV", size = size, minHit = hit, tint = tint, onClick = onClick)
 }
 
 /** 音质菜单。[tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区） */
@@ -2309,7 +2263,7 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     val absent = vm.qualitiesAbsent
     val cur = vm.curLevel
     Box {
-        IconBtn(Icons.Outlined.HighQuality, "音质", size = 30.dp, tint = tint) {
+        PIconBtn("quality", "音质", size = 30.dp, tint = tint) {
             // 打开菜单才探测：探测要十几个请求，切歌时跑它会拖慢起播
             vm.probeQualities()
             open = true
@@ -2360,7 +2314,7 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
 fun SpeedMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     var open by remember { mutableStateOf(false) }
     Box {
-        IconBtn(Icons.Outlined.Speed, "倍速", size = 30.dp, tint = tint) { open = true }
+        PIconBtn("speed", "倍速", size = 30.dp, tint = tint) { open = true }
         DropdownMenu(open, { open = false }) {
             listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
                 DropdownMenuItem(
@@ -3069,7 +3023,7 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             )
         }
         HS(4)
-        IconBtn(Icons.Outlined.Download, "下载 MV", size = 30.dp, tint = Color.White) {
+        PIconBtn("download", "下载 MV", size = 30.dp, tint = Color.White) {
             vm.downloadMv(v)
         }
         HS(4)
@@ -3087,8 +3041,8 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            IconBtn(
-                if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+            PIconBtn(
+                if (playing) "pause" else "play",
                 if (playing) "暂停" else "播放",
                 size = 34.dp, tint = Color.White,
             ) {
@@ -3106,7 +3060,7 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             HS(4)
             // 倍速：0.5–2
             Box {
-                IconBtn(Icons.Outlined.Speed, "倍速", size = 30.dp, tint = Color.White) { speedOpen = true }
+                PIconBtn("speed", "倍速", size = 30.dp, tint = Color.White) { speedOpen = true }
                 DropdownMenu(speedOpen, { speedOpen = false }) {
                     listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
                         DropdownMenuItem(
@@ -3729,8 +3683,7 @@ fun DownloadsSheet(vm: MainViewModel) {
 }
 
 /**
- * 3D 环绕按钮：与 MV / 均衡器同一套 24dp 网格与笔触的自绘图标。
- * 两圈同心圆弧 + 中心点，表示声场向外扩散；开启时用主题主色。
+ * 3D 环绕按钮：改用统一图标包的 surround 蒙版；开启时用主题主色。
  */
 @Composable
 fun SurroundIconButton(
@@ -3740,21 +3693,8 @@ fun SurroundIconButton(
     active: Boolean = false,
     tint: Color = Color.White,
 ) {
-    val go = LocalGo.current
-    val c = if (active) go.primary else tint
-    Box(
-        Modifier.size(hit).clickScale(true, onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(size)) {
-            val u = this.size.width / 24f
-            val line = Stroke(width = glyphLineWidth(this.size.width))
-            val center = Offset(12f * u, 12f * u)
-            drawCircle(color = c, radius = 9f * u, center = center, style = line)
-            drawCircle(color = c, radius = 5f * u, center = center, style = line)
-            drawCircle(color = c, radius = 1.6f * u, center = center)
-        }
-    }
+    val c = if (active) LocalGo.current.primary else tint
+    PIconBtn("surround", "3D 环绕", size = size, minHit = hit, tint = c, onClick = onClick)
 }
 
 /**

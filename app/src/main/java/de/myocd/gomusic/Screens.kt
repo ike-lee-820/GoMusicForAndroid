@@ -1195,16 +1195,22 @@ fun ArtistsTab(vm: MainViewModel) {
 fun NameDialog(title: String, initial: String, onDismiss: () -> Unit, onOk: (String) -> Unit) {
     val go = LocalGo.current
     var t by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = go.surface,
-        title = { Txt(title, 16, weight = FontWeight.SemiBold) },
-        text = { SearchField(t, { t = it }, "歌单名称", showIcon = false) },
-        confirmButton = {
-            TextButton(onClick = { if (t.isNotBlank()) onOk(t.trim()) }) { Text("确定", color = go.primary) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
-    )
+    GoSheet(onDismiss, title) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Txt("歌单名称", 13, color = go.muted)
+            VS(8)
+            SearchField(t, { t = it }, "歌单名称", showIcon = false)
+            VS(20)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GoButton("确定", primary = true) { if (t.isNotBlank()) onOk(t.trim()) }
+                HS(12)
+                GoButton("取消") { onDismiss() }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1285,27 +1291,27 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
 fun ImportPlaylistDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     val go = LocalGo.current
     var t by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = go.surface,
-        title = { Txt("导入歌单", 16, weight = FontWeight.SemiBold) },
-        text = {
-            Column {
-                Txt("粘贴还原字符；多个歌单可以一次粘贴多行", 12, color = go.muted)
-                VS(8)
-                SearchField(t, { t = it }, "还原字符", showIcon = false)
-                VS(6)
-                Txt("重名会自动改名，不会覆盖已有歌单", 11, color = go.muted)
+    GoSheet(onDismiss, "导入歌单") {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Txt("粘贴还原字符；多个歌单可以一次粘贴多行", 12, color = go.muted)
+            VS(8)
+            SearchField(t, { t = it }, "还原字符", showIcon = false)
+            VS(6)
+            Txt("重名会自动改名，不会覆盖已有歌单", 11, color = go.muted)
+            VS(20)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GoButton("导入", primary = true) {
+                    if (t.isNotBlank()) vm.importPlaylist(t)
+                    onDismiss()
+                }
+                HS(12)
+                GoButton("取消") { onDismiss() }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (t.isNotBlank()) vm.importPlaylist(t)
-                onDismiss()
-            }) { Text("导入", color = go.primary) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
-    )
+        }
+    }
 }
 
 /**
@@ -1396,14 +1402,17 @@ fun ExportPlaylistSheet(
 
 @Composable
 fun ConfirmDialog(text: String, onDismiss: () -> Unit, onOk: () -> Unit) {
-    val go = LocalGo.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = go.surface,
-        title = { Txt(text, 16, weight = FontWeight.SemiBold) },
-        confirmButton = { TextButton(onClick = onOk) { Text("删除", color = go.primary) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消", color = go.muted) } },
-    )
+    GoSheet(onDismiss, "确认操作") {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp)) {
+            Txt(text, 17, weight = FontWeight.SemiBold)
+            VS(24)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GoButton("删除", primary = true) { onOk() }
+                HS(12)
+                GoButton("取消") { onDismiss() }
+            }
+        }
+    }
 }
 
 /**
@@ -1419,26 +1428,30 @@ fun QualityPickDialog(
     onPick: (String?) -> Unit,
 ) {
     val go = LocalGo.current
-    AlertDialog(
-        onDismissRequest = { onPick(null) },
-        containerColor = go.surface,
-        title = { Txt(title, 16, weight = FontWeight.SemiBold) },
-        text = {
-            Column {
-                if (options.isEmpty()) {
-                    Txt("没有可选音质", 13, color = go.muted)
-                } else {
-                    options.forEach { (key, label) ->
-                        TextButton(onClick = { onPick(key) }) {
-                            Text(label, color = go.on)
-                        }
-                    }
+    GoSheet({ onPick(null) }, title) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            if (options.isEmpty()) {
+                Txt("没有可选音质", 13, color = go.muted)
+            } else {
+                options.forEach { (key, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().height(52.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(go.surfaceHi)
+                            .clickable { onPick(key) }
+                            .padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) { Txt(label, 15, color = go.on) }
+                    VS(8)
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = { onPick(null) }) { Text("取消", color = go.muted) } },
-    )
+            VS(16)
+            GoButton("取消") { onPick(null) }
+        }
+    }
 }
 
 // =====================================================================
@@ -3315,7 +3328,7 @@ fun SettingsSheet(vm: MainViewModel) {
     ).map { Color(it) }
     // 打开设置页时读一次当前状态（从系统电池设置返回由 Activity 的 onResume 负责刷新）
     LaunchedEffect(Unit) { vm.refreshBatteryExempt() }
-    GoSheet({ vm.showSettings = false }) {
+    GoSheet({ vm.showSettings = false }, "设置") {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
             // ---------- 视频录制 ----------
             Txt("视频录制", 15, weight = FontWeight.SemiBold)

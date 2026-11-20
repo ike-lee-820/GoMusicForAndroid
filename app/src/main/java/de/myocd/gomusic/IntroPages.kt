@@ -199,19 +199,21 @@ private fun IntroImage(vm: MainViewModel, cover: String?, name: String) {
         Cover(cover, Modifier.fillMaxSize(), 24.dp)
     }
     if (ask) {
-        AlertDialog(
-            onDismissRequest = { ask = false },
-            title = { Txt("图片", 16, weight = FontWeight.SemiBold) },
-            text = { Txt("把这张图片保存到 Download/GoMusic/图片？", 13) },
-            confirmButton = {
-                TextButton(onClick = {
-                    ask = false
-                    vm.saveIntroImage(cover, name)
-                }) { Txt("下载", 14, color = go.primary) }
-            },
-            dismissButton = {
-                TextButton(onClick = { ask = false }) { Txt("取消", 14, color = go.muted) }
-            },
-        )
+        GoSheet({ ask = false }, "图片") {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp),
+            ) {
+                Txt("把这张图片保存到 Download/GoMusic/图片？", 13)
+                VS(24)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    GoButton("下载", primary = true) {
+                        ask = false
+                        vm.saveIntroImage(cover, name)
+                    }
+                    HS(12)
+                    GoButton("取消") { ask = false }
+                }
+            }
+        }
     }
 }

@@ -61,6 +61,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.runtime.Composable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -550,27 +553,44 @@ fun GroupCard(
     }
 }
 
-// ---------- 底部弹层 ----------
+// ---------- 整页容器 ----------
 
+/**
+ * 所有二级页面共用：原先是底部抽屉（ModalBottomSheet），现改为铺满屏幕的独立整页。
+ * 不透明背景盖住播放页、顶部固定返回箭头、系统返回键直接关闭；
+ * 底层控制栏与列表不再能接收到触摸，避免误滑。
+ */
 @Composable
-fun GoSheet(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+fun GoSheet(
+    onDismiss: () -> Unit,
+    title: String = "",
+    content: @Composable ColumnScope.() -> Unit,
+) {
     val go = LocalGo.current
-    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val maxH = (LocalConfiguration.current.screenHeightDp * 0.8f).dp
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = state,
-        containerColor = go.surface,
-        contentColor = go.on,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        dragHandle = {
-            Box(
-                Modifier.padding(vertical = 10.dp).size(36.dp, 4.dp)
-                    .background(go.muted.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
-            )
-        },
+    BackHandler(enabled = true) { onDismiss() }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(go.bg)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .pointerInput(Unit) { detectTapGestures { } },
     ) {
-        Column(Modifier.heightIn(max = maxH).navigationBarsPadding(), content = content)
+        Column(Modifier.fillMaxSize().padding(top = 56.dp), content = content)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .background(go.surface)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconBtn(Icons.AutoMirrored.Outlined.ArrowBack, "返回", size = 40.dp) { onDismiss() }
+            if (title.isNotEmpty()) {
+                HS(6)
+                Txt(title, 17, weight = FontWeight.SemiBold)
+            }
+        }
     }
 }
 

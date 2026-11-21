@@ -68,8 +68,12 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(vm.needPhonePerm) {
                 if (vm.consumePhonePerm()) phonePermission.launch(Manifest.permission.READ_PHONE_STATE)
             }
-            // 启动时静默检查一次更新，有新版就弹全屏弹窗
-            LaunchedEffect(Unit) { vm.autoCheckUpdate() }
+            // 启动时静默检查一次更新。延后到首帧之后，别和界面渲染、
+            // 简繁词典预热一起抢启动那几秒的线程。
+            LaunchedEffect(Unit) {
+                delay(1200L)
+                vm.autoCheckUpdate()
+            }
             // 后台预热简繁转换词典，避免第一次显示文字时卡一下
             LaunchedEffect(Unit) {
                 withContext(kotlinx.coroutines.Dispatchers.IO) { ZhConvert.warmUp() }
@@ -152,7 +156,9 @@ private fun StatusBarMode() {
         var idleSince = 0L
         var lastTop = -1
         while (true) {
-            delay(50)
+            // 50ms 的无限轮询会一直占着主线程读 insets，横屏播放全程都在跑。
+            // 200ms 足够在 500ms 稳定窗口内把临时状态栏收起来。
+            delay(200)
             val ins = ViewCompat.getRootWindowInsets(act.window.decorView) ?: continue
             val visible = ins.isVisible(type)
             val top = ins.getInsets(type).top

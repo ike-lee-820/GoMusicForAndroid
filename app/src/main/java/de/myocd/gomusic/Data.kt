@@ -231,19 +231,19 @@ object Api {
     }
 
     /**
-     * 共享客户端。
+     * 接口请求专用：短超时、快失败。
      *
-     * 超时：连接 10s（连不上早放弃）、读取 30s（接口慢时给足时间）、
-     * 单次调用 60s 上限。之前收到 8/15/25s 太激进，正常请求也会被判超时
-     * 而重试，反而更慢 —— 现在是「快失败」和「别误判」之间的折中。
-     * 并发从默认 5 提到 16：批量取地址/探测音质时不再排队等连接。
+     * 以前整条链共用一个 60s callTimeout 的客户端，服务端一慢，点一首歌
+     * 光等一个请求就要一分钟，界面看起来就是「点了没反应」。接口请求统一
+     * 收到 4/10/15s，OkHttp 层的自动重试也关掉（[get] 自己会立即重试一次，
+     * 两层重试叠起来只会更慢）。并发从默认 5 提到 16，批量取地址不排队。
      */
     val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(60, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
+        .connectTimeout(4, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
         .dns(ipv4First)
         .apply {
             dispatcher(
@@ -256,13 +256,22 @@ object Api {
         .build()
 
     /**
+     * 下载专用：整次调用不设总时限，避免歌曲 / APK 下到一半被 callTimeout 截断。
+     * 其余参数继承自 [client]，保持连接复用。
+     */
+    val downloadClient: OkHttpClient = client.newBuilder()
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    /**
      * 连通性探测用：短超时 + 不重试。
      * 用来快速判断「服务器到底连不连得上」，失败立刻进离线模式，不让用户干等。
      */
     private val probeClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .callTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .dns(ipv4First)
         .build()
@@ -280,22 +289,25 @@ object Api {
         else -> "$BASE/$u"
     }
 
-    /** 网络抖动（尤其 WiFi 刚连上、IPv6 不通）时重试，避免一上来就报加载失败 */
-    private fun get(path: String, tries: Int = 3, http: OkHttpClient = client): String {
+    /**
+     * 网络抖动（尤其 WiFi 刚连上、IPv6 不通）时立即重试一次。
+     *
+     * 以前每个请求都带 Connection: close，等于每次重新 TCP + TLS 握手；
+     * 失败还要 sleep 500ms / 1000ms 才重试，再叠上 OkHttp 自己的重试，
+     * 一次普通接口最坏要白等好几秒。现在保留 keep-alive、去掉等待，
+     * 重试次数 3 次收到 2 次。
+     */
+    private fun get(path: String, tries: Int = 2, http: OkHttpClient = client): String {
         var last: Exception? = null
-        repeat(tries) { i ->
+        repeat(tries) {
             try {
-                // Connection: close —— 禁用 keep-alive 复用，规避被中途断开的 "connection abort"
-                val req = Request.Builder().url(BASE + path).header("Connection", "close").build()
+                val req = Request.Builder().url(BASE + path).build()
                 http.newCall(req).execute().use { r ->
                     if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
                     return r.body!!.string()
                 }
             } catch (e: Exception) {
                 last = e
-                if (i < tries - 1) {
-                    runCatching { Thread.sleep(500L * (i + 1)) }
-                }
             }
         }
         throw last ?: IOException("请求失败")
@@ -303,8 +315,8 @@ object Api {
 
     /** 下载到输出流；[onProgress] 回调 (已读字节, 总字节，-1 表示未知) */
     fun fetch(url: String, out: OutputStream, onProgress: ((Long, Long) -> Unit)? = null) {
-        val req = Request.Builder().url(url).header("Connection", "close").build()
-        client.newCall(req).execute().use { r ->
+        val req = Request.Builder().url(url).build()
+        downloadClient.newCall(req).execute().use { r ->
             if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
             val body = r.body ?: throw IOException("空响应")
             val total = body.contentLength()

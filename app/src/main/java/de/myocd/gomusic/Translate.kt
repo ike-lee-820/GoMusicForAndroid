@@ -58,11 +58,11 @@ object Translate {
             "只输出译文本身，禁止任何解释、标题、序号以外的内容；禁止用英文回答。\n" +
             "歌词：\n"
 
-    /** 整篇生成比较慢，单独放宽读超时（共享连接池与线程池） */
+    /** 整篇生成比较慢，但最多等 30 秒；超时按「这句没翻出来」处理，不拖住歌词页 */
     private val http: OkHttpClient by lazy {
         Api.client.newBuilder()
-            .readTimeout(120, TimeUnit.SECONDS)
-            .callTimeout(180, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
             .build()
     }
 

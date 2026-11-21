@@ -219,10 +219,10 @@ object Netease {
         val url = sb.toString()
         NmLog.req(url)
         var last: Exception? = null
-        // 失败自动重试：网络抖动 / 服务端偶发错误时多试几次。
-        // 只重试 2 次（间隔 300/700ms）：之前重试 3 次且间隔递增到 1.6s，
-        // 一次拿不到地址就要多花近 3 秒，取音源要试多个档位时慢得明显。
-        val delays = longArrayOf(300, 700)
+        // 失败自动重试：网络抖动 / 服务端偶发错误时多试一次。
+        // 不再 sleep 300/700ms —— 一次接口抖动就白等 1 秒，切歌、搜索、
+        // 打开页面都会跟着卡。失败立刻重发，靠短超时客户端兜底。
+        val delays = longArrayOf(0L)
         for (i in 0..delays.size) {
             try {
                 // 不要再带 Connection: close —— 它关掉了连接复用，
@@ -251,7 +251,6 @@ object Netease {
                 last = e
                 NmLog.note("请求第 ${i + 1} 次失败：$path -> ${e.message}")
                 NmLog.err(url, e)
-                if (i < delays.size) runCatching { Thread.sleep(delays[i]) }
             }
         }
         NmLog.note("请求最终失败：$path -> ${last?.message}")
@@ -699,11 +698,11 @@ object Netease {
         val lock = urlInFlight.computeIfAbsent(k) { java.util.concurrent.locks.ReentrantLock() }
         val mine = lock.tryLock()
         if (!mine) {
-            // 最多等 6 秒（while 而不是 repeat：lambda 里不能用 break）
+            // 最多等 3 秒（while 而不是 repeat：lambda 里不能用 break）
             var waited = 0
-            while (waited < 6000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
-                runCatching { Thread.sleep(150) }
-                waited += 150
+            while (waited < 3000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
+                runCatching { Thread.sleep(100) }
+                waited += 100
             }
             urlCache[k]?.let { (u, lv, t) ->
                 if (System.currentTimeMillis() - t < URL_TTL_MS) return u to lv
@@ -723,9 +722,9 @@ object Netease {
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
     private val urlClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .callTimeout(12, TimeUnit.SECONDS)
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(7, TimeUnit.SECONDS)
         .dispatcher(
             Dispatcher().apply {
                 // OkHttp 默认每 host 只有 5 个并发，一批探测会被切成两批走。
@@ -849,8 +848,15 @@ object Netease {
         val start = level?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
             ?: nmLevelOfQuality(quality)
         val chain = descendingLevels(start)
+        // 整条链（含解灰匹配与游客兜底）最多等 8 秒。服务端卡住时，以前要
+        // 把 9 个档位的超时逐个等完，点一首歌一分多钟都没反应。
+        val deadline = System.currentTimeMillis() + 8_000L
         NmLog.note("开始取播放地址 id=$id 起始档位=$start 降档链=${chain.joinToString("→")}")
         for (i in chain.indices) {
+            if (System.currentTimeMillis() > deadline) {
+                NmLog.note("取地址超过 8 秒，停止逐档降档 id=$id")
+                return null
+            }
             val lv = chain[i]
             when (val r = tryLevel(id, lv)) {
                 is LevelResult.Hit -> {
@@ -885,6 +891,7 @@ object Netease {
             cookie = anon
             try {
                 for (lv in chain) {
+                    if (System.currentTimeMillis() > deadline) break
                     when (val r = tryLevel(id, lv)) {
                         is LevelResult.Hit -> {
                             NmLog.note("游客 cookie 拿到地址（${r.hit.lv}）：${r.hit.url}")

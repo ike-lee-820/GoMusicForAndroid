@@ -114,22 +114,30 @@ object ZhConvert {
      * 超过上限就丢掉一批最旧的（近似 LRU，够用且不用动 LinkedHashMap 的钩子）。
      */
     private const val CACHE_MAX = 3000
-    private val cache = HashMap<String, String>(512)
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, String>(512)
     private val order = java.util.ArrayList<String>(512)
 
-    @Synchronized
+    /**
+     * 界面每帧有几十个文本同时调用转换。以前整个方法是 @Synchronized，
+     * 列表滚动时所有文本抢同一把锁，主线程会一顿一顿的。改成无锁读，
+     * 只有清理缓存时才对 order 加一小段同步。
+     */
     private fun memo(key: String, calc: () -> String): String {
         cache[key]?.let { return it }
         val v = calc()
-        cache[key] = v
-        order.add(key)
-        if (cache.size > CACHE_MAX) {
-            // 丢掉最早缓存的一批，控制内存占用
-            val drop = order.take(CACHE_MAX / 2)
-            drop.forEach { cache.remove(it) }
-            order.removeAll(drop.toSet())
+        val prev = cache.putIfAbsent(key, v)
+        if (prev == null) {
+            synchronized(order) {
+                order.add(key)
+                if (cache.size > CACHE_MAX) {
+                    // 丢掉最早缓存的一批，控制内存占用
+                    val drop = order.take(CACHE_MAX / 2)
+                    drop.forEach { cache.remove(it) }
+                    order.removeAll(drop.toSet())
+                }
+            }
         }
-        return v
+        return prev ?: v
     }
 
     private fun ok(): Boolean {

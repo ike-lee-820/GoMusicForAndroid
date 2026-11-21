@@ -3330,6 +3330,27 @@ fun SettingsSheet(vm: MainViewModel) {
     LaunchedEffect(Unit) { vm.refreshBatteryExempt() }
     GoSheet({ vm.showSettings = false }, "设置") {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
+            // ---------- 外观（26.11.42） ----------
+            Txt("外观", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(go.surfaceHi).padding(4.dp),
+            ) {
+                listOf("亮色", "暗色", "自动").forEachIndexed { i, label ->
+                    Txt(
+                        label, 13,
+                        Modifier.weight(1f).clip(RoundedCornerShape(8.dp))
+                            .background(if (vm.themeMode == i) go.primary else Color.Transparent)
+                            .clickable { vm.chooseThemeMode(i) }
+                            .padding(vertical = 8.dp),
+                        color = if (vm.themeMode == i) OnPrimary else go.on,
+                        align = TextAlign.Center,
+                    )
+                }
+            }
+            VS(16)
+
             // ---------- 视频录制 ----------
             Txt("视频录制", 15, weight = FontWeight.SemiBold)
             VS(8)

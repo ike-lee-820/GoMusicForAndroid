@@ -2124,6 +2124,55 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val nmLevelsCache =
         java.util.concurrent.ConcurrentHashMap<Long, Netease.LevelProbe>()
 
+    /** 外观：0 亮色 / 1 暗色 / 2 自动（跟随系统） */
+    var themeMode by mutableIntStateOf(prefs.themeMode); private set
+    fun chooseThemeMode(m: Int) {
+        themeMode = m.coerceIn(0, 2)
+        prefs.themeMode = themeMode
+    }
+
+    /** 「我的喜欢」本地集合：星星按钮写入，未登录也能用 */
+    var favorites by mutableStateOf(prefs.favorites); private set
+    fun isFavorite(ssid: String?): Boolean = ssid != null && ssid in favorites
+    fun toggleFavorite(ssid: String?): Boolean {
+        if (ssid == null) return false
+        val next = if (ssid in favorites) favorites - ssid else favorites + ssid
+        favorites = next
+        prefs.favorites = next
+        return ssid in next
+    }
+
+    /** 搜索记录（最近在前），提交时才写 */
+    var searchHistory by mutableStateOf(prefs.searchHistory); private set
+    fun recordSearch(q: String) {
+        val v = q.trim()
+        if (v.isEmpty()) return
+        val next = (listOf(v) + searchHistory).distinct().take(20)
+        searchHistory = next
+        prefs.searchHistory = next
+    }
+    fun clearSearchHistory() {
+        searchHistory = emptyList()
+        prefs.searchHistory = emptyList()
+    }
+
+    /** 逐字歌词（第 1 期只落数据层；播放器老歌词列表仍用行级 lyric） */
+    var wordLyric by mutableStateOf<WordLyric?>(null); private set
+
+    /** 聚合搜索结果（第 2 期搜索页直接渲染 mixed） */
+    var aggregate by mutableStateOf<Netease.Aggregate?>(null); private set
+    fun searchAll(q: String) {
+        val k = q.trim()
+        if (k.isEmpty()) { aggregate = null; return }
+        recordSearch(k)
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching { Netease.searchAll(k) }.getOrNull()
+            }
+            aggregate = r
+        }
+    }
+
     /** 简繁转换模式：0 简体 / 1 繁体 / 2 仅搜索统一 / 3 不转换 */
     var zhConvert by mutableIntStateOf(prefs.zhConvert)
     /** 全局字体：0 系统 / 1 思源宋体 / 2 思源黑体 */
@@ -2252,18 +2301,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private var qualitiesProbing = false
 
-    /** 预取后面几首的音源地址，切过去时直接命中缓存，不用再干等 */
+    /**
+     * 预取后面两首的完整信息（音源地址 / 逐字歌词 / 歌曲详情）。
+     * 走 Prefetcher 的独立 OkHttp dispatcher 与独立协程域，不和当前播放解析抢线程；
+     * 切歌时旧任务会被取消，不会累积请求。
+     */
     private fun prefetchAhead() {
         val c = controller ?: return
         val p = Prefs(app)
-        val nm = neteaseIdOf(curSsid)
-        if (nm == null) return
         Netease.cookie = p.nmCookie
         val i = c.currentMediaItemIndex + 1
-        if (i < c.mediaItemCount) {
-            val nid = neteaseIdOf(c.getMediaItemAt(i).mediaId) ?: return
-            Netease.prefetchAudioUrl(nid, quality, p.nmLevel.takeIf { it.isNotBlank() })
+        val ids = (i until minOf(c.mediaItemCount, i + 2)).mapNotNull {
+            neteaseIdOf(c.getMediaItemAt(it).mediaId)
         }
+        if (ids.isEmpty()) return
+        Prefetcher.prefetchAhead(ids, quality, p.nmLevel.takeIf { it.isNotBlank() })
     }
 
     private fun refreshQueue() {
@@ -2417,20 +2469,34 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-            // 歌词单独一条快速通道：不等详情、不等其它接口，一次 /lyric 往返
+            // 歌词单独一条快速通道：不等详情、不等其它接口。
+            // 26.11.42：优先 /lyric/new 逐字歌词，任何失败由 Netease 内部
+            // 自动退回老 /lyric；再不行才读本地歌词。行级 lyric 仍喂给老列表，
+            // 逐字模型 wordLyric 留给第 3 期歌词页渲染。
             lyricJob = viewModelScope.launch {
+                var w: WordLyric? = null
                 // 加超时：接口慢时不再一直卡在「正在加载歌词…」，
                 // 超时就按「没有歌词」处理，界面显示「暂无歌词」
                 val t = withTimeoutOrNull(lyricTimeoutMs) {
-                    var x = if (nid != null) {
+                    var x = ""
+                    if (nid != null) {
                         withContext(Dispatchers.IO) {
-                            runCatching { Netease.lyric(nid) }.getOrDefault("")
+                            val r = runCatching { Prefetcher.warmLyric(nid) }.getOrNull()
+                            if (r != null) {
+                                w = r.word
+                                x = r.lrc
+                            } else {
+                                // warmLyric 内部已经完成「新接口失败 → 老 /lyric」的回退，
+                                // 只有整体抛异常时才补一次，避免把老接口连打四遍。
+                                x = runCatching { Netease.lyric(nid) }.getOrDefault("")
+                            }
                         }
-                    } else ""
+                    }
                     if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
                     x
                 } ?: ""
                 if (curSsid == id) {
+                    wordLyric = w
                     lyric = lyricLines(t)
                     lyricLoading = false
                     lyricSsid = id

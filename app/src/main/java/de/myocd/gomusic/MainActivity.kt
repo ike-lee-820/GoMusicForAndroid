@@ -15,6 +15,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -93,8 +94,9 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-            GoTheme(vm.primary, rememberAppFont(vm.fontKind, vm.fontWght)) {
-                StatusBarMode()
+            val dark = resolveDark(vm.themeMode, isSystemInDarkTheme())
+            GoTheme(vm.primary, rememberAppFont(vm.fontKind, vm.fontWght), vm.themeMode) {
+                StatusBarMode(dark)
                 // 简繁转换：设置一改，界面与文字全部跟着变
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalZhMode provides vm.zhConvert,
@@ -135,12 +137,14 @@ class MainActivity : ComponentActivity() {
  * 避免内容压到挖孔 / 圆角那一侧。
  */
 @Composable
-private fun StatusBarMode() {
+private fun StatusBarMode(dark: Boolean) {
     val act = LocalContext.current as? ComponentActivity ?: return
     val landscape = isLandscape()
-    LaunchedEffect(landscape) {
+    LaunchedEffect(landscape, dark) {
         val ctl = WindowCompat.getInsetsController(act.window, act.window.decorView)
         val type = WindowInsetsCompat.Type.statusBars()
+        // 亮色外观下状态栏图标要深色，否则白底白图标看不见
+        ctl.isAppearanceLightStatusBars = !dark
         if (!landscape) {
             ctl.show(type)
             return@LaunchedEffect

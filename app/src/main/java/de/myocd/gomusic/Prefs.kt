@@ -222,4 +222,23 @@ class Prefs(ctx: Context) {
     var surroundStrength: Float
         get() = sp.getFloat("surround_strength", 0.55f)
         set(v) { sp.edit().putFloat("surround_strength", v.coerceIn(0f, 1f)).apply() }
+
+    /** 外观：0 亮色 / 1 暗色 / 2 自动（跟随系统）。默认暗色，保持升级前的观感 */
+    var themeMode: Int
+        get() = sp.getInt("theme_mode", 1)
+        set(v) { sp.edit().putInt("theme_mode", v.coerceIn(0, 2)).apply() }
+
+    /** 「我的喜欢」本地集合（ssid），未登录也能用；与网易云「我喜欢的音乐」歌单互不覆盖 */
+    var favorites: Set<String>
+        get() = runCatching {
+            json.decodeFromString<List<String>>(sp.getString("favorites", "[]")!!).toSet()
+        }.getOrDefault(emptySet())
+        set(v) { sp.edit().putString("favorites", json.encodeToString(v.toList())).apply() }
+
+    /** 搜索记录（最近在前），提交时才写，去重后最多 20 条 */
+    var searchHistory: List<String>
+        get() = runCatching {
+            json.decodeFromString<List<String>>(sp.getString("search_history", "[]")!!)
+        }.getOrDefault(emptyList())
+        set(v) { sp.edit().putString("search_history", json.encodeToString(v.distinct().take(20))).apply() }
 }

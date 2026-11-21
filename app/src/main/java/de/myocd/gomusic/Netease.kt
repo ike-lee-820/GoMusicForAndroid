@@ -969,6 +969,113 @@ object Netease {
         return fallback
     }
 
+    // ================= 逐字歌词 /lyric/new =================
+
+    /** 逐字歌词结果：解析后的模型 + 行级 LRC 文本（老歌词列表仍吃它） */
+    data class LyricResult(val word: WordLyric, val lrc: String)
+
+    /**
+     * 新歌词接口 /lyric/new：yrc 逐字原文 + ytlrc / yromalrc 逐字版多语言轨
+     * + tlyric / romalrc 通用兜底轨。
+     *
+     * 任何失败都返回 null，由 [lyricWordWithFallback] 退回老 /lyric：
+     * 网络异常 / HTTP 非 2xx / 空响应 / code 明确非 200 /
+     * yrc 与 lrc 都为空 / JSON 解析异常。
+     *
+     * 和老歌词一样走免登录快速通道：不带 cookie、不带 unblock、不重试、一次往返。
+     */
+    fun lyricNew(id: Long): LyricResult? {
+        val url = "$NM_BASE/lyric/new?id=$id"
+        val body = try {
+            val req = Request.Builder().url(url).build()
+            urlClient.newCall(req).execute().use { r ->
+                NmLog.req(url)
+                val b = r.body?.string().orEmpty()
+                NmLog.res(url, r.code, b)
+                if (!r.isSuccessful || b.isBlank()) null else b
+            }
+        } catch (e: Exception) {
+            NmLog.note("逐字歌词请求失败 id=$id ${e.message}")
+            null
+        } ?: return null
+
+        return try {
+            val o = json.parseToJsonElement(body) as? JsonObject ?: return null
+            val code = o["code"]?.jsonPrimitive?.content?.toIntOrNull()
+            if (code != null && code != 200) {
+                NmLog.note("逐字歌词业务码异常 id=$id code=$code，退回老歌词")
+                return null
+            }
+            fun field(k: String): String =
+                (o[k] as? JsonObject)?.get("lyric")?.jsonPrimitive?.content.orEmpty()
+            val yrc = field("yrc")
+            val lrc = field("lrc")
+            if (yrc.isBlank() && lrc.isBlank()) {
+                NmLog.note("逐字歌词 yrc/lrc 都为空 id=$id，退回老歌词")
+                return null
+            }
+            val w = WordLyricParser.fromNewLyric(o)
+            // 新接口有时只给 yrc 不给 lrc：用逐字行拼一份行级 LRC，
+            // 否则第 1 期还在用的老歌词列表会显示「暂无歌词」。
+            val text = lrc.ifBlank { w.toLrc() }
+            NmLog.note(
+                "逐字歌词生效 id=$id 行=${w.lines.size} 逐字=${w.hasWordTiming} " +
+                    "译文=${w.hasTranslation} 罗马音=${w.hasRoman} lrc=${text.length}字"
+            )
+            LyricResult(w, text)
+        } catch (e: Exception) {
+            NmLog.note("逐字歌词解析失败 id=$id ${e.message}，退回老歌词")
+            null
+        }
+    }
+
+    /**
+     * 歌词总入口：新 /lyric/new 优先，**任何失败一律退回老 /lyric**（再退本地文件）。
+     * 老接口拿到的 LRC 也过一遍 WordLyricParser，保证逐字渲染链路统一，
+     * 第 3 期换 UI 时不用再改数据层。
+     */
+    fun lyricWordWithFallback(id: Long): LyricResult {
+        val nw = lyricNew(id)
+        if (nw != null) return nw
+        NmLog.note("退回老歌词接口 /lyric?id=$id")
+        val old = runCatching { lyric(id) }.getOrDefault("")
+        return LyricResult(WordLyricParser.parse(lrc = old), old)
+    }
+
+    // ================= 聚合搜索（一次性搜歌手 / 专辑 / 歌曲） =================
+
+    /**
+     * 一次输入同时把三类实体都搜出来，三路并发，总耗时等于最慢那一路。
+     * 第 2 期搜索页直接渲染 [Aggregate.mixed]，不再「先出歌曲再补专辑」。
+     */
+    data class Aggregate(
+        val songs: List<Song>,
+        val albums: List<Group>,
+        val artists: List<Group>,
+    ) {
+        /** Apple Music「Top Results」式混合结果：不同实体类型在同一条列表里 */
+        sealed class Hit {
+            data class Artist(val g: Group) : Hit()
+            data class SongHit(val s: Song) : Hit()
+            data class Album(val g: Group) : Hit()
+        }
+
+        val mixed: List<Hit>
+            get() = buildList {
+                artists.firstOrNull()?.let { add(Hit.Artist(it)) }
+                songs.take(6).forEach { add(Hit.SongHit(it)) }
+                albums.take(2).forEach { add(Hit.Album(it)) }
+                songs.drop(6).forEach { add(Hit.SongHit(it)) }
+            }
+    }
+
+    fun searchAll(keywords: String, limit: Int = 20): Aggregate = runBlocking(Dispatchers.IO) {
+        val s = async { runCatching { searchSongs(keywords, limit) }.getOrDefault(emptyList()) }
+        val a = async { runCatching { searchAlbums(keywords, 10) }.getOrDefault(emptyList()) }
+        val r = async { runCatching { searchArtists(keywords, 10) }.getOrDefault(emptyList()) }
+        Aggregate(s.await(), a.await(), r.await())
+    }
+
     /**
      * 专辑 / 歌手的歌曲列表。
      * 专辑走 /album，歌手走 /artist/songs；拿到后再用 song/detail 补全。

@@ -2023,6 +2023,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 单曲循环：不跳列表，直接把这一首从头重播
         if (playMode == MODE_REPEAT_ONE) { c.seekTo(0); c.play(); return }
         c.seekToNext()
+        // 只 seekToNext 时，若播放器正处在暂停 / ENDED / 新项还没 prepare，
+        // 切过去就是「歌名换了但不出声，还得再点一下播放」。
+        c.play()
     }
 
     fun prev() {
@@ -2030,6 +2033,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 单曲循环：同上，从头重播这一首
         if (playMode == MODE_REPEAT_ONE) { c.seekTo(0); c.play(); return }
         if (c.currentPosition > 3000) c.seekTo(0) else c.seekToPrevious()
+        c.play()
     }
 
     fun seekTo(ms: Long) { controller?.seekTo(ms) }

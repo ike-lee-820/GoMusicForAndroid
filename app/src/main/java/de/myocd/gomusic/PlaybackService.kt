@@ -69,6 +69,9 @@ class PlaybackService : MediaSessionService() {
 
     private var callListener: PhoneStateListener? = null
     private var pausedByCall = false
+    /** 用户自己点了暂停：自动切歌时不能把它又唤醒 */
+    @Volatile
+    private var userPaused = false
 
     // ---- 后台保活 ----
     private val handler = Handler(Looper.getMainLooper())
@@ -83,22 +86,81 @@ class PlaybackService : MediaSessionService() {
             if (isPlaying) acquireWifiLock() else releaseWifiLock()
             savePlaybackState()
         }
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // 只有「用户自己点暂停」才算数。音频焦点 / 耳机断开 / 远端
+            // 造成的 playWhenReady=false 不该阻止自动续播。
+            if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) {
+                userPaused = !playWhenReady
+            }
+            savePlaybackState()
+        }
         override fun onTimelineChanged(timeline: Timeline, reason: Int) { savePlaybackState() }
-        override fun onMediaItemTransition(item: MediaItem?, reason: Int) { savePlaybackState() }
+        override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+            savePlaybackState()
+            // 上一首播完、播放器自动跳到下一首（AUTO），或单曲循环重播（REPEAT）。
+            //
+            // 这本来该接着出声，但音轨切换时不少 ROM 会发一次短暂的
+            // AUDIOFOCUS_LOSS，ExoPlayer 开着自动音频焦点管理就把
+            // playWhenReady 置回 false；新音源解析停在 IDLE 也会不出声。
+            // 结果就是「歌名换了、进度归零，必须手动点播放」。
+            // 这里在切歌后补一次 play，并延后一拍再兜一次，覆盖焦点
+            // 事件比 transition 回调晚到的情况。用户主动暂停、来电、
+            // 录制页暂停一律不补。
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+            ) {
+                NmLog.note("自动切歌：安排续播（reason=$reason）")
+                handler.post { ensurePlayingAfterTransition() }
+                handler.postDelayed({ ensurePlayingAfterTransition() }, 800L)
+            }
+        }
         override fun onPlaybackStateChanged(playbackState: Int) {
             savePlaybackState()
-            // 自动续播兜底放在服务层：播放页重组（横屏展开控制栏）不会
-            // 把这个 listener 带 dispose。队列还有下一首而播放器停在 ENDED
-            // 时主动推进；单曲循环由 REPEAT_MODE_ONE 自己处理，不干预。
+            // 二级兜底：队列还有下一首而播放器真的停在 ENDED 时主动推进。
+            // 单曲循环由 REPEAT_MODE_ONE 自己处理，不干预。
+            // 不在 listener 回调里直接改状态 —— ExoPlayer 可能在回调
+            // 结束后把 playWhenReady 置回 false，post 到下一帧才稳。
             if (playbackState == Player.STATE_ENDED) {
                 val cur = player
                 if (cur != null && cur.repeatMode != Player.REPEAT_MODE_ONE
                     && cur.mediaItemCount > cur.currentMediaItemIndex + 1
                 ) {
                     NmLog.note("播放结束：服务层自动切下一首")
-                    cur.seekToNext()
-                    cur.play()
+                    handler.post {
+                        val p = player ?: return@post
+                        if (userPaused || pausedByCall) return@post
+                        p.seekToNext()
+                        p.prepare()
+                        p.play()
+                    }
                 }
+            }
+        }
+    }
+
+    /**
+     * 自动切歌后的续播：只在确实没在播、且不是用户/来电/录制主动暂停时补。
+     * 新音源解析失败会让播放器停在 IDLE 或带 error，顺手重新 prepare。
+     */
+    private fun ensurePlayingAfterTransition() {
+        val p = player ?: return
+        if (userPaused || pausedByCall) return
+        if (p.mediaItemCount == 0) return
+        if (p.isPlaying && p.playWhenReady) return
+        when {
+            p.playerError != null -> {
+                NmLog.note("自动切歌：播放器出错，重新准备后续播")
+                p.prepare()
+                p.play()
+            }
+            p.playbackState == Player.STATE_IDLE -> {
+                NmLog.note("自动切歌：播放器停在 IDLE，重新准备后续播")
+                p.prepare()
+                p.play()
+            }
+            else -> {
+                NmLog.note("自动切歌：playWhenReady 被关掉，补一次 play")
+                p.play()
             }
         }
     }
@@ -253,10 +315,12 @@ class PlaybackService : MediaSessionService() {
         when (intent?.action) {
             ACTION_APPLY_FOCUS -> applyFocus()
             ACTION_REC_PAUSE -> {
+                userPaused = true
                 runCatching { player?.pause() }
                 NmLog.note("录制页：服务层暂停播放")
             }
             ACTION_REC_RESUME -> {
+                userPaused = false
                 runCatching { player?.play() }
                 NmLog.note("录制页：服务层恢复播放")
             }

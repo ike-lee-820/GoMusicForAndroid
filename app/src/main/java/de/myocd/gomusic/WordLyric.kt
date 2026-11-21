@@ -117,7 +117,7 @@ object WordLyricParser {
     }
 
     fun parse(
-        yrc: String,
+        yrc: String = "",
         ytlrc: String = "",
         yromalrc: String = "",
         tlyric: String = "",

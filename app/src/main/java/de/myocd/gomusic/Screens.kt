@@ -284,8 +284,8 @@ fun MainScreen(vm: MainViewModel) {
         vm.stack.removeAt(vm.stack.lastIndex)
     }
     BackHandler(enabled = vm.showPlayer && vm.playerPage != PLAYER_COVER) {
-        vm.setPlayerPage(PLAYER_COVER)
-        vm.setLyricBarHidden(false)
+        vm.gotoPlayerPage(PLAYER_COVER)
+        vm.hideLyricBar(false)
     }
     // 后注册的先响应：MV 在栈顶时返回键关 MV，而不是关下面的播放页
     BackHandler(enabled = vm.stack.lastOrNull() is Screen.Video) {
@@ -496,7 +496,7 @@ fun MiniPlayerRail(vm: MainViewModel) {
             if (vm.isPlaying) "暂停" else "播放", size = PlayerIconSpec.Func, box = 44.dp,
         ) { vm.togglePlay() }
         PIconBtn("queue", "播放列表") {
-            vm.setPlayerPage(PLAYER_QUEUE)
+            vm.gotoPlayerPage(PLAYER_QUEUE)
             vm.showPlayer = true
         }
     }
@@ -556,7 +556,7 @@ fun MiniPlayer(vm: MainViewModel) {
             if (vm.isPlaying) "暂停" else "播放", size = PlayerIconSpec.Func, box = 44.dp,
         ) { vm.togglePlay() }
         PIconBtn("queue", "播放列表") {
-            vm.setPlayerPage(PLAYER_QUEUE)
+            vm.gotoPlayerPage(PLAYER_QUEUE)
             vm.showPlayer = true
         }
     }

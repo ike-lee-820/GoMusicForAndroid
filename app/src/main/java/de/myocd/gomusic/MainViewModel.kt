@@ -155,7 +155,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 播放器内部页；图 1 封面 / 图 2 歌词 / 图 4 队列 */
     var playerPage by mutableIntStateOf(PLAYER_COVER); private set
-    fun setPlayerPage(p: Int) { playerPage = p }
+    fun gotoPlayerPage(p: Int) { playerPage = p }
     /** 从外部打开播放器一律先回图 1 封面页 */
     fun openPlayer() {
         playerPage = PLAYER_COVER
@@ -164,7 +164,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
     /** 1A：歌词页下滑隐藏播放栏、上滑恢复 */
     var lyricBarHidden by mutableStateOf(false); private set
-    fun setLyricBarHidden(v: Boolean) { lyricBarHidden = v }
+    fun hideLyricBar(v: Boolean) { lyricBarHidden = v }
     /** 搜索分类：0 综合 1 歌手 2 专辑 3 歌曲 */
     var searchFilter by mutableIntStateOf(0); private set
     fun chooseSearchFilter(i: Int) { searchFilter = i }
@@ -2110,7 +2110,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** 图 4 的 Segmented 直接选模式，不用循环点三次 */
-    fun setPlayMode(m: Int) {
+    fun selectPlayMode(m: Int) {
         playMode = m.coerceIn(0, 2)
         prefs.playMode = playMode
         controller?.let(::applyMode)

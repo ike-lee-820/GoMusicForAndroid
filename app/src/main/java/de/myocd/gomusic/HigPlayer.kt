@@ -308,7 +308,7 @@ private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(44.dp).clickable { vm.setPlayerPage(PLAYER_LYRICS) }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(44.dp).clickable { vm.gotoPlayerPage(PLAYER_LYRICS) }, contentAlignment = Alignment.Center) {
             Icon(
                 Icons.Outlined.ChatBubbleOutline, "歌词",
                 tint = if (vm.playerPage == PLAYER_LYRICS) go.primary else go.on,
@@ -321,7 +321,7 @@ private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
         PIconBtn(
             "queue", "播放列表", size = PlayerIconSpec.Func,
             tint = if (vm.playerPage == PLAYER_QUEUE) go.primary else go.on,
-        ) { vm.setPlayerPage(PLAYER_QUEUE) }
+        ) { vm.gotoPlayerPage(PLAYER_QUEUE) }
     }
 }
 
@@ -380,12 +380,12 @@ private fun LyricsPane(vm: MainViewModel, s: Song?) {
     Column(
         Modifier.fillMaxSize().pointerInput(Unit) {
             detectVerticalDragGestures { _, dy ->
-                if (dy > 14) vm.setLyricBarHidden(true)
-                else if (dy < -14) vm.setLyricBarHidden(false)
+                if (dy > 14) vm.hideLyricBar(true)
+                else if (dy < -14) vm.hideLyricBar(false)
             }
         },
     ) {
-        InfoHeader(vm, s, go) { vm.setPlayerPage(PLAYER_COVER); vm.setLyricBarHidden(false) }
+        InfoHeader(vm, s, go) { vm.gotoPlayerPage(PLAYER_COVER); vm.hideLyricBar(false) }
         Box(Modifier.weight(1f).fillMaxWidth()) { WordLyricsList(vm, go) }
         if (!vm.lyricBarHidden) {
             PlayerBottomBar(vm, go)
@@ -482,7 +482,7 @@ private fun WordLineText(line: WordLine, posMs: Long, go: GoColors, alpha: Float
 private fun QueuePane(vm: MainViewModel, s: Song?) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
-        InfoHeader(vm, s, go) { vm.setPlayerPage(PLAYER_COVER) }
+        InfoHeader(vm, s, go) { vm.gotoPlayerPage(PLAYER_COVER) }
         Spacer(Modifier.height(12.dp))
         // Segmented：随机 / 列表循环 / 单曲循环
         Row(
@@ -503,7 +503,7 @@ private fun QueuePane(vm: MainViewModel, s: Song?) {
                     modifier = Modifier.weight(1f).fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(if (sel) go.on.copy(alpha = 0.16f) else Color.Transparent)
-                        .clickable { vm.setPlayMode(mode) }
+                        .clickable { vm.selectPlayMode(mode) }
                         .padding(vertical = 10.dp),
                 )
             }

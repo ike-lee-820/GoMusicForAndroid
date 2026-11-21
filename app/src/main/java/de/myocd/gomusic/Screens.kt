@@ -276,9 +276,17 @@ fun MainScreen(vm: MainViewModel) {
     )
     val top = vm.stack.lastOrNull()
 
-    BackHandler(enabled = vm.showLyrics) { vm.showLyrics = false }
-    BackHandler(enabled = vm.showPlayer && !vm.showLyrics) { vm.showPlayer = false }
-    BackHandler(enabled = !vm.showPlayer && vm.stack.isNotEmpty()) { vm.stack.removeAt(vm.stack.lastIndex) }
+    // 后注册的先响应：歌词页/队列页先回封面，再按一次才收起播放器
+    BackHandler(enabled = vm.showPlayer && vm.playerPage == PLAYER_COVER) {
+        vm.showPlayer = false
+    }
+    BackHandler(enabled = !vm.showPlayer && vm.stack.isNotEmpty()) {
+        vm.stack.removeAt(vm.stack.lastIndex)
+    }
+    BackHandler(enabled = vm.showPlayer && vm.playerPage != PLAYER_COVER) {
+        vm.setPlayerPage(PLAYER_COVER)
+        vm.setLyricBarHidden(false)
+    }
     // 后注册的先响应：MV 在栈顶时返回键关 MV，而不是关下面的播放页
     BackHandler(enabled = vm.stack.lastOrNull() is Screen.Video) {
         vm.stack.removeAt(vm.stack.lastIndex)
@@ -298,8 +306,13 @@ fun MainScreen(vm: MainViewModel) {
         val contentBox: @Composable (Modifier) -> Unit = { mod ->
             Box(mod.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                 Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
-                    // 进入二级页时不再组合主页长列表：省掉整屏重组，打开歌单/专辑更快
-                    if (top == null) HomeContent(vm, listStates)
+                    // 26.11.43：三 Tab 分发；主页内容原样不变，搜索/我的走新页。
+                    // 进入二级页时不再组合主页长列表，避免整屏重组。
+                    if (top == null) when (vm.tab3) {
+                        TAB3_MINE -> MinePage(vm)
+                        TAB3_SEARCH -> SearchPage(vm)
+                        else -> HomeContent(vm, listStates)
+                    }
                     AnimatedContent(
                         targetState = top,
                         modifier = Modifier.fillMaxSize(),
@@ -333,7 +346,7 @@ fun MainScreen(vm: MainViewModel) {
         }
         if (landscape) {
             Row(Modifier.fillMaxSize()) {
-                NavRail(vm, sideInset)
+                NavRail3(vm, sideInset)
                 contentBox(Modifier.weight(1f))
                 MiniPlayerRail(vm)
             }
@@ -341,7 +354,7 @@ fun MainScreen(vm: MainViewModel) {
             Column(Modifier.fillMaxSize()) {
                 contentBox(Modifier.weight(1f))
                 MiniPlayer(vm)
-                NavBar(vm)
+                NavBar3(vm)
             }
         }
 
@@ -352,15 +365,9 @@ fun MainScreen(vm: MainViewModel) {
             vm.showPlayer,
             enter = slideInVertically(tween(240)) { it } + fadeIn(tween(180)),
             exit = slideOutVertically(tween(240)) { it } + fadeOut(tween(180)),
-        ) { FullPlayer(vm) }
+        ) { HigPlayerRoot(vm) }
 
-        AnimatedVisibility(
-            vm.showLyrics,
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(150)),
-        ) { LyricsPage(vm) }
-
-        if (vm.showQueue) QueueSheet(vm)
+        if (vm.showCast) CastSheet(vm) { vm.showCast = false }
         if (vm.showSettings) SettingsSheet(vm)
         if (vm.showNmLogin) NmLoginSheet(vm)
         if (vm.showHistory) HistorySheet(vm)
@@ -467,7 +474,7 @@ fun MiniPlayerRail(vm: MainViewModel) {
             // 整栏可点：点封面或歌名就进播放页。横屏下 FullPlayer 的 wide
             // 判定为 true，自动用横版双栏（左播放器 / 右旋转歌词）。
             // 栏内播放、播放列表按钮自带 clickable，优先响应，不会误打开播放页
-            .clickable { if (vm.currentSong != null) vm.showPlayer = true }
+            .clickable { if (vm.currentSong != null) vm.openPlayer() }
             .navigationBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -488,7 +495,10 @@ fun MiniPlayerRail(vm: MainViewModel) {
             if (vm.isPlaying) "pause" else "play",
             if (vm.isPlaying) "暂停" else "播放", size = PlayerIconSpec.Func, box = 44.dp,
         ) { vm.togglePlay() }
-        PIconBtn("queue", "播放列表") { vm.showQueue = true }
+        PIconBtn("queue", "播放列表") {
+            vm.setPlayerPage(PLAYER_QUEUE)
+            vm.showPlayer = true
+        }
     }
 }
 
@@ -532,7 +542,7 @@ fun MiniPlayer(vm: MainViewModel) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
             .height(64.dp).clip(RoundedCornerShape(16.dp)).background(go.surfaceHi)
-            .clickable { vm.showPlayer = true }.padding(start = 12.dp, end = 4.dp),
+            .clickable { vm.openPlayer() }.padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Cover(s.coverUrl, Modifier.size(40.dp), 8.dp)
@@ -545,7 +555,10 @@ fun MiniPlayer(vm: MainViewModel) {
             if (vm.isPlaying) "pause" else "play",
             if (vm.isPlaying) "暂停" else "播放", size = PlayerIconSpec.Func, box = 44.dp,
         ) { vm.togglePlay() }
-        PIconBtn("queue", "播放列表") { vm.showQueue = true }
+        PIconBtn("queue", "播放列表") {
+            vm.setPlayerPage(PLAYER_QUEUE)
+            vm.showPlayer = true
+        }
     }
 }
 

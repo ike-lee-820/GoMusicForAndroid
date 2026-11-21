@@ -30,8 +30,8 @@ android {
         )
         minSdk = 26
         targetSdk = 35
-        versionCode = 144
-        versionName = "26.11.42"
+        versionCode = 145
+        versionName = "26.11.43"
     }
 
     signingConfigs {
@@ -96,6 +96,8 @@ dependencies {
     implementation("androidx.media3:media3-datasource:1.4.1")
     // SimpleCache 的 DatabaseProvider 在这个模块里（边播边缓存要用）
     implementation("androidx.media3:media3-database:1.4.1")
+    // 26.11.44：系统 MediaRouter 远程播放（真实设备发现 + RemotePlayback 投流）
+    implementation("androidx.mediarouter:mediarouter:1.7.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")

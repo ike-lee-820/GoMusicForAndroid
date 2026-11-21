@@ -128,12 +128,48 @@ data class DlStatus(
 /** 网易云搜索每次请求的条数（翻页步长） */
 const val NM_PAGE_SIZE = 20
 
+/** 26.11.43 起底栏只有三个：我的 / 主页 / 搜索 */
+const val TAB3_MINE = 0
+const val TAB3_HOME = 1
+const val TAB3_SEARCH = 2
+
+/** 播放器内部三页：封面 / 歌词 / 队列 */
+const val PLAYER_COVER = 0
+const val PLAYER_LYRICS = 1
+const val PLAYER_QUEUE = 2
+
 class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val prefs = Prefs(app)
 
     // ---------- 界面状态 ----------
-    /** 当前标签：0 歌曲 1 专辑 2 歌手 3 歌单 */
+    /** 当前标签：0 歌曲 1 专辑 2 歌手 3 歌单（旧内容页仍保留，从搜索/我的进入） */
     var tab by mutableIntStateOf(TAB_HOME); private set
+    /** 新底栏当前项 */
+    var tab3 by mutableIntStateOf(TAB3_HOME); private set
+    fun chooseTab3(t: Int) {
+        tab3 = t
+        stack.clear()
+        if (t == TAB3_HOME) chooseTab(TAB_HOME)
+        if (t == TAB3_SEARCH && query.isNotBlank()) searchAll(query)
+    }
+
+    /** 播放器内部页；图 1 封面 / 图 2 歌词 / 图 4 队列 */
+    var playerPage by mutableIntStateOf(PLAYER_COVER); private set
+    fun setPlayerPage(p: Int) { playerPage = p }
+    /** 从外部打开播放器一律先回图 1 封面页 */
+    fun openPlayer() {
+        playerPage = PLAYER_COVER
+        lyricBarHidden = false
+        showPlayer = true
+    }
+    /** 1A：歌词页下滑隐藏播放栏、上滑恢复 */
+    var lyricBarHidden by mutableStateOf(false); private set
+    fun setLyricBarHidden(v: Boolean) { lyricBarHidden = v }
+    /** 搜索分类：0 综合 1 歌手 2 专辑 3 歌曲 */
+    var searchFilter by mutableIntStateOf(0); private set
+    fun chooseSearchFilter(i: Int) { searchFilter = i }
+    /** 投屏设备选择 */
+    var showCast by mutableStateOf(false)
     /** 二级页面栈 */
     val stack = mutableStateListOf<Screen>()
     var query by mutableStateOf("")
@@ -1858,7 +1894,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
 
     /** ssid -> Song 索引，随 songs 变化重建一次，避免每个列表项都重建整张表 */
-    private val songMap: Map<String, Song> by derivedStateOf { songs.associateBy { it.ssid } }
+    val songMap: Map<String, Song> by derivedStateOf { songs.associateBy { it.ssid } }
 
     /**
      * ssid -> Song。
@@ -2071,6 +2107,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.playMode = playMode
         controller?.let(::applyMode)
         toast(listOf("列表循环", "随机播放", "单曲循环")[playMode])
+    }
+
+    /** 图 4 的 Segmented 直接选模式，不用循环点三次 */
+    fun setPlayMode(m: Int) {
+        playMode = m.coerceIn(0, 2)
+        prefs.playMode = playMode
+        controller?.let(::applyMode)
     }
 
     private fun applyMode(c: MediaController) {

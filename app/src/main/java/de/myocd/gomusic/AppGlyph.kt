@@ -22,7 +22,7 @@ fun glyphLineWidth(px: Float): Float = 1.7f * (px / GLYPH_GRID)
 fun EqIconButton(
     onClick: () -> Unit,
     tint: Color = LocalGo.current.on,
-    size: Dp = 24.dp,
+    size: Dp = PlayerIconSpec.Func,
     hit: Dp = 36.dp,
     active: Boolean = false,
 ) {

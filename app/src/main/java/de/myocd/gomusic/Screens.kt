@@ -486,7 +486,7 @@ fun MiniPlayerRail(vm: MainViewModel) {
         VS(10)
         PIconBtn(
             if (vm.isPlaying) "pause" else "play",
-            if (vm.isPlaying) "暂停" else "播放", size = 44.dp,
+            if (vm.isPlaying) "暂停" else "播放", size = PlayerIconSpec.Func, box = 44.dp,
         ) { vm.togglePlay() }
         PIconBtn("queue", "播放列表") { vm.showQueue = true }
     }
@@ -543,7 +543,7 @@ fun MiniPlayer(vm: MainViewModel) {
         }
         PIconBtn(
             if (vm.isPlaying) "pause" else "play",
-            if (vm.isPlaying) "暂停" else "播放", size = 44.dp,
+            if (vm.isPlaying) "暂停" else "播放", size = PlayerIconSpec.Func, box = 44.dp,
         ) { vm.togglePlay() }
         PIconBtn("queue", "播放列表") { vm.showQueue = true }
     }
@@ -1926,46 +1926,46 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 .height(40.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            PIconBtn("share", "分享", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+            PIconBtn("share", "分享", size = PlayerIconSpec.Func, tint = Color.White) {
                 shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
             }
             HS(6)
-            PIconBtn("download", "下载", size = 24.dp, minHit = 34.dp, tint = Color.White) {
+            PIconBtn("download", "下载", size = PlayerIconSpec.Func, tint = Color.White) {
                 vm.download(listOf(s))
             }
             HS(6)
             PIconBtn(
                 "add", "加入歌单",
-                size = 24.dp, minHit = 34.dp, tint = Color.White,
+                size = PlayerIconSpec.Func, tint = Color.White,
             ) { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
             // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
             LaunchedEffect(s.ssid) { vm.probeMv(s) }
             if (vm.mvAvailable(s)) {
                 HS(6)
-                MvIconButton({ vm.playMv() }, tint = Color.White, size = 24.dp, hit = 34.dp)
+                MvIconButton({ vm.playMv() }, tint = Color.White, size = PlayerIconSpec.Func)
             }
             // 翻译：歌词里有非中文才出现
             if (vm.lyricNeedTrans) {
                 HS(6)
                 TransIconButton(
-                    { vm.translateLyric() }, tint = Color.White, size = 24.dp, hit = 34.dp,
+                    { vm.translateLyric() }, tint = Color.White, size = PlayerIconSpec.Func,
                     active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
                 )
             }
             HS(6)
             EqIconButton(
-                { vm.showEq = true }, tint = Color.White, size = 24.dp, hit = 34.dp,
+                { vm.showEq = true }, tint = Color.White, size = PlayerIconSpec.Func,
                 active = vm.eqConfig.enabled,
             )
             HS(6)
             SurroundIconButton(
-                { vm.showSurround = true }, size = 24.dp, hit = 34.dp,
+                { vm.showSurround = true }, size = PlayerIconSpec.Func,
                 active = vm.surroundOn,
             )
             HS(6)
             PIconBtn(
                 "record", "录制视频",
-                size = 24.dp, minHit = 34.dp, tint = Color.White,
+                size = PlayerIconSpec.Func, tint = Color.White,
             ) { vm.showRecorder = true }
             HS(6)
             QualityMenu(vm, Color.White)
@@ -1990,19 +1990,19 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                 color = Color.White.copy(alpha = 0.65f),
             )
             HS(10)
-            PIconBtn("prev", "上一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.prev() }
+            PIconBtn("prev", "上一首", size = PlayerIconSpec.Func, tint = Color.White) { vm.prev() }
             HS(6)
             PIconBtn(
                 if (vm.isPlaying) "pause" else "play",
                 if (vm.isPlaying) "暂停" else "播放",
-                size = 34.dp, minHit = 34.dp, tint = Color.Black, bg = Color.White,
+                size = PlayerIconSpec.Func, box = 34.dp, tint = Color.Black, bg = Color.White,
             ) { vm.togglePlay() }
             HS(6)
-            PIconBtn("next", "下一首", size = 26.dp, minHit = 34.dp, tint = Color.White) { vm.next() }
+            PIconBtn("next", "下一首", size = PlayerIconSpec.Func, tint = Color.White) { vm.next() }
             HS(10)
             PIconBtn(
                 "queue", "播放列表",
-                size = 24.dp, minHit = 34.dp, tint = Color.White,
+                size = PlayerIconSpec.Func, tint = Color.White,
             ) { vm.showQueue = true }
             HS(6)
             PIconBtn(
@@ -2012,7 +2012,7 @@ fun WideTopControls(vm: MainViewModel, s: Song) {
                     else -> "repeat_one"
                 },
                 listOf("列表循环", "随机播放", "单曲循环")[vm.playMode],
-                size = 24.dp, minHit = 34.dp, tint = Color.White,
+                size = PlayerIconSpec.Func, tint = Color.White,
             ) { vm.cycleMode() }
         }
     }
@@ -2148,28 +2148,28 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 // MV：确认过真能播才显示（mvId>0 只说明接口给了 id，见 vm.mvAvailable）
                 LaunchedEffect(s.ssid) { vm.probeMv(s) }
                 if (vm.mvAvailable(s)) {
-                    MvIconButton({ vm.playMv() }, tint = go.on, size = 24.dp, hit = 36.dp)
+                    MvIconButton({ vm.playMv() }, tint = go.on, size = PlayerIconSpec.Func)
                 }
                 // 翻译：歌词里有非中文才出现
                 if (vm.lyricNeedTrans) {
                     TransIconButton(
-                        { vm.translateLyric() }, tint = go.on, size = 24.dp, hit = 36.dp,
+                        { vm.translateLyric() }, tint = go.on, size = PlayerIconSpec.Func,
                         active = vm.lyricHasTrans && vm.showTrans, loading = vm.transLoading,
                     )
                 }
                 EqIconButton(
-                    { vm.showEq = true }, tint = go.on, size = 24.dp, hit = 36.dp,
+                    { vm.showEq = true }, tint = go.on, size = PlayerIconSpec.Func,
                     active = vm.eqConfig.enabled,
                 )
                 // 竖屏此前只有均衡器、没有 3D 环绕入口；横屏第一行早就有了。
                 // 同一个 SurroundSheet 弹层与横竖屏无关，补上按钮即可打开。
                 SurroundIconButton(
-                    { vm.showSurround = true }, tint = go.on, size = 24.dp, hit = 36.dp,
+                    { vm.showSurround = true }, tint = go.on, size = PlayerIconSpec.Func,
                     active = vm.surroundOn,
                 )
                 PIconBtn(
                     "record", "录制视频",
-                    size = 24.dp, minHit = 36.dp, tint = go.on,
+                    size = PlayerIconSpec.Func, tint = go.on,
                 ) { vm.showRecorder = true }
                 QualityMenu(vm)
                 SpeedMenu(vm)
@@ -2192,16 +2192,16 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                         1 -> "shuffle"
                         else -> "repeat_one"
                     },
-                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode], size = 44.dp,
+                    listOf("列表循环", "随机播放", "单曲循环")[vm.playMode], size = PlayerIconSpec.Func, box = 44.dp,
                 ) { vm.cycleMode() }
-                PIconBtn("prev", "上一首", size = 44.dp) { vm.prev() }
+                PIconBtn("prev", "上一首", size = PlayerIconSpec.Func, box = 44.dp) { vm.prev() }
                 PIconBtn(
                     if (vm.isPlaying) "pause" else "play",
                     if (vm.isPlaying) "暂停" else "播放",
-                    size = 56.dp, tint = OnPrimary, bg = go.primary,
+                    size = PlayerIconSpec.Main, box = 56.dp, tint = OnPrimary, bg = go.primary,
                 ) { vm.togglePlay() }
-                PIconBtn("next", "下一首", size = 44.dp) { vm.next() }
-                PIconBtn("queue", "播放列表", size = 44.dp) { vm.showQueue = true }
+                PIconBtn("next", "下一首", size = PlayerIconSpec.Func, box = 44.dp) { vm.next() }
+                PIconBtn("queue", "播放列表", size = PlayerIconSpec.Func, box = 44.dp) { vm.showQueue = true }
             }
             VS(16)
         }
@@ -2225,7 +2225,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
 fun TransIconButton(
     onClick: () -> Unit,
     tint: Color = LocalGo.current.on,
-    size: Dp = 24.dp,
+    size: Dp = PlayerIconSpec.Func,
     hit: Dp = 36.dp,
     active: Boolean = false,
     loading: Boolean = false,
@@ -2242,7 +2242,7 @@ fun TransIconButton(
         } else {
             Txt(
                 "译",
-                (size.value * 0.75f).roundToInt(),
+                size.value.roundToInt(),
                 color = if (active) go.primary else tint,
                 weight = FontWeight.Bold,
             )
@@ -2257,7 +2257,7 @@ fun TransIconButton(
 fun MvIconButton(
     onClick: () -> Unit,
     tint: Color = LocalGo.current.on,
-    size: Dp = 24.dp,
+    size: Dp = PlayerIconSpec.Func,
     hit: Dp = 36.dp,
 ) {
     PIconBtn("mv", "MV", size = size, minHit = hit, tint = tint, onClick = onClick)
@@ -2276,7 +2276,7 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     val absent = vm.qualitiesAbsent
     val cur = vm.curLevel
     Box {
-        PIconBtn("quality", "音质", size = 30.dp, tint = tint) {
+        PIconBtn("quality", "音质", size = PlayerIconSpec.Func, tint = tint) {
             // 打开菜单才探测：探测要十几个请求，切歌时跑它会拖慢起播
             vm.probeQualities()
             open = true
@@ -2327,7 +2327,7 @@ fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
 fun SpeedMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
     var open by remember { mutableStateOf(false) }
     Box {
-        PIconBtn("speed", "倍速", size = 30.dp, tint = tint) { open = true }
+        PIconBtn("speed", "倍速", size = PlayerIconSpec.Func, tint = tint) { open = true }
         DropdownMenu(open, { open = false }) {
             listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
                 DropdownMenuItem(
@@ -2891,7 +2891,7 @@ fun FullscreenIconButton(
     onClick: () -> Unit,
     active: Boolean = false,
     tint: Color = Color.White,
-    size: Dp = 24.dp,
+    size: Dp = PlayerIconSpec.Func,
     hit: Dp = 36.dp,
 ) {
     Box(Modifier.size(hit).clickScale(true, onClick), contentAlignment = Alignment.Center) {
@@ -3036,12 +3036,12 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             )
         }
         HS(4)
-        PIconBtn("download", "下载 MV", size = 30.dp, tint = Color.White) {
+        PIconBtn("download", "下载 MV", size = PlayerIconSpec.Func, tint = Color.White) {
             vm.downloadMv(v)
         }
         HS(4)
         FullscreenIconButton(
-            { full = !full }, active = full, tint = Color.White, size = 24.dp, hit = 34.dp,
+            { full = !full }, active = full, tint = Color.White, size = PlayerIconSpec.Func
         )
     }
     // 底部：播放 / 暂停 + 进度条 + 倍速
@@ -3057,7 +3057,7 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             PIconBtn(
                 if (playing) "pause" else "play",
                 if (playing) "暂停" else "播放",
-                size = 34.dp, tint = Color.White,
+                size = PlayerIconSpec.Func, box = 34.dp, tint = Color.White,
             ) {
                 playing = !playing
                 player.playWhenReady = playing
@@ -3073,7 +3073,7 @@ fun VideoScreen(vm: MainViewModel, v: Screen.Video) {
             HS(4)
             // 倍速：0.5–2
             Box {
-                PIconBtn("speed", "倍速", size = 30.dp, tint = Color.White) { speedOpen = true }
+                PIconBtn("speed", "倍速", size = PlayerIconSpec.Func, tint = Color.White) { speedOpen = true }
                 DropdownMenu(speedOpen, { speedOpen = false }) {
                     listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
                         DropdownMenuItem(
@@ -3701,7 +3701,7 @@ fun DownloadsSheet(vm: MainViewModel) {
 @Composable
 fun SurroundIconButton(
     onClick: () -> Unit,
-    size: Dp = 24.dp,
+    size: Dp = PlayerIconSpec.Func,
     hit: Dp = 36.dp,
     active: Boolean = false,
     tint: Color = Color.White,

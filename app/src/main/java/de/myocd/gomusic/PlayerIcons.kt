@@ -62,27 +62,41 @@ fun PlayerIcon(
 }
 
 /**
- * 与 [IconBtn] 完全同规格的圆形图标按钮，只是图标换成统一图标包。
- * 触控区、圆底、图标占比（size * 0.55f）都保持一致，整排图标不会参差。
+ * 播放器图标统一规格。
+ *
+ * 26.11.39 前 [PIconBtn] 的 size 是「外层圆底」，图标还要再乘 0.55f，
+ * 于是同一排里传 36 / 30 / 24 会画出 19.8 / 16.5 / 13.2dp 三种大小 ——
+ * 截图里前几个大、后几个小就是这么来的。
+ * 现在 size 一律表示图标实际绘制尺寸，整排按钮只认这一组常量。
  */
+object PlayerIconSpec {
+    /** 功能行与次要控制键的图标尺寸 */
+    val Func: Dp = 24.dp
+    /** 主播放键图标尺寸（圆底由调用方用 box 指定） */
+    val Main: Dp = 32.dp
+}
+
 @Composable
 fun PIconBtn(
     key: String,
     desc: String,
     modifier: Modifier = Modifier,
-    size: Dp = 36.dp,
+    size: Dp = PlayerIconSpec.Func,
     tint: Color = LocalGo.current.on,
     bg: Color = Color.Transparent,
-    minHit: Dp = 40.dp,
+    minHit: Dp = 36.dp,
+    box: Dp? = null,
     onClick: () -> Unit,
 ) {
-    val hit = if (size < minHit) minHit else size
+    // 圆底比图标宽 12dp；主播放键可显式给一个更大的圆底。
+    val boxSize = box ?: (size + 12.dp)
+    val hit = if (minHit > boxSize) minHit else boxSize
     Box(
         modifier.size(hit).clickScale(true, onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Box(Modifier.size(size).background(bg, CircleShape), contentAlignment = Alignment.Center) {
-            PlayerIcon(key, desc, modifier = Modifier.size(size * 0.55f), tint = tint)
+        Box(Modifier.size(boxSize).background(bg, CircleShape), contentAlignment = Alignment.Center) {
+            PlayerIcon(key, desc, modifier = Modifier.size(size), tint = tint)
         }
     }
 }

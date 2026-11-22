@@ -2,8 +2,8 @@ package de.myocd.gomusic
 
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateDpAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -212,7 +212,6 @@ fun HigPlayerRoot(vm: MainViewModel) {
             PLAYER_LYRICS -> 42.dp
             else -> 30.dp
         },
-        animationSpec = spring(dampingRatio = 0.9f, stiffness = 260f),
         label = "playerBgBlur",
     )
     val onBig: (Float, Float, Float) -> Unit = { x, y, sz ->

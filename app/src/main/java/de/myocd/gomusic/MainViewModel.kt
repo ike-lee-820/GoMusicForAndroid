@@ -170,6 +170,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun chooseSearchFilter(i: Int) { searchFilter = i }
     /** 投屏设备选择 */
     var showCast by mutableStateOf(false)
+    /** 播放器「更多」操作表（图 17 样式：信息头 + 图标行） */
+    var showMoreSheet by mutableStateOf(false)
     /** 二级页面栈 */
     val stack = mutableStateListOf<Screen>()
     var query by mutableStateOf("")

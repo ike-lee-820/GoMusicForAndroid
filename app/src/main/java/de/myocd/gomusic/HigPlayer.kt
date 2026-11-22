@@ -27,15 +27,31 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.CloudQueue
+import androidx.compose.material.icons.outlined.Equalizer
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Translate
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -54,9 +70,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -65,7 +82,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -129,6 +145,8 @@ fun HigPlayerRoot(vm: MainViewModel) {
                 else -> CoverPane(vm, s)
             }
         }
+        // 图 17 样式的更多操作表：盖在播放器最上层
+        if (vm.showMoreSheet) PlayerMoreSheet(vm, s) { vm.showMoreSheet = false }
     }
 }
 
@@ -140,7 +158,6 @@ fun HigPlayerRoot(vm: MainViewModel) {
 @Composable
 private fun CoverPane(vm: MainViewModel, s: Song?) {
     val go = LocalGo.current
-    var more by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         // 收起
         Icon(
@@ -217,22 +234,14 @@ private fun CoverPane(vm: MainViewModel, s: Song?) {
             }
             Spacer(Modifier.width(12.dp))
             HigRoundBtn(go) {
-                Icon(
-                    if (vm.isFavorite(s?.ssid)) Icons.Filled.Star else Icons.Outlined.Star,
-                    "加入我的喜欢",
-                    tint = if (vm.isFavorite(s?.ssid)) go.primary else go.on,
-                    modifier = Modifier.size(22.dp).clickable { vm.toggleFavorite(s?.ssid) },
-                )
+                FavoriteStar(vm, s?.ssid, go, Modifier.size(22.dp))
             }
             Spacer(Modifier.width(8.dp))
-            Box {
-                HigRoundBtn(go) {
-                    Icon(
-                        Icons.Outlined.MoreVert, "更多", tint = go.on,
-                        modifier = Modifier.size(22.dp).clickable { more = true },
-                    )
-                }
-                PlayerMoreMenu(vm, s, more) { more = false }
+            HigRoundBtn(go) {
+                Icon(
+                    Icons.Outlined.MoreVert, "更多", tint = go.on,
+                    modifier = Modifier.size(22.dp).clickable { vm.showMoreSheet = true },
+                )
             }
         }
         Spacer(Modifier.height(22.dp))
@@ -254,33 +263,144 @@ private fun HigRoundBtn(go: GoColors, content: @Composable () -> Unit) {
     ) { content() }
 }
 
-/** 所有原来散在控制栏第一行的功能，一项不丢 */
+/**
+ * 星标：**未收藏一定是空心**（Outlined），收藏后才实心主色。
+ * 封面页、歌词页、队列页、更多列表共用这一处，状态不会再各画各的。
+ */
 @Composable
-private fun PlayerMoreMenu(vm: MainViewModel, s: Song?, expanded: Boolean, onClose: () -> Unit) {
+private fun FavoriteStar(
+    vm: MainViewModel,
+    ssid: String?,
+    go: GoColors,
+    modifier: Modifier = Modifier,
+) {
+    val fav = vm.isFavorite(ssid)
+    Icon(
+        if (fav) Icons.Filled.Star else Icons.Outlined.Star,
+        if (fav) "移出我的喜欢" else "加入我的喜欢",
+        tint = if (fav) go.primary else go.on,
+        modifier = modifier.clickable { vm.toggleFavorite(ssid) },
+    )
+}
+
+private data class MoreRow(
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val action: () -> Unit,
+)
+
+/**
+ * 26.11.45：更多列表改成图 17 的样式——
+ * 半透明遮罩 + 底部圆角卡片 + 歌曲信息头（封面 / 歌名 / 歌手主色 / 专辑）+ 主色图标行。
+ * 「不看功能」：功能仍是原来的全部能力，只是排版按图重做。
+ */
+@Composable
+private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
+    val go = LocalGo.current
     val ctx = LocalContext.current
-    DropdownMenu(expanded = expanded, onDismissRequest = onClose) {
-        val item: @Composable (String, () -> Unit) -> Unit = { label, action ->
-            DropdownMenuItem(
-                text = { Text(label, fontSize = 15.sp) },
-                onClick = { onClose(); action() },
-            )
-        }
+    BackHandler(enabled = true) { onClose() }
+
+    val lyrics = vm.wordLyric?.lines?.joinToString("\n") { it.text }.orEmpty()
+    val credits = vm.wordLyric?.lines?.filter { it.meta }
+        ?.joinToString("\n") { it.text }.orEmpty()
+    val fav = vm.isFavorite(s?.ssid)
+
+    val rows = buildList<MoreRow> {
+        add(
+            MoreRow(
+                if (fav) "取消喜爱" else "喜爱",
+                if (fav) Icons.Filled.Star else Icons.Outlined.Star,
+            ) { vm.toggleFavorite(s?.ssid) }
+        )
         if (s != null) {
-            item("分享") { shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}") }
-            item("下载") { vm.download(listOf(s)) }
-            item("加入歌单") { vm.pick(listOf(s.ssid), s.title, s.coverUrl) }
-            item("播放 MV") { vm.playMv() }
-            item("翻译歌词") { vm.translateLyric() }
-            item("查看专辑") { vm.openAlbumAndClose(s) }
-            item("查看歌手") { vm.openArtistAndClose(s) }
+            add(MoreRow("分享歌曲", Icons.Outlined.Share) {
+                shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
+            })
+            add(MoreRow("分享歌词…", Icons.Outlined.ChatBubbleOutline) {
+                shareText(ctx, lyrics.ifBlank { "暂无歌词" })
+            })
+            add(MoreRow("查看制作人员", Icons.Outlined.Info) {
+                if (credits.isBlank()) vm.toast("暂无制作人员信息") else shareText(ctx, credits)
+            })
+            add(MoreRow("下载", Icons.Outlined.Download) { vm.download(listOf(s)) })
+            add(MoreRow("加入歌单", Icons.AutoMirrored.Outlined.PlaylistAdd) {
+                vm.pick(listOf(s.ssid), s.title, s.coverUrl)
+            })
+            add(MoreRow("播放 MV", Icons.Outlined.PlayArrow) { vm.playMv() })
+            add(MoreRow("翻译歌词", Icons.Outlined.Translate) { vm.translateLyric() })
+            add(MoreRow("查看专辑", Icons.Outlined.Album) { vm.openAlbumAndClose(s) })
+            add(MoreRow("查看歌手", Icons.Outlined.Person) { vm.openArtistAndClose(s) })
         }
-        item("均衡器") { vm.showEq = true }
-        item("3D 环绕") { vm.showSurround = true }
-        item("录制视频") { vm.showRecorder = true }
-        item("已下载") { vm.showDownloads = true }
-        item("播放历史") { vm.showHistory = true }
-        item("检查更新") { vm.checkUpdate(false) }
-        item("设置") { vm.showSettings = true }
+        add(MoreRow("均衡器", Icons.Outlined.Equalizer) { vm.showEq = true })
+        add(MoreRow("3D 环绕", Icons.Outlined.MusicNote) { vm.showSurround = true })
+        add(MoreRow("录制视频", Icons.Outlined.Videocam) { vm.showRecorder = true })
+        add(MoreRow("已下载", Icons.Outlined.CloudQueue) { vm.showDownloads = true })
+        add(MoreRow("播放历史", Icons.Outlined.History) { vm.showHistory = true })
+        add(MoreRow("检查更新", Icons.Outlined.Refresh) { vm.checkUpdate(false) })
+        add(MoreRow("设置", Icons.Outlined.Settings) { vm.showSettings = true })
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        // 遮罩：点空白处关闭
+        Box(
+            Modifier.fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.45f))
+                .clickable { onClose() },
+        )
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .heightIn(max = 560.dp)
+                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .background(go.surface)
+                .navigationBarsPadding(),
+        ) {
+            // 信息头（图 17 上半部）
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Cover(s?.coverUrl, Modifier.size(84.dp), 8.dp)
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        s?.title.orEmpty(), fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold, color = go.on, maxLines = 1,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        s?.artist.orEmpty(), fontSize = 17.sp,
+                        color = go.primary, maxLines = 1,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        s?.album.orEmpty(), fontSize = 15.sp,
+                        color = go.muted, maxLines = 1,
+                    )
+                }
+            }
+            Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                rows.forEach { r ->
+                    Row(
+                        Modifier.fillMaxWidth().height(58.dp)
+                            .clickable { onClose(); r.action() }
+                            .padding(horizontal = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            r.icon, r.label, tint = go.primary,
+                            modifier = Modifier.size(26.dp),
+                        )
+                        Spacer(Modifier.width(18.dp))
+                        Text(r.label, fontSize = 17.sp, color = go.on)
+                    }
+                    Box(
+                        Modifier.fillMaxWidth().height((0.5f).dp)
+                            .padding(start = 20.dp).background(go.separator),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -368,7 +488,6 @@ private fun PlayerBottomBar(vm: MainViewModel, go: GoColors) {
 /** 歌词页 / 队列页共用的顶部信息区：点一下回封面页 */
 @Composable
 private fun InfoHeader(vm: MainViewModel, s: Song?, go: GoColors, onBack: () -> Unit) {
-    var more by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().height(64.dp)
             .clip(RoundedCornerShape(12.dp))
@@ -382,20 +501,12 @@ private fun InfoHeader(vm: MainViewModel, s: Song?, go: GoColors, onBack: () -> 
             Text(s?.title.orEmpty(), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = go.on, maxLines = 1)
             Text(s?.artist.orEmpty(), fontSize = 14.sp, color = go.muted, maxLines = 1)
         }
-        Icon(
-            if (vm.isFavorite(s?.ssid)) Icons.Filled.Star else Icons.Outlined.Star,
-            "我的喜欢",
-            tint = if (vm.isFavorite(s?.ssid)) go.primary else go.on,
-            modifier = Modifier.size(22.dp).clickable { vm.toggleFavorite(s?.ssid) },
-        )
+        FavoriteStar(vm, s?.ssid, go, Modifier.size(22.dp))
         Spacer(Modifier.width(8.dp))
-        Box {
-            Icon(
-                Icons.Outlined.MoreVert, "更多", tint = go.on,
-                modifier = Modifier.size(22.dp).clickable { more = true },
-            )
-            PlayerMoreMenu(vm, s, more) { more = false }
-        }
+        Icon(
+            Icons.Outlined.MoreVert, "更多", tint = go.on,
+            modifier = Modifier.size(22.dp).clickable { vm.showMoreSheet = true },
+        )
     }
 }
 
@@ -521,16 +632,6 @@ private fun mixColor(a: Color, b: Color, t: Float): Color {
 private fun WordLineText(line: WordLine, posState: LongState, go: GoColors, alpha: Float) {
     val posMs = posState.longValue
     val frames = WordLyricParser.frameAt(line, posMs)
-    var cursor = 0
-    val ranges = frames.map { f ->
-        val s = cursor
-        cursor += f.char.text.length
-        s until cursor
-    }
-    val activeIdx = frames.indexOfFirst { it.phase == CharPhase.ACTIVE }
-    val activeProgress = frames.getOrNull(activeIdx)?.progress ?: 0f
-    val activeRange = ranges.getOrNull(activeIdx)
-    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
 
     val dim = go.on.copy(alpha = alpha * 0.34f)
     val lit = go.primary.copy(alpha = alpha)
@@ -543,7 +644,7 @@ private fun WordLineText(line: WordLine, posState: LongState, go: GoColors, alph
                 CharPhase.SUNG -> 1f
             }
             val e = smoothstep(t)
-            // 暗 → 主色 → 唱完的白，三段都是连续插值
+            // 暗 → 主色 → 唱完的白，三段都是连续插值（字本身逐个点亮）
             val c = if (e < 0.72f) mixColor(dim, lit, e / 0.72f)
             else mixColor(lit, sung, (e - 0.72f) / 0.28f)
             pushStyle(SpanStyle(color = c, fontWeight = FontWeight.SemiBold, fontSize = 26.sp))
@@ -552,35 +653,41 @@ private fun WordLineText(line: WordLine, posState: LongState, go: GoColors, alph
         }
     }
 
+    // 整行进度：光从左往右连续扫，不再按「当前是哪个字」跳。
+    val lineProgress = (
+        (posMs - line.startMs).toFloat() / line.durMs.coerceAtLeast(1).toFloat()
+        ).coerceIn(0f, 1f)
+
     Text(
         text,
         fontSize = 26.sp,
         fontWeight = FontWeight.SemiBold,
         color = go.on.copy(alpha = alpha),
         textAlign = TextAlign.Start,
-        onTextLayout = { layout = it },
-        modifier = Modifier.fillMaxWidth().drawBehind {
-            val l = layout ?: return@drawBehind
-            val r = activeRange ?: return@drawBehind
-            if (r.isEmpty()) return@drawBehind
-            val first = runCatching { l.getBoundingBox(r.first) }.getOrNull() ?: return@drawBehind
-            val last = runCatching { l.getBoundingBox(r.last) }.getOrNull() ?: return@drawBehind
-            val left = first.left
-            val right = last.right
-            if (right <= left) return@drawBehind
-            val sweep = left + (right - left) * activeProgress
+        // 26.11.45：滚动光必须「在字上面」，不是字后面的一根棍子。
+        // drawWithContent 先画文字，再用 SrcAtop 叠一道窄亮带：
+        // 源只保留在目标已有像素（字形）上，所以光只出现在笔画里，
+        // 折行、字距、不同语言都能连续流过，不会画出背景矩形。
+        modifier = Modifier.fillMaxWidth().drawWithContent {
+            drawContent()
+            if (lineProgress <= 0f || lineProgress >= 1f) return@drawWithContent
+            val sweep = size.width * lineProgress
+            val from = (sweep - 30.dp.toPx()).coerceAtLeast(0f)
+            val to = (sweep + 10.dp.toPx()).coerceAtMost(size.width)
+            if (to <= from) return@drawWithContent
             drawRect(
                 brush = Brush.horizontalGradient(
                     colors = listOf(
                         go.primary.copy(alpha = 0f),
-                        go.primary.copy(alpha = 0.20f * alpha),
+                        go.primary.copy(alpha = 0.85f * alpha),
                         go.primary.copy(alpha = 0f),
                     ),
-                    startX = (sweep - 18.dp.toPx()).coerceAtLeast(left),
-                    endX = (sweep + 6.dp.toPx()).coerceAtMost(right),
+                    startX = from,
+                    endX = to,
                 ),
-                topLeft = Offset(left, first.top),
-                size = Size(right - left, first.bottom - first.top),
+                topLeft = Offset.Zero,
+                size = Size(size.width, size.height),
+                blendMode = BlendMode.SrcAtop,
             )
         },
     )

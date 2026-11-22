@@ -177,6 +177,9 @@ fun SearchPage(vm: MainViewModel) {
         Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp),
     ) {
         val land = maxWidth > maxHeight * 1.15f
+        // 先在 BoxWithConstraintsScope 里算好，别在 RowScope 的 content
+        // lambda 里直接读 maxWidth（隐式接收者会被 RowScope 顶掉）
+        val sideWidth = minOf(340.dp, maxWidth * 0.34f)
         val labels = listOf("综合", "歌手", "专辑", "歌曲")
         val tabItem: @Composable (Int, String, Modifier) -> Unit = { i, l, m ->
             val sel = vm.searchFilter == i
@@ -283,9 +286,7 @@ fun SearchPage(vm: MainViewModel) {
         }
         if (land) {
             Row(Modifier.fillMaxSize()) {
-                Column(
-                    Modifier.width(minOf(340.dp, maxWidth * 0.34f)).fillMaxHeight(),
-                ) { header() }
+                Column(Modifier.width(sideWidth).fillMaxHeight()) { header() }
                 Spacer(Modifier.width(20.dp))
                 Box(Modifier.weight(1f).fillMaxHeight()) { results() }
             }

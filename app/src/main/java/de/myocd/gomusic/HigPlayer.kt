@@ -496,16 +496,10 @@ private fun CoverPane(
             Modifier.weight(1f).fillMaxWidth(),
             contentAlignment = Alignment.Center,
         ) {
-            // 26.11.60：未播放 / 暂停维持原尺寸 0.74，开始播放放大到 0.86。
-            // 用同一个 spring 平滑插值，占位尺寸一变，SharedCover 的 bigS /
-            // bigX / bigY 会跟着上报，画出来的那张封面连续放大缩小，不跳变。
-            val side by animateDpAsState(
-                targetValue = minOf(
-                    maxWidth * if (vm.isPlaying) 0.86f else 0.74f,
-                    maxHeight * 0.92f,
-                ),
-                label = "coverPlayScale",
-            )
+            // 26.11.60：占位始终保持原尺寸。播放 / 暂停的缩放由
+            // SharedCover 的 playScale 单独承担，这里再改一次会双重放大，
+            // 而且每帧改布局会让整棵播放器子树跟着重组。
+            val side = minOf(maxWidth * 0.74f, maxHeight * 0.92f)
             // 26.11.52：这里只留透明占位并上报位置，真正的封面由
             // SharedCover 统一绘制，切页时才能连续缩放而不是换一张图。
             Box(

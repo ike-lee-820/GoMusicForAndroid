@@ -7,16 +7,22 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.Request
+import okhttp3.Response
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 
@@ -425,14 +431,24 @@ object Netease {
         return m[id]
     }
 
-    fun searchSongs(keywords: String, limit: Int = 20, offset: Int = 0): List<Song> {
-        val root = rawSearch(keywords, 1, limit, offset)
+    fun searchSongs(
+        keywords: String,
+        limit: Int = 20,
+        offset: Int = 0,
+        enrichResult: Boolean = true,
+        rootOverride: JsonObject? = null,
+    ): List<Song> {
+        val root = rootOverride ?: rawSearch(keywords, 1, limit, offset)
         val arr = resultArray(root, "songs")
         if (arr.isEmpty()) {
             NmLog.note("搜索单曲无结果：keywords=$keywords offset=$offset")
             return emptyList()
         }
         val list = arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
+        // 26.11.63：聚合搜索走异步快路径，不再在这条关键链上串行等一次
+        // /song/detail（原来 rawSearch 5s + detail 5s 超过 8s 截止，歌曲常被砍空）。
+        // 其余调用点（翻页、专辑/歌手歌曲列表）保持补全行为不变。
+        if (!enrichResult) return list
         NmLog.note("搜索单曲 offset=$offset 得到 ${list.size} 首，开始用 song/detail 补全信息")
         return enrich(list)
     }
@@ -442,9 +458,15 @@ object Netease {
      * type=10 经常返回空（或需要登录），这时用单曲结果里的专辑兜底，
      * 保证「专辑」标签在网易云曲库下也能出内容。
      */
-    fun searchAlbums(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
+    fun searchAlbums(
+        keywords: String,
+        limit: Int = 10,
+        offset: Int = 0,
+        fallback: Boolean = true,
+        rootOverride: JsonObject? = null,
+    ): List<Group> {
         val out = LinkedHashMap<String, Group>()
-        val arr = resultArray(rawSearch(keywords, 10, limit, offset), "albums")
+        val arr = resultArray(rootOverride ?: rawSearch(keywords, 10, limit, offset), "albums")
         NmLog.note("搜索专辑 type=10 返回 ${arr.size} 条")
         arr.forEach { o ->
             val id = (o["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return@forEach
@@ -462,7 +484,7 @@ object Netease {
                 nmKind = "album",
             )
         }
-        if (out.isEmpty()) {
+        if (out.isEmpty() && fallback) {
             // 兜底：拿单曲结果里出现的专辑聚合成专辑卡片
             NmLog.note("专辑搜索为空，改用单曲结果聚合专辑")
             resultArray(rawSearch(keywords, 1, 30), "songs").forEach { o ->
@@ -490,8 +512,14 @@ object Netease {
      * 歌手搜索。type=100 返回空时，用单曲结果里的歌手聚合兜底，
      * 保证「歌手」标签在网易云曲库下一定出内容。
      */
-    fun searchArtists(keywords: String, limit: Int = 10, offset: Int = 0): List<Group> {
-        val arr = resultArray(rawSearch(keywords, 100, limit, offset), "artists")
+    fun searchArtists(
+        keywords: String,
+        limit: Int = 10,
+        offset: Int = 0,
+        fallback: Boolean = true,
+        rootOverride: JsonObject? = null,
+    ): List<Group> {
+        val arr = resultArray(rootOverride ?: rawSearch(keywords, 100, limit, offset), "artists")
         NmLog.note("搜索歌手 type=100 返回 ${arr.size} 条")
         val out = LinkedHashMap<Long, Group>()
         arr.forEach { o ->
@@ -509,7 +537,7 @@ object Netease {
                 nmKind = "artist",
             )
         }
-        if (out.isEmpty()) {
+        if (out.isEmpty() && fallback) {
             NmLog.note("歌手搜索为空，改用单曲结果聚合歌手")
             resultArray(rawSearch(keywords, 1, 30), "songs").forEach { o ->
                 val ar = (o["ar"] as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject
@@ -749,16 +777,28 @@ object Netease {
     }
 
     /**
-     * 26.11.61：搜索专用短超时客户端。
-     * 通用 client 的 callTimeout 是 15s，且 get() 默认重试 2 次，
-     * 一次「搜索 + song/detail 补全」串行最坏能等 30s 以上 —— 这就是搜索极慢。
-     * 搜索必须快：2s 连上、5s 截止、只发一次，失败就退化到本机曲库结果。
+     * 26.11.63：搜索专用客户端。
+     *
+     * 之前用 Api.client.newBuilder()，会和播放、预取、下载、更新检查共享同一个
+     * Dispatcher 与连接池；一批慢请求排前面，搜索就被挤到队尾。现在给搜索独立的
+     * 调度池与连接池，超时也压到「连不上就立刻换」的程度。
      */
+    private val searchDispatcher = Dispatcher().apply {
+        maxRequests = 24
+        maxRequestsPerHost = 12
+    }
     private val searchClient: OkHttpClient = Api.client.newBuilder()
-        .connectTimeout(2, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS)
-        .callTimeout(5, TimeUnit.SECONDS)
+        .connectTimeout(1500, TimeUnit.MILLISECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .writeTimeout(3, TimeUnit.SECONDS)
+        .callTimeout(3500, TimeUnit.MILLISECONDS)
+        .retryOnConnectionFailure(false)
+        .dispatcher(searchDispatcher)
+        .connectionPool(ConnectionPool(8, 30, TimeUnit.SECONDS))
         .build()
+
+    /** 单次搜索请求的硬性截止：到点就真断开，不再让旧请求占着线程 */
+    private const val SEARCH_CALL_MS = 3500L
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
     private val urlClient: OkHttpClient = OkHttpClient.Builder()
@@ -1109,26 +1149,106 @@ object Netease {
             }
     }
 
-    fun searchAll(keywords: String, limit: Int = 20): Aggregate = runBlocking(Dispatchers.IO) {
-        // 26.11.61：每路 8s 截止，任何一路卡住都不拖住整次搜索。
-        // 界面的本地结果已经先亮出来，这里超时就只留其余两路。
-        val s = async {
-            withTimeoutOrNull(8_000L) {
-                runCatching { searchSongs(keywords, limit) }.getOrDefault(emptyList())
-            } ?: emptyList()
+    /** 异步单次请求：真可取消，到点直接 call.cancel()，不再留同步线程空转 */
+    private suspend fun getSearch(
+        path: String,
+        vararg params: Pair<String, String>,
+    ): JsonObject? {
+        val sb = StringBuilder(NM_BASE).append(path).append('?')
+        params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
+        sb.append("unblock=true&")
+        if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
+            sb.append("randomCNIP=true&")
         }
-        val a = async {
-            withTimeoutOrNull(8_000L) {
-                runCatching { searchAlbums(keywords, 10) }.getOrDefault(emptyList())
-            } ?: emptyList()
+        // /search 与 /song/detail 都不需要登录态。旧 get() 会把整串 cookie
+        // 拼进 URL（接近 4KB），代理转发更慢、也更容易触发风控。
+        sb.append("timestamp=").append(System.currentTimeMillis())
+        val url = sb.toString()
+        val call = searchClient.newCall(Request.Builder().url(url).build())
+        val done = CompletableDeferred<JsonObject?>()
+        call.enqueue(object : Callback {
+            override fun onFailure(c: Call, e: IOException) {
+                NmLog.note("搜索请求失败：$path -> ${e.message}")
+                done.complete(null)
+            }
+            override fun onResponse(c: Call, r: Response) {
+                val el = try {
+                    r.use { resp ->
+                        val t = resp.body?.string().orEmpty()
+                        NmLog.req(url)
+                        NmLog.res(url, resp.code, t)
+                        runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject
+                    }
+                } catch (e: Exception) {
+                    NmLog.note("搜索响应读取失败：$path -> ${e.message}")
+                    null
+                }
+                done.complete(el)
+            }
+        })
+        return try {
+            withTimeoutOrNull(SEARCH_CALL_MS) { done.await() }
+        } finally {
+            // 超时或上层取消搜索时，把还在飞的请求真正断掉
+            if (!done.isCompleted) call.cancel()
         }
-        val r = async {
-            withTimeoutOrNull(8_000L) {
-                runCatching { searchArtists(keywords, 10) }.getOrDefault(emptyList())
-            } ?: emptyList()
+    }
+
+    private suspend fun rawSearchAsync(keywords: String, type: Int, limit: Int): JsonObject? =
+        getSearch(
+            "/search",
+            "keywords" to keywords,
+            "type" to type.toString(),
+            "limit" to limit.toString(),
+            "offset" to "0",
+        )
+
+    /**
+     * 26.11.63：流式聚合搜索。
+     *
+     * 旧实现三个坑叠一起，界面必须等满 8 秒才出结果：
+     * 1. 同步 execute() 不响应协程取消，withTimeoutOrNull 到点只是让 await 返回，
+     *    底层线程还在跑，连续搜几次就堆住；
+     * 2. 歌曲路在 /search 之后还串行等一次 /song/detail，5+5s 必然撞上 8s 截止，
+     *    歌曲结果经常被整批砍空，然后这个残缺结果还被写进缓存；
+     * 3. 三路全部 await 完才一次性合并，首屏时间等于最慢那一路。
+     *
+     * 现在每路独立异步、可真取消，谁先回来就先回调谁；一轮最多 3 个请求，
+     * 不做详情补全、不做二次兜底。封面补全与兜底聚合交给上层后台处理。
+     */
+    suspend fun searchAllStream(
+        keywords: String,
+        limit: Int = 20,
+        onPart: (songs: List<Song>?, albums: List<Group>?, artists: List<Group>?) -> Unit,
+    ): Aggregate = coroutineScope {
+        val s = async(Dispatchers.IO) {
+            val root = rawSearchAsync(keywords, 1, limit) ?: return@async emptyList<Song>()
+            runCatching {
+                searchSongs(keywords, limit, 0, enrichResult = false, rootOverride = root)
+            }.getOrDefault(emptyList())
         }
+        val a = async(Dispatchers.IO) {
+            val root = rawSearchAsync(keywords, 10, 10) ?: return@async emptyList<Group>()
+            runCatching {
+                searchAlbums(keywords, 10, 0, fallback = false, rootOverride = root)
+            }.getOrDefault(emptyList())
+        }
+        val r = async(Dispatchers.IO) {
+            val root = rawSearchAsync(keywords, 100, 10) ?: return@async emptyList<Group>()
+            runCatching {
+                searchArtists(keywords, 10, 0, fallback = false, rootOverride = root)
+            }.getOrDefault(emptyList())
+        }
+        // 一路回来就立刻推给界面，不等另外两路；null 表示「这一路还没更新」
+        launch { runCatching { onPart(s.await(), null, null) } }
+        launch { runCatching { onPart(null, a.await(), null) } }
+        launch { runCatching { onPart(null, null, r.await()) } }
         Aggregate(s.await(), a.await(), r.await())
     }
+
+    /** 兼容旧调用点：不需要流式更新时的同步包装 */
+    fun searchAll(keywords: String, limit: Int = 20): Aggregate =
+        runBlocking(Dispatchers.IO) { searchAllStream(keywords, limit) { _, _, _ -> } }
 
     /**
      * 专辑 / 歌手的歌曲列表。

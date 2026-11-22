@@ -172,6 +172,8 @@ private fun SearchResults(
     when {
         vm.query.isBlank() -> RecentSearchList(vm, go)
         agg == null -> CenteredHint(go, "正在搜索…", null)
+        songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && vm.searchBusy ->
+            CenteredHint(go, "正在搜索…", null)
         songs.isEmpty() && albums.isEmpty() && artists.isEmpty() ->
             CenteredHint(go, "没有找到「${vm.query}」", "换个关键词试试")
         else -> when (vm.searchFilter) {

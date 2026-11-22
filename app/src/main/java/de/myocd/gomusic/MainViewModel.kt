@@ -150,7 +150,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         tab3 = t
         stack.clear()
         if (t == TAB3_HOME) chooseTab(TAB_HOME)
-        if (t == TAB3_SEARCH && query.isNotBlank()) searchAll(query)
+        // 26.11.63：切回搜索 Tab 不再重发一次请求、也不重置已选分类与搜索记录。
+        // 缓存命中或已有结果直接沿用，避免「每次切过去都卡一下」。
     }
 
     /** 播放器内部页；图 1 封面 / 图 2 歌词 / 图 4 队列 */
@@ -2336,40 +2337,126 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 聚合搜索结果：一次回车拿全三类，切板块只切筛选不重发 */
     var aggregate by mutableStateOf<Netease.Aggregate?>(null); private set
+    /** 26.11.63：网络还在跑时给界面一个轻状态，空屏不再被当成「没搜到」 */
+    var searchBusy by mutableStateOf(false); private set
+
+    private data class SearchCacheEntry(
+        val agg: Netease.Aggregate,
+        val at: Long,
+        /** 三路全空视为失败结果，不缓存，下次回车允许重试 */
+        val complete: Boolean,
+    )
+    private val searchCacheTtl = 10 * 60 * 1000L
     /** 按关键词缓存聚合结果（LRU 20 条）：重复回车 / 切板块都不再打网络 */
-    private val aggregateCache = LinkedHashMap<String, Netease.Aggregate>(20, 0.75f, true)
+    private val aggregateCache = LinkedHashMap<String, SearchCacheEntry>(20, 0.75f, true)
+    private var searchJob: Job? = null
+    /** 每次回车递增：旧请求即便晚到也不许覆盖新关键词的结果 */
+    private var searchSeq = 0L
+
     private fun readAggregateCache(k: String): Netease.Aggregate? = synchronized(aggregateCache) {
-        aggregateCache[k]
+        val e = aggregateCache[k] ?: return null
+        if (!e.complete || System.currentTimeMillis() - e.at > searchCacheTtl) {
+            aggregateCache.remove(k)
+            null
+        } else e.agg
     }
     private fun putAggregateCache(k: String, v: Netease.Aggregate) = synchronized(aggregateCache) {
-        aggregateCache[k] = v
+        val ok = v.songs.isNotEmpty() || v.albums.isNotEmpty() || v.artists.isNotEmpty()
+        aggregateCache[k] = SearchCacheEntry(v, System.currentTimeMillis(), ok)
         while (aggregateCache.size > 20) aggregateCache.remove(aggregateCache.keys.first())
+    }
+
+    /** type=10 / 100 返回空时，用已经拿到的歌曲在本地聚合，零额外请求 */
+    private fun groupsFromSongs(list: List<Song>): Pair<List<Group>, List<Group>> {
+        val al = LinkedHashMap<String, Group>()
+        val ar = LinkedHashMap<String, Group>()
+        list.forEach { s ->
+            if (s.album.isNotBlank() && !al.containsKey(s.album)) {
+                al[s.album] = Group(
+                    title = s.album, subtitle = s.artist, cover = s.coverUrl,
+                    songs = emptyList(), album = s.album, source = s.source,
+                    nmId = s.nmAlbumId, nmKind = "album",
+                )
+            }
+            if (s.artist.isNotBlank() && !ar.containsKey(s.artist)) {
+                ar[s.artist] = Group(
+                    title = s.artist, subtitle = "歌手", cover = s.coverUrl,
+                    songs = emptyList(), artist = s.artist, source = s.source,
+                    nmId = s.nmArtistId, nmKind = "artist",
+                )
+            }
+        }
+        return al.values.toList().take(10) to ar.values.toList().take(10)
     }
 
     fun searchAll(q: String) {
         val k = q.trim()
-        if (k.isEmpty()) { aggregate = null; return }
+        val seq = ++searchSeq
+        if (k.isEmpty()) {
+            searchJob?.cancel(); searchJob = null
+            aggregate = null; searchBusy = false
+            return
+        }
         recordSearch(k)
         searchFilter = 0
-        readAggregateCache(k)?.let { aggregate = it; return }
-        // 本机曲库也参与歌曲搜索：断网或网易云 /search 返回空时，歌曲板块仍有结果
+        readAggregateCache(k)?.let {
+            searchJob?.cancel(); searchJob = null
+            aggregate = it; searchBusy = false; return
+        }
+
+        // 本机曲库先亮，不等网络；断网或接口失败时歌曲板块仍有内容
         val local = songMap.values.asSequence().filter {
             it.title.contains(k, true) || it.artist.contains(k, true) || it.album.contains(k, true)
         }.take(20).toList()
-        // 26.11.61：先把本机曲库结果亮出来，不等三路网络最慢那一路。
-        // 网络回来后用合并结果覆盖，失败也保留本地这部分。
         aggregate = Netease.Aggregate(local, emptyList(), emptyList())
-        viewModelScope.launch {
-            val r = withContext(Dispatchers.IO) {
+        searchBusy = true
+
+        // 新关键词直接掐掉上一轮：旧请求不再占线程，也不会晚到覆盖新结果
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            val result = runCatching {
                 Netease.cookie = prefs.nmCookie
-                runCatching { Netease.searchAll(k) }.getOrNull()
+                // 三路各自异步、可真取消；每路回来立刻推给界面，不等最慢那路
+                Netease.searchAllStream(k) { songs, albums, artists ->
+                    if (seq != searchSeq) return@searchAllStream
+                    val cur = aggregate
+                        ?: Netease.Aggregate(local, emptyList(), emptyList())
+                    val newSongs = if (songs != null) {
+                        (local + songs).distinctBy { it.ssid }
+                    } else cur.songs
+                    // 后到的空结果不要冲掉先到的本地兜底
+                    var newAlbums = if (albums == null) cur.albums else albums.ifEmpty { cur.albums }
+                    var newArtists = if (artists == null) cur.artists else artists.ifEmpty { cur.artists }
+                    if (songs != null && songs.isNotEmpty()) {
+                        val (fallbackAlbums, fallbackArtists) = groupsFromSongs(songs)
+                        if (newAlbums.isEmpty()) newAlbums = fallbackAlbums
+                        if (newArtists.isEmpty()) newArtists = fallbackArtists
+                    }
+                    aggregate = Netease.Aggregate(newSongs, newAlbums, newArtists)
+                }
+            }.getOrNull()
+
+            // 只缓存有内容的结果；全空（超时/异常）留着下次重试
+            val finalAgg = aggregate
+            if (seq == searchSeq && result != null && finalAgg != null) {
+                putAggregateCache(k, finalAgg)
+                // 封面补全放到后台，不占首屏时间；失败静默沿用搜索结果
+                val need = finalAgg.songs.filter { it.coverUrl.isNullOrBlank() && it.nmId > 0 }.take(20)
+                if (need.isNotEmpty()) {
+                    launch(Dispatchers.IO) {
+                        val filled = runCatching { Netease.enrich(need) }.getOrDefault(need)
+                        withContext(Dispatchers.Main) {
+                            if (seq != searchSeq) return@withContext
+                            aggregate?.let { cur ->
+                                aggregate = cur.copy(songs = cur.songs.map { s ->
+                                    filled.firstOrNull { f -> f.ssid == s.ssid } ?: s
+                                })
+                            }
+                        }
+                    }
+                }
+                searchBusy = false
             }
-            // 一次性拿全三类后合并，缺哪一路都不影响其它板块
-            val merged = (r ?: Netease.Aggregate(emptyList(), emptyList(), emptyList())).copy(
-                songs = (local + (r?.songs ?: emptyList())).distinctBy { it.ssid }
-            )
-            putAggregateCache(k, merged)
-            aggregate = merged
         }
     }
 

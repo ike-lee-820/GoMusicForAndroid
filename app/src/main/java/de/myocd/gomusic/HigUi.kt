@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -169,101 +170,129 @@ fun SearchPage(vm: MainViewModel) {
         3 -> agg?.songs.orEmpty().map { Netease.Aggregate.Hit.SongHit(it) }
         else -> agg?.mixed.orEmpty()
     }
-    Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp)) {
-        Text("搜索", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
-        Spacer(Modifier.height(12.dp))
-        // 图片里的材质搜索框：返回箭头 / 查询词 / 清除
-        Row(
-            Modifier.fillMaxWidth().height(44.dp)
-                .clip(RoundedCornerShape(10.dp)).background(go.surfaceHi)
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Search, "搜索", tint = go.muted, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            SearchField(
-                vm.query, { vm.query = it }, "歌曲、艺人、专辑",
-                Modifier.weight(1f), showIcon = false,
-                onSearch = { if (vm.query.isNotBlank()) vm.searchAll(vm.query) },
-            )
-            if (vm.query.isNotEmpty()) {
-                Text(
-                    "✕", fontSize = 16.sp, color = go.muted,
-                    modifier = Modifier.clickable { vm.query = ""; vm.searchAll("") }.padding(4.dp),
-                )
-            }
-        }
-        // 最近搜索
-        if (vm.query.isBlank() && vm.searchHistory.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("最近搜索", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = go.on)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "清除", fontSize = 13.sp, color = go.primary,
-                    modifier = Modifier.clickable { vm.clearSearchHistory() }.padding(4.dp),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(vm.searchHistory) { w ->
+    // 26.11.54：横屏不再让搜索框 / 分类 / 结果行横跨整个宽屏（行被拉到
+    // 两千多像素宽，非常难看）。改成左栏「搜索 + 分类」、右栏「结果」双栏；
+    // 竖屏仍是原来那一列，逻辑与缓存完全不变。
+    BoxWithConstraints(
+        Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp),
+    ) {
+        val land = maxWidth > maxHeight * 1.15f
+        val labels = listOf("综合", "歌手", "专辑", "歌曲")
+        val tabItem: @Composable (Int, String, Modifier) -> Unit = { i, l, m ->
+            val sel = vm.searchFilter == i
+            Box(
+                m.heightIn(min = 44.dp).clickable { vm.chooseSearchFilter(i) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        w, fontSize = 13.sp, color = go.on,
-                        modifier = Modifier.clip(RoundedCornerShape(999.dp))
-                            .background(go.surfaceHi)
-                            .clickable { vm.query = w; vm.searchAll(w) }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        l, fontSize = 14.sp,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                        color = if (sel) go.primary else go.muted,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Box(
+                        Modifier.width(28.dp).height(2.dp)
+                            .background(if (sel) go.primary else Color.Transparent),
                     )
                 }
             }
         }
-        Spacer(Modifier.height(16.dp))
-        // 分类 Tab：中文选项、四等分全部可见；只切筛选，不重新发请求
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 44.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val labels = listOf("综合", "歌手", "专辑", "歌曲")
-            labels.forEachIndexed { i, l ->
-                val sel = vm.searchFilter == i
-                Box(
-                    Modifier.weight(1f).heightIn(min = 44.dp)
-                        .clickable { vm.chooseSearchFilter(i) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        val header: @Composable ColumnScope.() -> Unit = {
+            Text("搜索", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                Modifier.fillMaxWidth().height(44.dp)
+                    .clip(RoundedCornerShape(10.dp)).background(go.surfaceHi)
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Search, "搜索", tint = go.muted, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                SearchField(
+                    vm.query, { vm.query = it }, "歌曲、艺人、专辑",
+                    Modifier.weight(1f), showIcon = false,
+                    onSearch = { if (vm.query.isNotBlank()) vm.searchAll(vm.query) },
+                )
+                if (vm.query.isNotEmpty()) {
+                    Text(
+                        "✕", fontSize = 16.sp, color = go.muted,
+                        modifier = Modifier.clickable { vm.query = ""; vm.searchAll("") }.padding(4.dp),
+                    )
+                }
+            }
+            if (vm.query.isBlank() && vm.searchHistory.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("最近搜索", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = go.on)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "清除", fontSize = 13.sp, color = go.primary,
+                        modifier = Modifier.clickable { vm.clearSearchHistory() }.padding(4.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(vm.searchHistory) { w ->
                         Text(
-                            l, fontSize = 14.sp,
-                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
-                            color = if (sel) go.primary else go.muted,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Box(
-                            Modifier.width(28.dp).height(2.dp)
-                                .background(if (sel) go.primary else Color.Transparent),
+                            w, fontSize = 13.sp, color = go.on,
+                            modifier = Modifier.clip(RoundedCornerShape(999.dp))
+                                .background(go.surfaceHi)
+                                .clickable { vm.query = w; vm.searchAll(w) }
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
                         )
                     }
                 }
             }
+            Spacer(Modifier.height(16.dp))
+            // 竖屏四等分横排；横屏左栏里改成竖排，避免四项被压在窄条上
+            if (land) {
+                Column(Modifier.fillMaxWidth()) {
+                    labels.forEachIndexed { i, l -> tabItem(i, l, Modifier.fillMaxWidth()) }
+                }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    labels.forEachIndexed { i, l -> tabItem(i, l, Modifier.weight(1f)) }
+                }
+            }
+            Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
         }
-        Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
-        when {
-            vm.query.isNotBlank() && hits.isEmpty() && agg == null ->
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("正在搜索…", fontSize = 15.sp, color = go.muted)
+        val results: @Composable () -> Unit = {
+            when {
+                vm.query.isNotBlank() && hits.isEmpty() && agg == null ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("正在搜索…", fontSize = 15.sp, color = go.muted)
+                    }
+                hits.isEmpty() ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (vm.query.isBlank()) "输入关键词开始搜索" else "没有找到「${vm.query}」",
+                            fontSize = 15.sp, color = go.muted, textAlign = TextAlign.Center,
+                        )
+                    }
+                else -> LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 24.dp),
+                ) {
+                    items(hits) { h -> SearchHitRow(vm, h, go) }
                 }
-            hits.isEmpty() ->
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (vm.query.isBlank()) "输入关键词开始搜索" else "没有找到「${vm.query}」",
-                        fontSize = 15.sp, color = go.muted, textAlign = TextAlign.Center,
-                    )
-                }
-            else -> LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 24.dp),
-            ) {
-                items(hits) { h -> SearchHitRow(vm, h, go) }
+            }
+        }
+        if (land) {
+            Row(Modifier.fillMaxSize()) {
+                Column(
+                    Modifier.width(minOf(340.dp, maxWidth * 0.34f)).fillMaxHeight(),
+                ) { header() }
+                Spacer(Modifier.width(20.dp))
+                Box(Modifier.weight(1f).fillMaxHeight()) { results() }
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                header()
+                results()
             }
         }
     }

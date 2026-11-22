@@ -73,6 +73,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -204,6 +205,9 @@ fun HigPlayerRoot(vm: MainViewModel) {
     // 带来任何平移都不会让封面错位。
     var rootX by remember { mutableFloatStateOf(0f) }
     var rootY by remember { mutableFloatStateOf(0f) }
+    // 26.11.54：歌词控制区显隐提到根层，横屏时右栏歌词与左栏控制区
+    // 才能共用同一份状态（下滑隐藏 / 上滑恢复在横屏同样生效）。
+    var lyricsControls by remember { mutableStateOf(true) }
     // 26.11.53：切页时背景模糊半径平滑变化 —— 封面页较清晰，歌词页更朦胧，
     // 队列页居中。不是三张不同的背景图，只是同一张封面底图的模糊度动画。
     val blur by animateDpAsState(
@@ -244,22 +248,43 @@ fun HigPlayerRoot(vm: MainViewModel) {
         BoxWithConstraints(
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         ) {
-            // 26.11.53：横屏适配。宽明显大于高时改成左右双栏：
-            // 左栏仍是原来的封面 / 歌词 / 队列三页与控制键（紧凑尺寸），
-            // 右栏常驻大字歌词。竖屏完全走原来那条单列路径，零改动。
+            // 26.11.54：横屏重做。左栏固定放封面 / 信息 / 播放控制（三页
+            // 位置完全不变，共享封面缩放动画照常），右栏按当前页给内容：
+            // 歌词页只在这里放一份歌词、队列页只在这里放一份队列、封面页留空。
+            // 26.11.53 那种「左栏歌词页 + 右栏常驻歌词」会造成两份歌词，
+            // 封面页也莫名显示歌词，已收敛成单份。
             val land = maxWidth > maxHeight * 1.15f
             if (land) {
                 Row(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                        PlayerBody(vm, s, onBig, onSmall, compact = true)
+                    Box(Modifier.weight(0.44f).padding(horizontal = 12.dp)) {
+                        PlayerBody(
+                            vm, s, onBig, onSmall,
+                            compact = true, showContent = false,
+                            controls = lyricsControls,
+                            onControls = { lyricsControls = it },
+                        )
                     }
-                    Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                        WordLyricsList(vm, go, compact = true)
+                    Box(Modifier.weight(0.56f).padding(horizontal = 12.dp)) {
+                        when (vm.playerPage) {
+                            PLAYER_LYRICS -> Box(
+                                Modifier.fillMaxSize().lyricsControlGesture(
+                                    onUp = { lyricsControls = true },
+                                    onDown = { lyricsControls = false },
+                                ),
+                            ) { WordLyricsList(vm, go, compact = true) }
+                            PLAYER_QUEUE -> QueueContent(vm, go)
+                            else -> { /* 封面页右栏留空，不展示歌词 */ }
+                        }
                     }
                 }
             } else {
                 Box(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-                    PlayerBody(vm, s, onBig, onSmall, compact = false)
+                    PlayerBody(
+                        vm, s, onBig, onSmall,
+                        compact = false, showContent = true,
+                        controls = lyricsControls,
+                        onControls = { lyricsControls = it },
+                    )
                 }
             }
         }
@@ -282,11 +307,16 @@ private fun PlayerBody(
     onBig: (Float, Float, Float) -> Unit,
     onSmall: (Float, Float, Float) -> Unit,
     compact: Boolean,
+    showContent: Boolean,
+    controls: Boolean,
+    onControls: (Boolean) -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         when (vm.playerPage) {
-            PLAYER_LYRICS -> LyricsPane(vm, s, onSmall, compact)
-            PLAYER_QUEUE -> QueuePane(vm, s, onSmall, compact)
+            PLAYER_LYRICS -> LyricsPane(
+                vm, s, onSmall, compact, showContent, controls, onControls,
+            )
+            PLAYER_QUEUE -> QueuePane(vm, s, onSmall, compact, showContent)
             else -> CoverPane(vm, s, onBig, compact)
         }
     }
@@ -960,20 +990,28 @@ private fun LyricsPane(
     s: Song?,
     onSmallCover: (Float, Float, Float) -> Unit,
     compact: Boolean = false,
+    showContent: Boolean = true,
+    controls: Boolean = true,
+    onControls: (Boolean) -> Unit = {},
 ) {
     val go = LocalGo.current
-    // 默认显示；下滑隐藏、上滑恢复。隐藏是用户主动行为，不影响三页默认
-    // 状态下进度条纵坐标一致（那时控制区都在位）。
-    var controls by remember { mutableStateOf(true) }
+    // controls 由播放器根层持有：竖屏手势在这里、横屏手势在右栏歌词上，
+    // 两边改的是同一份状态。默认显示，下滑隐藏 / 上滑恢复。
     Column(Modifier.fillMaxSize()) {
         InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
         Box(
             Modifier.weight(1f).fillMaxWidth()
-                .lyricsControlGesture(
-                    onUp = { controls = true },
-                    onDown = { controls = false },
+                .then(
+                    if (showContent) Modifier.lyricsControlGesture(
+                        onUp = { onControls(true) },
+                        onDown = { onControls(false) },
+                    ) else Modifier,
                 ),
-        ) { WordLyricsList(vm, go, compact) }
+        ) {
+            // 横屏时歌词在右栏，左栏这里只留弹性空白托住底部控制区，
+            // 不再出现两份歌词。
+            if (showContent) WordLyricsList(vm, go, compact)
+        }
         AnimatedVisibility(visible = controls) {
             PlayerBottomBar(vm, go, compact)
         }
@@ -1007,7 +1045,10 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
     val lyricSizeSp = vm.lyricSize
     // 只略微放大同一句折成多行时的行距；不同歌词行之间的 spacedBy(18.dp) 不动
     val lyricLineHeight = (lyricSizeSp * LYRIC_LINE_HEIGHT_RATIO).sp
-    val state = rememberLazyListState()
+    // 26.11.54：切进歌词页时列表初始就在当前行，不要从 index 0 一路动画
+    // 滚到目标行。用 key(w) 让换歌时状态重建，并把初始行设成 activeIndex。
+    val initialIndex = w.activeIndex(vm.positionMs).coerceAtLeast(0)
+    val state = key(w) { rememberLazyListState(initialFirstVisibleItemIndex = initialIndex) }
     // 26.11.48：两种歌词都要自动跟随当前行滚动，区别只在刷新频率与是否逐字渲染。
     // 26.11.46 把「无高级歌词不要滚动」误解成列表完全静止，老歌词播到后面几行
     // 还停在顶部；实际要的是「行级跟随滚动」，不要的是逐字扫光那种逐帧滚。
@@ -1023,6 +1064,9 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
         var scrollJob: Job? = null
         // 用户手动滑动期间被跳过的那一句，抑制结束后补滚回来
         var suppressed = false
+        // 第一次拿到有效行：直接无动画落位。之前这里会走 animateScrollToItem，
+        // 于是每次切进歌词页都能看到列表从「开头」飞快滚到当前句。
+        var positioned = false
         while (true) {
             if (wordTiming) {
                 if (vm.isPlaying) withFrameNanos { it } else delay(100)
@@ -1043,7 +1087,12 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                 lastActive = a
                 suppressed = false
                 if (a >= 0) {
-                    if (held) {
+                    if (!positioned) {
+                        // 直接进入当前行，不播滚动动画；之后切句才平滑跟随
+                        positioned = true
+                        scrollJob?.cancel()
+                        state.scrollToItem(a)
+                    } else if (held) {
                         suppressed = true
                     } else {
                         scrollJob?.cancel()
@@ -1264,14 +1313,28 @@ private fun QueuePane(
     s: Song?,
     onSmallCover: (Float, Float, Float) -> Unit,
     compact: Boolean = false,
+    showContent: Boolean = true,
 ) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
         InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
         Spacer(Modifier.height(12.dp))
-        // Segmented：随机 / 列表循环 / 单曲循环。
-        // 原来 Row 固定 44dp 又给文字上下各 10dp padding，行高被压到 38dp，
-        // 三段文字竖着被裁掉一截；改成最小高度自适应 + 内容居中。
+        // 26.11.54：横屏时列表搬到右栏，左栏只留弹性空白托住底部控制区，
+        // 保证三页的控制栏纵坐标一致、且不会有两份队列。
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (showContent) QueueContent(vm, go, Modifier.fillMaxSize())
+        }
+        PlayerBottomBar(vm, go, compact)
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+/** 队列内容（播放模式 / 继续播放 / 清空 / 列表）：竖屏与横屏右栏共用 */
+@Composable
+private fun QueueContent(vm: MainViewModel, go: GoColors, modifier: Modifier = Modifier.fillMaxSize()) {
+    Column(modifier) {
+        // Segmented：随机 / 列表循环 / 单曲循环。最小高度自适应 + 内容居中，
+        // 三段文字不会被竖向裁掉。
         Row(
             Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
@@ -1280,7 +1343,6 @@ private fun QueuePane(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             listOf("随机", "列表循环", "单曲循环").forEachIndexed { i, label ->
-                // playMode: 0 列表循环 1 随机 2 单曲循环
                 val mode = when (i) { 0 -> 1; 1 -> 0; else -> 2 }
                 val sel = vm.playMode == mode
                 Box(
@@ -1305,7 +1367,6 @@ private fun QueuePane(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("继续播放", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = go.on)
             Spacer(Modifier.weight(1f))
-            // 26.11.49：新版播放列表漏了清空入口，补回来（保留正在播放的那一首）
             var confirmClear by remember { mutableStateOf(false) }
             Text(
                 "清空", fontSize = 14.sp, color = go.primary,
@@ -1348,7 +1409,5 @@ private fun QueuePane(
                 Box(Modifier.fillMaxWidth().height((0.5f).dp).padding(start = 60.dp).background(go.separator))
             }
         }
-        PlayerBottomBar(vm, go, compact)
-        Spacer(Modifier.height(12.dp))
     }
 }

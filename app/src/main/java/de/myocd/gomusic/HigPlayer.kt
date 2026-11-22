@@ -79,6 +79,9 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -92,6 +95,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -729,6 +733,11 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
     val userScrollUntil = remember { mutableLongStateOf(0L) }
     LaunchedEffect(w) {
         var lastActive = -1
+        // 26.11.51：只保留一个滚动协程。以前每切一行就 launch 一个新
+        // animateScrollToItem，几个动画并发会互相打断，看起来也会漏行。
+        var scrollJob: Job? = null
+        // 用户手动滑动期间被跳过的那一句，抑制结束后补滚回来
+        var suppressed = false
         while (true) {
             if (wordTiming) {
                 if (vm.isPlaying) withFrameNanos { it } else delay(100)
@@ -738,22 +747,48 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
                 delay(250)
                 framePos.longValue = vm.positionMs
             }
-            // 用户手动滑歌词后 4 秒内不自动抢回当前行
-            if (state.isScrollInProgress) {
-                userScrollUntil.longValue = System.currentTimeMillis() + 4000
-            }
+            // 26.11.51：这里**不再**读 state.isScrollInProgress。
+            // 它对 animateScrollToItem 自己发起的滚动也返回 true，于是每自动
+            // 滚一句就把 userScrollUntil 刷成 now+4s，下一句必然被抑制、
+            // 再下一句才滚 —— 正是「每一种歌词都隔一句跳一次」。
+            // 抑制窗口现在只由下面 pointerInput 里的真实手指事件设置。
+            val held = System.currentTimeMillis() <= userScrollUntil.longValue
             val a = w.activeIndex(framePos.longValue)
             if (a != lastActive) {
                 lastActive = a
-                if (a >= 0 && System.currentTimeMillis() > userScrollUntil.longValue) {
-                    launch { state.animateScrollToItem(a) }
+                suppressed = false
+                if (a >= 0) {
+                    if (held) {
+                        suppressed = true
+                    } else {
+                        scrollJob?.cancel()
+                        scrollJob = launch { state.animateScrollToItem(a) }
+                    }
                 }
+            } else if (suppressed && !held && lastActive >= 0) {
+                suppressed = false
+                scrollJob?.cancel()
+                scrollJob = launch { state.animateScrollToItem(lastActive) }
             }
         }
     }
     LazyColumn(
         state = state,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize()
+            // 只把真实手指拖拽记为「用户手动滑歌词」；拖完的 fling 惯性由
+            // 4 秒窗口覆盖，不需要再认 Release（否则点一下歌词也会被当成
+            // 手动滑动，跳转后 4 秒不跟随）。Initial pass 只观察不消费，
+            // 不影响 LazyColumn 自己的滚动手势，也不影响行点击。
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val e = awaitPointerEvent(PointerEventPass.Initial)
+                        if (e.type == PointerEventType.Move) {
+                            userScrollUntil.longValue = System.currentTimeMillis() + 4000
+                        }
+                    }
+                }
+            },
         contentPadding = PaddingValues(vertical = 120.dp),
         // 26.11.49：不同歌词行之间的 18dp 保持原样，只改同一句折行行距
         verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -765,8 +800,12 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
             val alpha = if (isActive) 1f else 0.32f
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp)
-                    // 点击歌词跳到这一行；制作信息行不跳
-                    .clickable(enabled = !line.meta) { vm.seekTo(line.startMs) },
+                    // 点击歌词跳到这一行；制作信息行不跳。
+                    // 清掉手动滑动抑制窗口：用户主动选行，就该立刻跟到那一行
+                    .clickable(enabled = !line.meta) {
+                        userScrollUntil.longValue = 0L
+                        vm.seekTo(line.startMs)
+                    },
             ) {
                 if (line.meta) {
                     Text(line.text, fontSize = 12.sp, color = go.muted.copy(alpha = 0.6f))

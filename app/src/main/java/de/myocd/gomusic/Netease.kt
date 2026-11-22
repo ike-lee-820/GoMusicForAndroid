@@ -788,17 +788,17 @@ object Netease {
         maxRequestsPerHost = 12
     }
     private val searchClient: OkHttpClient = Api.client.newBuilder()
-        .connectTimeout(1500, TimeUnit.MILLISECONDS)
-        .readTimeout(3, TimeUnit.SECONDS)
-        .writeTimeout(3, TimeUnit.SECONDS)
-        .callTimeout(3500, TimeUnit.MILLISECONDS)
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .writeTimeout(6, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .dispatcher(searchDispatcher)
         .connectionPool(ConnectionPool(8, 30, TimeUnit.SECONDS))
         .build()
 
     /** 单次搜索请求的硬性截止：到点就真断开，不再让旧请求占着线程 */
-    private const val SEARCH_CALL_MS = 3500L
+    private const val SEARCH_CALL_MS = 6000L
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
     private val urlClient: OkHttpClient = OkHttpClient.Builder()

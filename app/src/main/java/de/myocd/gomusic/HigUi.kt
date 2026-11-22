@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,7 +23,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -154,12 +157,14 @@ fun NavRail3(vm: MainViewModel, startInset: Dp = 0.dp) {
 fun SearchPage(vm: MainViewModel) {
     val go = LocalGo.current
     val agg = vm.aggregate
-    val all = agg?.mixed.orEmpty()
-    val hits = when (vm.searchFilter) {
-        1 -> all.filterIsInstance<Netease.Aggregate.Hit.Artist>()
-        2 -> all.filterIsInstance<Netease.Aggregate.Hit.Album>()
-        3 -> all.filterIsInstance<Netease.Aggregate.Hit.SongHit>()
-        else -> all
+    // 回车时已经一次性把三类全搜回来了；切板块只换展示数据源，
+    // 绝不重新发请求，也不从「综合」那条被重排过的混合流里过滤
+    // （之前那样切到歌曲板块只剩 6 首，看起来像「少了歌曲搜索」）。
+    val hits: List<Netease.Aggregate.Hit> = when (vm.searchFilter) {
+        1 -> agg?.artists.orEmpty().map { Netease.Aggregate.Hit.Artist(it) }
+        2 -> agg?.albums.orEmpty().map { Netease.Aggregate.Hit.Album(it) }
+        3 -> agg?.songs.orEmpty().map { Netease.Aggregate.Hit.SongHit(it) }
+        else -> agg?.mixed.orEmpty()
     }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp)) {
         Text("搜索", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
@@ -210,24 +215,31 @@ fun SearchPage(vm: MainViewModel) {
             }
         }
         Spacer(Modifier.height(16.dp))
-        // 分类 Tab：只切筛选，不重新发请求（数据已一次性拿全）
+        // 分类 Tab：中文选项、四等分全部可见；只切筛选，不重新发请求
         Row(
-            Modifier.fillMaxWidth()
-                .height(40.dp),
+            Modifier.fillMaxWidth().heightIn(min = 44.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val labels = listOf("TOP RESULTS", "ARTISTS", "ALBUMS", "SONGS")
+            val labels = listOf("综合", "歌手", "专辑", "歌曲")
             labels.forEachIndexed { i, l ->
                 val sel = vm.searchFilter == i
-                Column(
-                    Modifier.clickable { vm.chooseSearchFilter(i) }
-                        .padding(end = 20.dp, bottom = 8.dp),
+                Box(
+                    Modifier.weight(1f).heightIn(min = 44.dp)
+                        .clickable { vm.chooseSearchFilter(i) },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        l, fontSize = 14.sp,
-                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
-                        color = if (sel) go.primary else go.muted,
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            l, fontSize = 14.sp,
+                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                            color = if (sel) go.primary else go.muted,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Box(
+                            Modifier.width(28.dp).height(2.dp)
+                                .background(if (sel) go.primary else Color.Transparent),
+                        )
+                    }
                 }
             }
         }
@@ -337,7 +349,11 @@ fun MinePage(vm: MainViewModel) {
             vm.songMap[id] ?: vm.snapshots[id] ?: vm.historySongs.firstOrNull { it.ssid == id }
         }
     }
-    Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp)) {
+    Column(
+        Modifier.fillMaxSize().statusBarsPadding()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp),
+    ) {
         Text("我的", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
         Spacer(Modifier.height(18.dp))
         MineSection("我的歌单", "查看全部", go) { MineCardRow(vm.playlists.map { it.name to it.cover }, go) {

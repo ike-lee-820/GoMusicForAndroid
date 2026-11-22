@@ -2072,7 +2072,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         c.play()
     }
 
-    fun seekTo(ms: Long) { controller?.seekTo(ms) }
+    fun seekTo(ms: Long) {
+        controller?.seekTo(ms)
+        // 立刻写回，歌词点击跳转不用等下一次 250ms 轮询
+        positionMs = ms.coerceAtLeast(0)
+    }
 
     fun moveQueue(from: Int, to: Int) { controller?.moveMediaItem(from, to) }
     fun removeQueue(i: Int) { controller?.removeMediaItem(i) }
@@ -2202,17 +2206,39 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 逐字歌词（第 1 期只落数据层；播放器老歌词列表仍用行级 lyric） */
     var wordLyric by mutableStateOf<WordLyric?>(null); private set
 
-    /** 聚合搜索结果（第 2 期搜索页直接渲染 mixed） */
+    /** 聚合搜索结果：一次回车拿全三类，切板块只切筛选不重发 */
     var aggregate by mutableStateOf<Netease.Aggregate?>(null); private set
+    /** 按关键词缓存聚合结果（LRU 20 条）：重复回车 / 切板块都不再打网络 */
+    private val aggregateCache = LinkedHashMap<String, Netease.Aggregate>(20, 0.75f, true)
+    private fun readAggregateCache(k: String): Netease.Aggregate? = synchronized(aggregateCache) {
+        aggregateCache[k]
+    }
+    private fun putAggregateCache(k: String, v: Netease.Aggregate) = synchronized(aggregateCache) {
+        aggregateCache[k] = v
+        while (aggregateCache.size > 20) aggregateCache.remove(aggregateCache.keys.first())
+    }
+
     fun searchAll(q: String) {
         val k = q.trim()
         if (k.isEmpty()) { aggregate = null; return }
         recordSearch(k)
+        searchFilter = 0
+        readAggregateCache(k)?.let { aggregate = it; return }
+        // 本机曲库也参与歌曲搜索：断网或网易云 /search 返回空时，歌曲板块仍有结果
+        val local = songMap.values.filter {
+            it.title.contains(k, true) || it.artist.contains(k, true) || it.album.contains(k, true)
+        }.take(20)
         viewModelScope.launch {
             val r = withContext(Dispatchers.IO) {
+                Netease.cookie = prefs.nmCookie
                 runCatching { Netease.searchAll(k) }.getOrNull()
             }
-            aggregate = r
+            // 一次性拿全三类后合并，缺哪一路都不影响其它板块
+            val merged = (r ?: Netease.Aggregate(emptyList(), emptyList(), emptyList())).copy(
+                songs = (local + (r?.songs ?: emptyList())).distinctBy { it.ssid }
+            )
+            putAggregateCache(k, merged)
+            aggregate = merged
         }
     }
 
@@ -2390,6 +2416,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         lyricSsid = null
         lyricLoadingFor = null
         lyric = emptyList()
+        wordLyric = null
         lyricLoading = true
         // 26.11.35：本地歌重试要真正重读文件标签，不能只重放旧缓存
         if (LocalAudio.isDevice(id)) LocalAudio.clearLyric(app, id)
@@ -2435,6 +2462,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         lyricJob?.cancel()
         lyricLoadingFor = id
         lyric = emptyList()
+        // 逐字模型必须跟着切歌清掉，否则会残留上一首的 YRC 时间轴
+        wordLyric = null
         lyricLoading = true
         qualities = emptyList()
         qualitiesAbsent = emptySet()
@@ -2461,6 +2490,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } catch (e: Exception) { "" }
                 if (curSsid == id) {
                     lyric = lyricLines(t)
+                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
+                    // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
+                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2541,6 +2573,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 if (curSsid == id) {
                     wordLyric = w
                     lyric = lyricLines(t)
+                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
+                    // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
+                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2559,6 +2594,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } ?: ""
                 if (curSsid == id) {
                     lyric = lyricLines(t)
+                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
+                    // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
+                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2587,13 +2625,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 if (more != null) t = more
                 if (curSsid == id) {
                     lyric = lyricLines(t)
+                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
+                    // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
+                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
                     lyricLoading = false
                     lyricSsid = id
                 }
                 if (lyricLoadingFor == id) lyricLoadingFor = null
             } catch (ignored: Exception) {
                 val t = withContext(Dispatchers.IO) { localLyrics(id) }
-                if (curSsid == id && t.isNotBlank()) lyric = lyricLines(t)
+                if (curSsid == id && t.isNotBlank()) {
+                    lyric = lyricLines(t)
+                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
+                }
                 if (curSsid == id) {
                     lyricLoading = false
                     lyricSsid = id

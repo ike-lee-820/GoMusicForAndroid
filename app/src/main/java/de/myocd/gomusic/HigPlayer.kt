@@ -69,8 +69,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -80,6 +82,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -211,6 +214,24 @@ fun HigPlayerRoot(vm: MainViewModel) {
     // 26.11.54：歌词控制区显隐提到根层，横屏时右栏歌词与左栏控制区
     // 才能共用同一份状态（下滑隐藏 / 上滑恢复在横屏同样生效）。
     var lyricsControls by remember { mutableStateOf(true) }
+    // 26.11.57：横屏默认收缩（整屏封面页），展开由用户主动选择
+    var landExpanded by remember { mutableStateOf(false) }
+    var lastLand by remember { mutableStateOf(false) }
+    val collapse: () -> Unit = {
+        landExpanded = false
+        vm.gotoPlayerPage(PLAYER_COVER)
+    }
+    // 横屏下底部三键 = 选择展开「歌词 / 播放列表」，再点已选中的那个就收起。
+    val request: (Int) -> Unit = { p ->
+        when {
+            !landExpanded -> {
+                landExpanded = true
+                vm.gotoPlayerPage(p)
+            }
+            p == PLAYER_COVER || p == vm.playerPage -> collapse()
+            else -> vm.gotoPlayerPage(p)
+        }
+    }
     // 26.11.53：切页时背景模糊半径平滑变化 —— 封面页较清晰，歌词页更朦胧，
     // 队列页居中。不是三张不同的背景图，只是同一张封面底图的模糊度动画。
     val blur by animateDpAsState(
@@ -257,26 +278,55 @@ fun HigPlayerRoot(vm: MainViewModel) {
             // 26.11.53 那种「左栏歌词页 + 右栏常驻歌词」会造成两份歌词，
             // 封面页也莫名显示歌词，已收敛成单份。
             val land = maxWidth > maxHeight * 1.15f
+            // 第一次进入横屏回到收缩的封面页，不再默认占着左右双栏
+            LaunchedEffect(land) {
+                if (land && !lastLand) {
+                    landExpanded = false
+                    vm.gotoPlayerPage(PLAYER_COVER)
+                }
+                lastLand = land
+            }
             if (land) {
-                Row(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(0.44f).padding(horizontal = 12.dp)) {
-                        PlayerBody(
-                            vm, s, onBig, onSmall,
-                            compact = true, showContent = false,
-                            controls = lyricsControls,
-                            onControls = { lyricsControls = it },
-                        )
-                    }
-                    Box(Modifier.weight(0.56f).padding(horizontal = 12.dp)) {
-                        when (vm.playerPage) {
-                            PLAYER_LYRICS -> Box(
-                                Modifier.fillMaxSize().lyricsControlGesture(
-                                    onUp = { lyricsControls = true },
-                                    onDown = { lyricsControls = false },
-                                ),
-                            ) { WordLyricsList(vm, go, compact = true) }
-                            PLAYER_QUEUE -> QueueContent(vm, go)
-                            else -> { /* 封面页右栏留空，不展示歌词 */ }
+                CompositionLocalProvider(
+                    LocalLandPanel provides LandPanelState(landExpanded, request, collapse),
+                    LocalPageRequest provides request,
+                ) {
+                    if (landExpanded) {
+                        Row(Modifier.fillMaxSize()) {
+                            Box(Modifier.weight(0.44f).padding(horizontal = 12.dp)) {
+                                PlayerBody(
+                                    vm, s, onBig, onSmall,
+                                    compact = true, showContent = false,
+                                    controls = lyricsControls,
+                                    onControls = { lyricsControls = it },
+                                )
+                            }
+                            Box(Modifier.weight(0.56f).padding(horizontal = 12.dp)) {
+                                Column(Modifier.fillMaxSize()) {
+                                    LandPanelSwitcher(vm, go, collapse)
+                                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                                        when (vm.playerPage) {
+                                            PLAYER_LYRICS -> Box(
+                                                Modifier.fillMaxSize().lyricsControlGesture(
+                                                    onUp = { lyricsControls = true },
+                                                    onDown = { lyricsControls = false },
+                                                ),
+                                            ) { WordLyricsList(vm, go, compact = true) }
+                                            PLAYER_QUEUE -> QueueContent(vm, go)
+                                            else -> { /* 收起态不会走到这里 */ }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Box(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+                            PlayerBody(
+                                vm, s, onBig, onSmall,
+                                compact = false, showContent = true,
+                                controls = lyricsControls,
+                                onControls = { lyricsControls = it },
+                            )
                         }
                     }
                 }
@@ -296,6 +346,7 @@ fun HigPlayerRoot(vm: MainViewModel) {
             bigX, bigY, bigS, bigReady,
             smallX, smallY, smallS, smallReady,
             rootX, rootY,
+            collapse,
         )
         // 图 17 样式的更多操作表：盖在播放器最上层
         if (vm.showMoreSheet) PlayerMoreSheet(vm, s) { vm.showMoreSheet = false }
@@ -338,6 +389,7 @@ private fun SharedCover(
     bigX: Float, bigY: Float, bigS: Float, bigReady: Boolean,
     smallX: Float, smallY: Float, smallS: Float, smallReady: Boolean,
     rootX: Float, rootY: Float,
+    onBack: () -> Unit,
 ) {
     val density = LocalDensity.current
     val morph = remember { Animatable(0f) }
@@ -369,13 +421,28 @@ private fun SharedCover(
             .clip(RoundedCornerShape(8.dp))
             // 大图态点封面进专辑详情；小图态点它回封面页（与信息区点击一致）
             .clickable {
-                if (t > 0.5f) vm.gotoPlayerPage(PLAYER_COVER)
+                if (t > 0.5f) onBack()
                 else s?.let { vm.openAlbumAndClose(it) }
             },
     ) {
         Cover(s?.coverUrl, Modifier.fillMaxSize(), 8.dp, hd = true)
     }
 }
+
+/**
+ * 26.11.57：横屏不再是「永远双栏展开」。
+ * 收缩态整屏只显示封面页；展开态才左右双栏，右侧可选歌词或播放列表，
+ * 并且随时能收起。状态和请求通过 CompositionLocal 往下传，
+ * 不用把参数一层层穿透 CoverPane / PlayerBottomBar / BottomThreeKeys。
+ */
+private data class LandPanelState(
+    val expanded: Boolean,
+    val onExpand: (Int) -> Unit,
+    val onCollapse: () -> Unit,
+)
+
+private val LocalLandPanel = compositionLocalOf<LandPanelState?> { null }
+private val LocalPageRequest = staticCompositionLocalOf<((Int) -> Unit)?> { null }
 
 /** 与背景相对的纯色：暗色背景纯白、亮色背景纯黑；返回 (前景, 反色) */
 private fun GoColors.contrastPair(): Pair<Color, Color> {
@@ -486,6 +553,12 @@ private fun CoverPane(
                     modifier = Modifier.size(22.dp).clickable { vm.showMoreSheet = true },
                 )
             }
+        }
+        // 26.11.57：横屏收缩态给出明确的「展开歌词 / 播放列表」入口
+        val land = LocalLandPanel.current
+        if (land != null && !land.expanded) {
+            LandExpandPicker(land, go)
+            Spacer(Modifier.height(10.dp))
         }
         // 26.11.53：封面页与歌词页 / 队列页共用同一段底栏，进度条、
         // 控制键、三键的高度与间距完全一致 —— 切页时进度条纵坐标不再跳动。
@@ -859,6 +932,8 @@ private fun PlayerTabKey(
 @Composable
 private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
     val (fg, inv) = go.contrastPair()
+    // 横屏由播放器根提供覆写：选择展开歌词 / 列表，再点一次收起。
+    val req = LocalPageRequest.current
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -868,9 +943,8 @@ private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
             selected = vm.playerPage == PLAYER_LYRICS,
             fg = fg, inv = inv,
             onClick = {
-                vm.gotoPlayerPage(
-                    if (vm.playerPage == PLAYER_LYRICS) PLAYER_COVER else PLAYER_LYRICS
-                )
+                val p = if (vm.playerPage == PLAYER_LYRICS) PLAYER_COVER else PLAYER_LYRICS
+                if (req != null) req(p) else vm.gotoPlayerPage(p)
             },
         ) { c ->
             Icon(
@@ -888,9 +962,8 @@ private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
             selected = vm.playerPage == PLAYER_QUEUE,
             fg = fg, inv = inv,
             onClick = {
-                vm.gotoPlayerPage(
-                    if (vm.playerPage == PLAYER_QUEUE) PLAYER_COVER else PLAYER_QUEUE
-                )
+                val p = if (vm.playerPage == PLAYER_QUEUE) PLAYER_COVER else PLAYER_QUEUE
+                if (req != null) req(p) else vm.gotoPlayerPage(p)
             },
         ) { c ->
             PlayerIcon("queue", "播放列表", modifier = Modifier.size(24.dp), tint = c)
@@ -943,6 +1016,83 @@ private fun InfoHeader(
             Icons.Outlined.MoreVert, "更多", tint = go.on,
             modifier = Modifier.size(22.dp).clickable { vm.showMoreSheet = true },
         )
+    }
+}
+
+/** 横屏收缩态：明确选择「展开歌词」还是「展开播放列表」 */
+@Composable
+private fun LandExpandPicker(st: LandPanelState, go: GoColors) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("展开", fontSize = 12.sp, color = go.muted)
+        listOf("歌词" to PLAYER_LYRICS, "播放列表" to PLAYER_QUEUE).forEach { (label, p) ->
+            Row(
+                Modifier.clip(RoundedCornerShape(999.dp))
+                    .background(go.surfaceHi.copy(alpha = 0.7f))
+                    .clickable { st.onExpand(p) }
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (p == PLAYER_LYRICS) {
+                    Icon(
+                        Icons.Outlined.ChatBubbleOutline, null,
+                        tint = go.primary, modifier = Modifier.size(14.dp),
+                    )
+                } else {
+                    PlayerIcon(
+                        "queue", "播放列表",
+                        modifier = Modifier.size(14.dp), tint = go.primary,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(label, fontSize = 12.sp, color = go.on)
+            }
+        }
+    }
+}
+
+/** 展开态右栏顶部：切换歌词 / 播放列表，或收起回到整屏封面页 */
+@Composable
+private fun LandPanelSwitcher(vm: MainViewModel, go: GoColors, onCollapse: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf("歌词" to PLAYER_LYRICS, "播放列表" to PLAYER_QUEUE).forEach { (l, p) ->
+            val sel = vm.playerPage == p
+            Box(
+                Modifier.clip(RoundedCornerShape(999.dp))
+                    .background(if (sel) go.primary.copy(alpha = 0.22f) else Color.Transparent)
+                    .clickable { vm.gotoPlayerPage(p) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    l, fontSize = 13.sp,
+                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (sel) go.primary else go.muted,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+        }
+        Spacer(Modifier.weight(1f))
+        Row(
+            Modifier.clip(RoundedCornerShape(999.dp))
+                .background(go.surfaceHi.copy(alpha = 0.7f))
+                .clickable { onCollapse() }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.KeyboardArrowDown, "收起",
+                tint = go.on, modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(5.dp))
+            Text("收起", fontSize = 12.sp, color = go.on)
+        }
     }
 }
 
@@ -1001,7 +1151,13 @@ private fun LyricsPane(
     // controls 由播放器根层持有：竖屏手势在这里、横屏手势在右栏歌词上，
     // 两边改的是同一份状态。默认显示，下滑隐藏 / 上滑恢复。
     Column(Modifier.fillMaxSize()) {
-        InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
+        // 26.11.57：横屏展开态点信息区直接收起，不是只把页面标成 COVER
+        val land = LocalLandPanel.current
+        InfoHeader(
+            vm, s, go,
+            { if (land?.expanded == true) land.onCollapse() else vm.gotoPlayerPage(PLAYER_COVER) },
+            onSmallCover,
+        )
         Box(
             Modifier.weight(1f).fillMaxWidth()
                 .then(
@@ -1320,7 +1476,13 @@ private fun QueuePane(
 ) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
-        InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
+        // 26.11.57：横屏展开态点信息区直接收起，不是只把页面标成 COVER
+        val land = LocalLandPanel.current
+        InfoHeader(
+            vm, s, go,
+            { if (land?.expanded == true) land.onCollapse() else vm.gotoPlayerPage(PLAYER_COVER) },
+            onSmallCover,
+        )
         Spacer(Modifier.height(12.dp))
         // 26.11.54：横屏时列表搬到右栏，左栏只留弹性空白托住底部控制区，
         // 保证三页的控制栏纵坐标一致、且不会有两份队列。

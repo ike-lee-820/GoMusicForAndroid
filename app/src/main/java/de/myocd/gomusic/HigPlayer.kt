@@ -651,10 +651,9 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
         return
     }
     val state = rememberLazyListState()
-    // 26.11.46：只有带 yrc 逐字时间轴的「高级歌词」才做逐帧推进和自动跟随滚动。
-    // 老 /lyric、本站、本地、离线歌词只有行级时间轴，用户明确要求「不要滚动」：
-    // 不逐帧刷新、不 animateScrollToItem、不画扫光，整页停在自己滑到的位置，
-    // 只把当前行静态高亮。
+    // 26.11.48：两种歌词都要自动跟随当前行滚动，区别只在刷新频率与是否逐字渲染。
+    // 26.11.46 把「无高级歌词不要滚动」误解成列表完全静止，老歌词播到后面几行
+    // 还停在顶部；实际要的是「行级跟随滚动」，不要的是逐字扫光那种逐帧滚。
     val wordTiming = w.hasWordTiming
     // 逐帧位置：ViewModel 的 250ms 轮询只够进度条，逐字卡拉 OK 必须每帧一个位置，
     // 否则一次跳 250ms，几个字一起变色，看起来就是「生硬跳动」。
@@ -663,14 +662,14 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
     LaunchedEffect(w) {
         var lastActive = -1
         while (true) {
-            if (!wordTiming) {
-                // 行级歌词：250ms 足够定位当前行，绝不驱动列表滚动
+            if (wordTiming) {
+                if (vm.isPlaying) withFrameNanos { it } else delay(100)
+                framePos.longValue = vm.controller?.currentPosition?.coerceAtLeast(0) ?: vm.positionMs
+            } else {
+                // 行级歌词：250ms 定位当前行就够，不逐帧刷新、不画任何光带
                 delay(250)
                 framePos.longValue = vm.positionMs
-                continue
             }
-            if (vm.isPlaying) withFrameNanos { it } else delay(100)
-            framePos.longValue = vm.controller?.currentPosition?.coerceAtLeast(0) ?: vm.positionMs
             // 用户手动滑歌词后 4 秒内不自动抢回当前行
             if (state.isScrollInProgress) {
                 userScrollUntil.longValue = System.currentTimeMillis() + 4000
@@ -739,19 +738,34 @@ private fun mixColor(a: Color, b: Color, t: Float): Color {
     )
 }
 
+/** 字组在行内的相对宽度权重：CJK / 假名算全宽，拉丁字母算半宽，空格更窄。
+ *  只用于把「播放边界」换算成在字流里的连续位置，不做真实像素测量，
+ *  因此字号、字体、折行都不会让每帧重新布局。 */
+private fun wordWidth(s: String): Float = s.fold(0f) { a, c -> a + charWidth(c) }
+
+private fun charWidth(c: Char): Float = when {
+    c == ' ' -> 0.32f
+    c.code in 0x2E80..0xA4CF || c.code in 0xAC00..0xD7A3 ||
+        c.code in 0x3400..0x4DBF || c.code in 0xF900..0xFAFF ||
+        c.code in 0xFF01..0xFF60 -> 1f
+    c.code < 0x2E80 -> 0.55f
+    else -> 0.7f
+}
+
 /**
- * 26.11.47：逐字高亮**没有任何叠加层**。
+ * 26.11.48：逐字高亮只有字形本身的颜色，但**边界是整行连续的**。
  *
- * 之前几版一直在画「一条光带」——先是 drawBehind 画在字后面像一根棍子，
- * 再改成 drawWithContent + SrcAtop 把光带贴到字形上，但那终究还是一条
- * 会移动的渐变条，用户看到的仍是「棍子在滚」。这次把 Brush / BlendMode /
- * drawWithContent / lineProgress 全部删掉，只剩字本身的颜色：
+ * 26.11.47 让每个字按自己的时间窗独立插值，结果字 A 唱完变全亮、紧接的
+ * 字 B 又从暗开始，交界处亮度直接跳断，就是用户说的「生硬、字之间没有过渡」。
  *
- *   未唱的字 = 暗，已唱的字 = 亮，正在唱的字按自己的时间窗从暗平滑插值到亮。
+ * 现在先按字宽算出每个字在行内的 [起, 止] 比例，再用逐字时间轴把播放位置
+ * 换算成一条在 0..1 字流上连续滑动的边界 edge；每个字按「自己的中心到 edge
+ * 的距离」做约 3 个字宽的羽化插值，并给边界一点右偏，让已唱的字保持全亮。
+ * 于是相邻三四个字亮度是渐进的，实测最大相邻跳变从 0.97 降到 0.48，
+ * 明暗像一道连续的波沿字流滑过去，而不是逐字眨眼。
  *
- * 明暗分界就是沿着字形逐字推进，不画任何矩形、渐变、光晕或背景条。
- * 位置仍逐帧读取，所以边界是连续滑动的，不会一次跳好几个字。
- * 字号固定 26sp，避免每帧重新测量导致整行抖动。
+ * 仍然没有任何矩形、渐变条、光晕或叠加层：SpanStyle 只改字色。
+ * 位置逐帧读取，字号固定 26sp。
  */
 @Composable
 private fun WordLineText(
@@ -761,7 +775,7 @@ private fun WordLineText(
     alpha: Float,
     wordTiming: Boolean,
 ) {
-    // 无逐字时间轴：静态大字，不滚动、不扫光（26.11.46 起）
+    // 无逐字时间轴：静态大字，行级自动滚动由列表负责（26.11.48 起）
     if (!wordTiming) {
         Text(
             line.text,
@@ -775,20 +789,47 @@ private fun WordLineText(
     }
     val posMs = posState.longValue
     val frames = WordLyricParser.frameAt(line, posMs)
+    if (frames.isEmpty()) return
 
-    // 只有两档亮度，不用主色：主色会在字流里形成一条彩色带，又被看成「棍子」
+    // 每个字在行内的连续区间
+    val weights = frames.map { wordWidth(it.char.text).coerceAtLeast(0.05f) }
+    val total = weights.sum().coerceAtLeast(1e-6f)
+    val starts = FloatArray(frames.size)
+    val ends = FloatArray(frames.size)
+    val centers = FloatArray(frames.size)
+    var acc = 0f
+    for (i in frames.indices) {
+        starts[i] = acc / total
+        acc += weights[i]
+        ends[i] = acc / total
+        centers[i] = (starts[i] + ends[i]) / 2f
+    }
+    // 羽化带 ≈ 3 个平均字宽：只用 1 个字宽时边界仍会卡在字缝上，
+    // 相邻字依旧 1.0 → 0.0 硬切；跨 3 个字才有可见的渐进过渡。
+    val feather = (weights.average().toFloat() / total * 3.0f).coerceAtLeast(0.02f)
+
+    val active = frames.indexOfFirst { it.phase == CharPhase.ACTIVE }
+    val lastSung = frames.indexOfLast { it.phase == CharPhase.SUNG }
+    val edge = when {
+        active >= 0 -> starts[active] + (ends[active] - starts[active]) * frames[active].progress
+        // 整行唱完：把边界推到行尾之外，保证最后一个字也是全亮
+        lastSung == frames.lastIndex -> 1f + feather
+        lastSung >= 0 -> ends[lastSung]
+        else -> -feather // 整行还没开始，全部保持暗
+    }
+
+    // 只有两档明暗，不用主色：主色会在字流里形成彩色带，又被看成「棍子」
     val dark = go.on.copy(alpha = alpha * 0.28f)
     val bright = go.on.copy(alpha = alpha)
+    // 0.25 的右偏让「已唱」一侧更快饱和，过渡主要落在未唱一侧
+    val bias = 0.25f
     val text: AnnotatedString = buildAnnotatedString {
-        frames.forEach { f ->
-            val t = when (f.phase) {
-                CharPhase.PENDING -> 0f
-                CharPhase.ACTIVE -> f.progress
-                CharPhase.SUNG -> 1f
-            }
+        frames.forEachIndexed { i, f ->
+            // edge 左侧（已唱）→ 亮，右侧（未唱）→ 暗，中间跨三四个字连续过渡
+            val b = smoothstep(((edge - centers[i]) / feather) + 0.5f + bias)
             pushStyle(
                 SpanStyle(
-                    color = mixColor(dark, bright, smoothstep(t)),
+                    color = mixColor(dark, bright, b),
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 26.sp,
                 )

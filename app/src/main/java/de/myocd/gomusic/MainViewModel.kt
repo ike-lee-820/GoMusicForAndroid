@@ -2275,6 +2275,36 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.fontWght = v
     }
 
+    // ---------- 歌词排版（只作用于歌词页，与全局字体互不影响） ----------
+    /** 歌词字号 sp，默认 [LYRIC_SIZE_DEFAULT] */
+    var lyricSize by mutableIntStateOf(prefs.lyricSize); private set
+    /** 歌词字体来源，默认跟随全局 */
+    var lyricFont by mutableIntStateOf(prefs.lyricFont); private set
+    /** 歌词字重 wght，默认 [LYRIC_WGHT_DEFAULT] */
+    var lyricWght by mutableIntStateOf(prefs.lyricWght); private set
+
+    fun chooseLyricSize(v: Int) {
+        lyricSize = v.coerceIn(LYRIC_SIZE_MIN, LYRIC_SIZE_MAX)
+        prefs.lyricSize = lyricSize
+    }
+
+    fun chooseLyricFont(v: Int) {
+        lyricFont = v.coerceIn(0, 3)
+        prefs.lyricFont = lyricFont
+    }
+
+    fun chooseLyricWght(v: Int) {
+        lyricWght = v.coerceIn(LYRIC_WGHT_MIN, LYRIC_WGHT_MAX)
+        prefs.lyricWght = lyricWght
+    }
+
+    /** 恢复三项默认值 */
+    fun resetLyricStyle() {
+        chooseLyricSize(LYRIC_SIZE_DEFAULT)
+        chooseLyricFont(LYRIC_FONT_FOLLOW)
+        chooseLyricWght(LYRIC_WGHT_DEFAULT)
+    }
+
     /** 当前是否为网易云音质档位名（quality 菜单可能是网易云的档位） */
     val nmQualityMode: Boolean get() = curSsid?.let { isNetease(it) } == true
     /** 网易云当前音质档位（空 = 跟随设置） */

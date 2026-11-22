@@ -84,8 +84,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -650,6 +652,20 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
         }
         return
     }
+    // 26.11.49：歌词排版三项独立设置，只作用于这里，不改全局字体。
+    // 「跟随全局」读 LocalAppFont；「系统字体」留 null 由字重生效；
+    // 内置字体用精确 wght 的字体实例，不再叠加全局字重。
+    val globalFont = LocalAppFont.current
+    val customLyricFont = rememberLyricFont(vm.lyricFont, vm.lyricWght)
+    val lyricFamily = when (vm.lyricFont) {
+        LYRIC_FONT_FOLLOW -> globalFont
+        LYRIC_FONT_SYSTEM -> null
+        else -> customLyricFont
+    }
+    val lyricWeight = FontWeight(vm.lyricWght)
+    val lyricSizeSp = vm.lyricSize
+    // 只略微放大同一句折成多行时的行距；不同歌词行之间的 spacedBy(18.dp) 不动
+    val lyricLineHeight = (lyricSizeSp * LYRIC_LINE_HEIGHT_RATIO).sp
     val state = rememberLazyListState()
     // 26.11.48：两种歌词都要自动跟随当前行滚动，区别只在刷新频率与是否逐字渲染。
     // 26.11.46 把「无高级歌词不要滚动」误解成列表完全静止，老歌词播到后面几行
@@ -687,6 +703,7 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
         state = state,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 120.dp),
+        // 26.11.49：不同歌词行之间的 18dp 保持原样，只改同一句折行行距
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         itemsIndexed(w.lines) { i, line ->
@@ -702,7 +719,10 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
                 if (line.meta) {
                     Text(line.text, fontSize = 12.sp, color = go.muted.copy(alpha = 0.6f))
                 } else {
-                    WordLineText(line, framePos, go, alpha, wordTiming)
+                    WordLineText(
+                        line, framePos, go, alpha, wordTiming,
+                        lyricSizeSp, lyricFamily, lyricWeight, lyricLineHeight,
+                    )
                     if (!line.trans.isNullOrBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
@@ -774,13 +794,19 @@ private fun WordLineText(
     go: GoColors,
     alpha: Float,
     wordTiming: Boolean,
+    sizeSp: Int,
+    family: FontFamily?,
+    weight: FontWeight,
+    lineHeight: TextUnit,
 ) {
     // 无逐字时间轴：静态大字，行级自动滚动由列表负责（26.11.48 起）
     if (!wordTiming) {
         Text(
             line.text,
-            fontSize = 26.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontSize = sizeSp.sp,
+            fontFamily = family,
+            fontWeight = weight,
+            lineHeight = lineHeight,
             color = go.on.copy(alpha = alpha),
             textAlign = TextAlign.Start,
             modifier = Modifier.fillMaxWidth(),
@@ -830,8 +856,9 @@ private fun WordLineText(
             pushStyle(
                 SpanStyle(
                     color = mixColor(dark, bright, b),
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 26.sp,
+                    fontFamily = family,
+                    fontWeight = weight,
+                    fontSize = sizeSp.sp,
                 )
             )
             append(f.char.text)
@@ -841,8 +868,10 @@ private fun WordLineText(
 
     Text(
         text,
-        fontSize = 26.sp,
-        fontWeight = FontWeight.SemiBold,
+        fontSize = sizeSp.sp,
+        fontFamily = family,
+        fontWeight = weight,
+        lineHeight = lineHeight,
         color = go.on.copy(alpha = alpha),
         textAlign = TextAlign.Start,
         modifier = Modifier.fillMaxWidth(),

@@ -154,6 +154,24 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("font_wght", 450).coerceIn(250, 900)
         set(v) { sp.edit().putInt("font_wght", v.coerceIn(250, 900)).apply() }
 
+    // -------------------------------------------------------------------
+    // 歌词排版：与全局字体分开，只作用于播放器歌词页
+    // -------------------------------------------------------------------
+    /** 歌词字号（sp）。默认 26 = 大字歌词登场时的既有值 */
+    var lyricSize: Int
+        get() = sp.getInt("lyric_size", LYRIC_SIZE_DEFAULT).coerceIn(LYRIC_SIZE_MIN, LYRIC_SIZE_MAX)
+        set(v) { sp.edit().putInt("lyric_size", v.coerceIn(LYRIC_SIZE_MIN, LYRIC_SIZE_MAX)).apply() }
+
+    /** 歌词字体：0 跟随全局 / 1 系统 / 2 思源宋体 / 3 思源黑体 */
+    var lyricFont: Int
+        get() = sp.getInt("lyric_font", LYRIC_FONT_FOLLOW).coerceIn(0, 3)
+        set(v) { sp.edit().putInt("lyric_font", v.coerceIn(0, 3)).apply() }
+
+    /** 歌词字重（wght）。默认 700，与录制/全局字重的 450 互不影响 */
+    var lyricWght: Int
+        get() = sp.getInt("lyric_wght", LYRIC_WGHT_DEFAULT).coerceIn(LYRIC_WGHT_MIN, LYRIC_WGHT_MAX)
+        set(v) { sp.edit().putInt("lyric_wght", v.coerceIn(LYRIC_WGHT_MIN, LYRIC_WGHT_MAX)).apply() }
+
     var nmAccount: String
         get() = sp.getString("nm_account", "") ?: ""
         set(v) { sp.edit().putString("nm_account", v).apply() }

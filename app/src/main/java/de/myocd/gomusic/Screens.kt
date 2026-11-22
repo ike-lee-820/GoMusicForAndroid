@@ -3628,6 +3628,74 @@ fun SettingsSheet(vm: MainViewModel) {
             )
             VS(16)
 
+            // ---------- 歌词排版（26.11.49：与全局字体完全独立） ----------
+            Txt("歌词排版", 15, weight = FontWeight.SemiBold)
+            VS(8)
+            Txt("仅作用于歌词页。同一句折行行距略微加大，不同歌词行之间的间距不变", 11, color = go.muted)
+            VS(10)
+
+            // 字号
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt("字号", 13, color = go.muted)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(go.surfaceHi)
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                ) { Txt("${vm.lyricSize} sp", 13, color = go.primary) }
+                Spacer(Modifier.weight(1f))
+                GoButton("恢复默认") { vm.resetLyricStyle() }
+            }
+            Slider(
+                value = vm.lyricSize.toFloat(),
+                onValueChange = { vm.chooseLyricSize(it.roundToInt()) },
+                valueRange = LYRIC_SIZE_MIN.toFloat()..LYRIC_SIZE_MAX.toFloat(),
+                steps = 0,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Txt("范围 $LYRIC_SIZE_MIN–$LYRIC_SIZE_MAX sp，默认 $LYRIC_SIZE_DEFAULT sp", 11, color = go.muted)
+            VS(10)
+
+            // 字体
+            Txt("字体", 13, color = go.muted)
+            VS(6)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LYRIC_FONT_NAMES.forEachIndexed { i, n ->
+                    val sel = vm.lyricFont == i
+                    Box(
+                        Modifier.clip(RoundedCornerShape(50))
+                            .background(if (sel) go.primary else go.surfaceHi)
+                            .clickable { vm.chooseLyricFont(i) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) { Txt(n, 13, color = if (sel) Color(0xFF1A1A1A) else go.muted) }
+                }
+            }
+            VS(10)
+
+            // 字重
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt("字重", 13, color = go.muted)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(go.surfaceHi)
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                ) { Txt(vm.lyricWght.toString(), 13, color = go.primary) }
+            }
+            Slider(
+                value = vm.lyricWght.toFloat(),
+                onValueChange = { vm.chooseLyricWght(it.roundToInt()) },
+                valueRange = LYRIC_WGHT_MIN.toFloat()..LYRIC_WGHT_MAX.toFloat(),
+                steps = (LYRIC_WGHT_MAX - LYRIC_WGHT_MIN) / 50 - 1,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Txt(
+                "范围 $LYRIC_WGHT_MIN–$LYRIC_WGHT_MAX，默认 $LYRIC_WGHT_DEFAULT；内置字体按 wght 轴精确生效",
+                11, color = go.muted,
+            )
+            VS(16)
+
             // ---------- 简繁转换 ----------
             Txt("简繁转换", 15, weight = FontWeight.SemiBold)
             VS(8)

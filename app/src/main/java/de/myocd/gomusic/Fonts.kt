@@ -32,6 +32,61 @@ const val WGHT_DEFAULT = 450
 /** 字体名称，设置界面直接用 */
 val FONT_NAMES = listOf("系统字体", "思源宋体", "思源黑体")
 
+// -------------------------------------------------------------------
+// 歌词排版：与全局字体完全独立的三项设置
+// -------------------------------------------------------------------
+/** 歌词字体来源 */
+const val LYRIC_FONT_FOLLOW = 0   // 跟随全局字体（默认，保持升级前观感）
+const val LYRIC_FONT_SYSTEM = 1   // 系统字体
+const val LYRIC_FONT_SONG = 2     // 思源宋体
+const val LYRIC_FONT_HEI = 3      // 思源黑体
+val LYRIC_FONT_NAMES = listOf("跟随全局", "系统字体", "思源宋体", "思源黑体")
+
+/** 歌词字号范围；默认值就是大字歌词登场时的 26sp */
+const val LYRIC_SIZE_MIN = 14
+const val LYRIC_SIZE_MAX = 64
+const val LYRIC_SIZE_DEFAULT = 26
+
+/** 歌词字重范围与默认值 */
+const val LYRIC_WGHT_MIN = 100
+const val LYRIC_WGHT_MAX = 900
+const val LYRIC_WGHT_DEFAULT = 700
+
+/**
+ * 同一句歌词折成多行时的行距倍数。
+ * 只放大折行行距，不动 LazyColumn 里不同歌词行之间的 spacedBy(18.dp)。
+ */
+const val LYRIC_LINE_HEIGHT_RATIO = 1.30f
+
+/**
+ * 构造歌词专用字体：与 [rememberAppFont] 不同，这里按**精确 wght** 注册单个实例，
+ * 不再额外 +250 做 Bold 层次——歌词的粗细完全由设置里的字重决定。
+ * 返回 null 表示交给调用方用系统字体 / 全局字体。
+ */
+@Composable
+fun rememberLyricFont(kind: Int, wght: Int): FontFamily? {
+    val ctx = LocalContext.current
+    return remember(kind, wght) {
+        if (kind == LYRIC_FONT_FOLLOW || kind == LYRIC_FONT_SYSTEM) return@remember null
+        val res = if (kind == LYRIC_FONT_SONG) R.font.song else R.font.hei
+        // 黑体是 CFF2 可变字体，少数机型解析失败时回退系统字体，不带崩页面
+        if (kind == LYRIC_FONT_HEI && runCatching {
+                ResourcesCompat.getFont(ctx, res)
+            }.isFailure) {
+            Log.w("GoFont", "歌词思源黑体资源加载失败，回退系统字体")
+            return@remember null
+        }
+        val w = wght.coerceIn(if (kind == LYRIC_FONT_HEI) 100 else WGHT_MIN, WGHT_MAX)
+        FontFamily(
+            Font(
+                res,
+                weight = FontWeight(w),
+                variationSettings = FontVariation.Settings(FontVariation.weight(w)),
+            ),
+        )
+    }
+}
+
 /**
  * 按当前选择构造全局字体。
  *

@@ -107,7 +107,17 @@ fun CastSheet(vm: MainViewModel, onClose: () -> Unit) {
     fun scan() {
         scanning = true
         scope.launch {
-            val found = withContext(Dispatchers.IO) { DlnaCast.discover(ctx) }
+            // 26.11.60：移动数据下不做 SSDP，也不让任何异常从 IO 协程冒泡成闪退
+            val wifi = withContext(Dispatchers.IO) { DlnaCast.isWifi(ctx) }
+            if (!wifi) {
+                devices = emptyList()
+                scanning = false
+                hint = "当前使用移动数据，投屏需要 WiFi。连接同一局域网后点「重新搜索」。"
+                return@launch
+            }
+            val found = runCatching {
+                withContext(Dispatchers.IO) { DlnaCast.discover(ctx) }
+            }.getOrDefault(emptyList())
             devices = found
             scanning = false
             hint = if (found.isEmpty()) {
@@ -122,29 +132,29 @@ fun CastSheet(vm: MainViewModel, onClose: () -> Unit) {
         active = d
         scope.launch {
             hint = "正在准备音源…"
-            val src = withContext(Dispatchers.IO) { CastRoute.currentUrl(vm) }
-            if (src.isNullOrBlank()) {
-                hint = "当前歌曲没有可用音源，无法投屏"
-                return@launch
+            val result = runCatching {
+                val src = withContext(Dispatchers.IO) { CastRoute.currentUrl(vm) }
+                if (src.isNullOrBlank()) return@runCatching "当前歌曲没有可用音源，无法投屏"
+                if (!src.startsWith("http", ignoreCase = true)) {
+                    return@runCatching "本地文件暂不支持投屏，请播放在线歌曲后重试"
+                }
+                if (!withContext(Dispatchers.IO) { DlnaCast.isWifi(ctx) }) {
+                    return@runCatching "投屏需要 WiFi 局域网，请连接后再试"
+                }
+                // 电视只从手机拉流：绕开在线直链的防盗链 / UA / 时效限制
+                val base = withContext(Dispatchers.IO) {
+                    LocalCastServer.start(src, hdCoverUrl(s.coverUrl, 500))
+                } ?: return@runCatching "无法建立本机转发，请连接 WiFi 后重试"
+                val audio = "$base/audio"
+                val cover = s.coverUrl?.let { "$base/cover" }
+                val ok = withContext(Dispatchers.IO) {
+                    DlnaCast.play(d, audio, s.title, s.artist, cover)
+                }
+                if (ok) "已投到 ${d.name}" else "${d.name} 没有响应，请确认设备支持 DLNA / AVTransport"
+            }.getOrElse { e ->
+                "投屏未能开始：${e.javaClass.simpleName}"
             }
-            if (!src.startsWith("http", ignoreCase = true)) {
-                hint = "本地文件暂不支持投屏，请播放在线歌曲后重试"
-                return@launch
-            }
-            // 电视只从手机拉流：绕开在线直链的防盗链 / UA / 时效限制
-            val base = withContext(Dispatchers.IO) {
-                LocalCastServer.start(src, hdCoverUrl(s.coverUrl, 500))
-            }
-            if (base == null) {
-                hint = "无法建立本机转发，请连接 WiFi 后重试"
-                return@launch
-            }
-            val audio = "$base/audio"
-            val cover = s.coverUrl?.let { "$base/cover" }
-            val ok = withContext(Dispatchers.IO) {
-                DlnaCast.play(d, audio, s.title, s.artist, cover)
-            }
-            hint = if (ok) "已投到 ${d.name}" else "${d.name} 没有响应，请确认设备支持 DLNA / AVTransport"
+            hint = result
         }
     }
 
@@ -177,9 +187,11 @@ fun CastSheet(vm: MainViewModel, onClose: () -> Unit) {
                         "停止投屏", fontSize = 14.sp, color = go.primary,
                         modifier = Modifier.clickable {
                             scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    DlnaCast.stop(d)
-                                    LocalCastServer.stop()
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        DlnaCast.stop(d)
+                                        LocalCastServer.stop()
+                                    }
                                 }
                                 active = null
                                 hint = "已停止投屏"
@@ -213,17 +225,16 @@ fun CastSheet(vm: MainViewModel, onClose: () -> Unit) {
                         .clickable {
                             if (vm.currentSong == null) { hint = "当前没有播放歌曲"; return@clickable }
                             scope.launch {
-                                val src = withContext(Dispatchers.IO) { CastRoute.currentUrl(vm) }
-                                if (src.isNullOrBlank()) {
-                                    hint = "当前歌曲没有可用音源"
-                                    return@launch
-                                }
-                                val base = withContext(Dispatchers.IO) {
-                                    LocalCastServer.start(src, null)
-                                }
-                                val url = if (base != null) "$base/audio" else src
-                                val ok = CastRoute.play(ctx, r, url)
-                                hint = if (ok) "已投到 ${r.name}" else "${r.name} 没有响应"
+                                hint = runCatching {
+                                    val src = withContext(Dispatchers.IO) { CastRoute.currentUrl(vm) }
+                                    if (src.isNullOrBlank()) return@runCatching "当前歌曲没有可用音源"
+                                    val base = withContext(Dispatchers.IO) {
+                                        LocalCastServer.start(src, null)
+                                    }
+                                    val url = if (base != null) "$base/audio" else src
+                                    val ok = CastRoute.play(ctx, r, url)
+                                    if (ok) "已投到 ${r.name}" else "${r.name} 没有响应"
+                                }.getOrElse { "投屏未能开始：${it.javaClass.simpleName}" }
                             }
                         }
                         .padding(vertical = 10.dp),

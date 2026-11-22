@@ -541,6 +541,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var curSsid by mutableStateOf<String?>(null); private set
     var curIndex by mutableIntStateOf(0); private set
     var isPlaying by mutableStateOf(false); private set
+    /** 26.11.60：本次会话是否已经开始播放过。放 VM 里，收起播放器再打开也不会
+     *  把「暂停缩小态」错认成「从未播放的原尺寸态」。 */
+    var playerEverPlayed by mutableStateOf(false); private set
     var positionMs by mutableLongStateOf(0L); private set
     var durationMs by mutableLongStateOf(0L); private set
     var queue by mutableStateOf<List<QueueEntry>>(emptyList()); private set
@@ -2472,7 +2475,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ================= 播放器连接 =================
     private fun attach(c: MediaController) {
         c.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { this@MainViewModel.isPlaying = isPlaying }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                this@MainViewModel.isPlaying = isPlaying
+                if (isPlaying) playerEverPlayed = true
+            }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 onItem(mediaItem, true)
                 prefetchAhead()
@@ -2485,6 +2491,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         applyMode(c)
         c.setPlaybackSpeed(speed)
         isPlaying = c.isPlaying
+        if (c.isPlaying) playerEverPlayed = true
         refreshQueue()
         onItem(c.currentMediaItem, false)
         afterConnect?.let { afterConnect = null; it() }

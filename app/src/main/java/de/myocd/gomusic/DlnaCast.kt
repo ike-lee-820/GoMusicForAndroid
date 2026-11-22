@@ -1,6 +1,8 @@
 package de.myocd.gomusic
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
 import okhttp3.MediaType.Companion.toMediaType
@@ -48,55 +50,85 @@ object DlnaCast {
         .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
-    /** SSDP 发现；必须在 IO 线程调用 */
+    /**
+     * 26.11.60：当前是否连着 WiFi。
+     * 蜂窝网络下往 239.255.255.250 发 SSDP 多播会直接抛 IOException，
+     * 而且拿不到局域网地址，转发服务也起不来，所以干脆不发。
+     */
+    fun isWifi(ctx: Context): Boolean = runCatching {
+        val cm = ctx.applicationContext
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+        caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+    }.getOrDefault(false)
+
+    /**
+     * SSDP 发现；必须在 IO 线程调用。
+     *
+     * 26.11.60：整条发现链用 runCatching 兜住。旧版 socket 构造 / send /
+     * receive / MulticastLock.acquire 的异常都没有捕获，会从 IO 协程一路
+     * 冒泡成未捕获异常 —— 用户在移动数据下点投屏就是直接闪退。
+     */
     fun discover(ctx: Context): List<DlnaDevice> {
-        val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val lock = wm?.createMulticastLock("gomusic-cast")?.apply {
-            setReferenceCounted(true)
-        }
-        try {
-            lock?.acquire()
-            val socket = DatagramSocket(0).apply {
-                soTimeout = 300
-                broadcast = true
+        // 没有 WiFi 就不做多播：既避免异常，也不白等 3.2 秒
+        if (!isWifi(ctx)) return emptyList()
+        return runCatching discovery@ {
+            val wm = ctx.applicationContext
+                .getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val lock = wm?.createMulticastLock("gomusic-cast")?.apply {
+                setReferenceCounted(true)
             }
-            val locations = LinkedHashSet<String>()
             try {
-                val probe = "M-SEARCH * HTTP/1.1\r\n" +
-                    "HOST: 239.255.255.250:1900\r\n" +
-                    "MAN: \"ssdp:discover\"\r\n" +
-                    "MX: 2\r\n" +
-                    "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n"
-                val bytes = probe.toByteArray(Charsets.US_ASCII)
-                val target = InetAddress.getByName("239.255.255.250")
-                repeat(3) {
-                    socket.send(DatagramPacket(bytes, bytes.size, target, 1900))
-                }
-                val deadline = System.currentTimeMillis() + 3200
-                while (System.currentTimeMillis() < deadline) {
-                    try {
-                        val buf = ByteArray(4096)
-                        val dp = DatagramPacket(buf, buf.size)
-                        socket.receive(dp)
-                        val txt = String(dp.data, 0, dp.length, Charsets.UTF_8)
-                        txt.lineSequence().firstOrNull { l ->
-                            l.trimStart().startsWith("location:", ignoreCase = true)
-                        }?.substringAfter(':', "")?.trim()?.let { locations.add(it) }
-                    } catch (e: SocketTimeoutException) {
-                        // 继续等下一个响应
-                    } catch (e: Exception) {
-                        break
+                runCatching { lock?.acquire() }
+                val socket = runCatching {
+                    DatagramSocket(0).apply {
+                        soTimeout = 300
+                        broadcast = true
                     }
+                }.getOrNull() ?: return@discovery emptyList<DlnaDevice>()
+                val locations = LinkedHashSet<String>()
+                try {
+                    val probe = "M-SEARCH * HTTP/1.1\r\n" +
+                        "HOST: 239.255.255.250:1900\r\n" +
+                        "MAN: \"ssdp:discover\"\r\n" +
+                        "MX: 2\r\n" +
+                        "ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n"
+                    val bytes = probe.toByteArray(Charsets.US_ASCII)
+                    val target = runCatching {
+                        InetAddress.getByName("239.255.255.250")
+                    }.getOrNull() ?: return@discovery emptyList<DlnaDevice>()
+                    repeat(3) {
+                        // 单播接口不可达时 send 会抛，忽略这一轮即可
+                        runCatching {
+                            socket.send(DatagramPacket(bytes, bytes.size, target, 1900))
+                        }
+                    }
+                    val deadline = System.currentTimeMillis() + 3200
+                    while (System.currentTimeMillis() < deadline) {
+                        try {
+                            val buf = ByteArray(4096)
+                            val dp = DatagramPacket(buf, buf.size)
+                            socket.receive(dp)
+                            val txt = String(dp.data, 0, dp.length, Charsets.UTF_8)
+                            txt.lineSequence().firstOrNull { l ->
+                                l.trimStart().startsWith("location:", ignoreCase = true)
+                            }?.substringAfter(':', "")?.trim()?.let { locations.add(it) }
+                        } catch (e: SocketTimeoutException) {
+                            // 继续等下一个响应
+                        } catch (e: Exception) {
+                            break
+                        }
+                    }
+                } finally {
+                    runCatching { socket.close() }
+                }
+                locations.mapNotNull { loc ->
+                    runCatching { parseDevice(loc) }.getOrNull()
                 }
             } finally {
-                socket.close()
+                runCatching { if (lock?.isHeld == true) lock.release() }
             }
-            return locations.mapNotNull { loc ->
-                runCatching { parseDevice(loc) }.getOrNull()
-            }
-        } finally {
-            runCatching { if (lock?.isHeld == true) lock.release() }
-        }
+        }.getOrDefault(emptyList<DlnaDevice>())
     }
 
     /** 手动输入设备描述地址时用，跳过 SSDP */

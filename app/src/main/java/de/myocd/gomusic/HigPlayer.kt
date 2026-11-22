@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -214,6 +215,13 @@ fun HigPlayerRoot(vm: MainViewModel) {
     // 26.11.54：歌词控制区显隐提到根层，横屏时右栏歌词与左栏控制区
     // 才能共用同一份状态（下滑隐藏 / 上滑恢复在横屏同样生效）。
     var lyricsControls by remember { mutableStateOf(true) }
+    // 26.11.60：封面三态尺寸。从未播放 = 原样式 1.0；开始播放放大到 1.08；
+    // 暂停缩小到 0.88；再次播放平滑放大回 1.08。用 spring 连续过渡，不跳变。
+    val coverScaleTarget = when {
+        !vm.playerEverPlayed -> 1f
+        vm.isPlaying -> 1.08f
+        else -> 0.88f
+    }
     // 26.11.57：横屏默认收缩（整屏封面页），展开由用户主动选择
     var landExpanded by remember { mutableStateOf(false) }
     var lastLand by remember { mutableStateOf(false) }
@@ -347,6 +355,7 @@ fun HigPlayerRoot(vm: MainViewModel) {
             smallX, smallY, smallS, smallReady,
             rootX, rootY,
             collapse,
+            coverScaleTarget,
         )
         // 图 17 样式的更多操作表：盖在播放器最上层
         if (vm.showMoreSheet) PlayerMoreSheet(vm, s) { vm.showMoreSheet = false }
@@ -390,8 +399,16 @@ private fun SharedCover(
     smallX: Float, smallY: Float, smallS: Float, smallReady: Boolean,
     rootX: Float, rootY: Float,
     onBack: () -> Unit,
+    /** 26.11.60：播放 / 暂停 / 未播放三态的目标缩放，只作用在大图态 */
+    playScaleTarget: Float = 1f,
 ) {
     val density = LocalDensity.current
+    // 动画值只在这一层读，播放/暂停切换时不会让整棵播放器子树每帧重组
+    val playScale by animateFloatAsState(
+        targetValue = playScaleTarget,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 300f),
+        label = "coverPlayScale",
+    )
     val morph = remember { Animatable(0f) }
     LaunchedEffect(vm.playerPage) {
         morph.animateTo(
@@ -412,12 +429,18 @@ private fun SharedCover(
     val y = by + (sy - by) * t
     val sz = bs + (ss - bs) * t
     if (sz <= 0f) return
+    // 26.11.60：大图态（t=0）吃满播放缩放，切到信息区小图（t=1）时淡出该缩放，
+    // 这样歌词页 / 队列页的小封面不会因为暂停而忽大忽小。
+    val drawSz = sz * (1f + (playScale - 1f) * (1f - t))
+    // 尺寸变了但中心不动：左上角补一半差值
+    val drawX = x + (sz - drawSz) / 2f
+    val drawY = y + (sz - drawSz) / 2f
     Box(
         Modifier
             .offset {
-                IntOffset((x - rootX).roundToInt(), (y - rootY).roundToInt())
+                IntOffset((drawX - rootX).roundToInt(), (drawY - rootY).roundToInt())
             }
-            .size((sz / density.density).dp)
+            .size((drawSz / density.density).dp)
             .clip(RoundedCornerShape(8.dp))
             // 大图态点封面进专辑详情；小图态点它回封面页（与信息区点击一致）
             .clickable {
@@ -473,8 +496,17 @@ private fun CoverPane(
             Modifier.weight(1f).fillMaxWidth(),
             contentAlignment = Alignment.Center,
         ) {
-            val side = minOf(maxWidth * 0.74f, maxHeight * 0.92f)
-            // 26.11.52：这里只留尺寸不变的透明占位并上报位置，真正的封面由
+            // 26.11.60：未播放 / 暂停维持原尺寸 0.74，开始播放放大到 0.86。
+            // 用同一个 spring 平滑插值，占位尺寸一变，SharedCover 的 bigS /
+            // bigX / bigY 会跟着上报，画出来的那张封面连续放大缩小，不跳变。
+            val side by animateDpAsState(
+                targetValue = minOf(
+                    maxWidth * if (vm.isPlaying) 0.86f else 0.74f,
+                    maxHeight * 0.92f,
+                ),
+                label = "coverPlayScale",
+            )
+            // 26.11.52：这里只留透明占位并上报位置，真正的封面由
             // SharedCover 统一绘制，切页时才能连续缩放而不是换一张图。
             Box(
                 Modifier.width(side).aspectRatio(1f)

@@ -18,6 +18,26 @@ const val MAX_SNAPSHOTS = 2000
 /** 歌词翻译缓存的歌曲数上限 */
 const val MAX_LYRIC_TRANS = 300
 
+/**
+ * 26.11.59：最近搜索的实体记录。
+ * 以前只存一串关键词字符串，界面只能画成横排胶囊；改成带类型、封面、
+ * 副标题和歌词片段的行记录，才能按 Apple Music 的「最近搜索」列表展示。
+ */
+@Serializable
+data class RecentItem(
+    val key: String,
+    /** song / artist / album / keyword */
+    val kind: String,
+    val title: String,
+    val subtitle: String = "",
+    val cover: String? = null,
+    val lyricLine: String = "",
+    val ssid: String = "",
+    val artist: String = "",
+    val nmId: Long = 0,
+    val nmKind: String = "",
+)
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -259,4 +279,16 @@ class Prefs(ctx: Context) {
             json.decodeFromString<List<String>>(sp.getString("search_history", "[]")!!)
         }.getOrDefault(emptyList())
         set(v) { sp.edit().putString("search_history", json.encodeToString(v.distinct().take(20))).apply() }
+
+    /** 26.11.59：最近搜索实体（歌曲 / 艺人 / 专辑 / 关键词），按 key 去重，最多 20 条 */
+    var recentItems: List<RecentItem>
+        get() = runCatching {
+            json.decodeFromString<List<RecentItem>>(sp.getString("recent_items", "[]")!!)
+        }.getOrDefault(emptyList())
+        set(v) {
+            sp.edit().putString(
+                "recent_items",
+                json.encodeToString(v.distinctBy { it.key }.take(20)),
+            ).apply()
+        }
 }

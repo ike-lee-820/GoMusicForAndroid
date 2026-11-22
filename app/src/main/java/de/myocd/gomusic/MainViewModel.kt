@@ -2222,16 +2222,111 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 搜索记录（最近在前），提交时才写 */
     var searchHistory by mutableStateOf(prefs.searchHistory); private set
+
+    /** 26.11.59：最近搜索实体列表，取代界面上的胶囊关键词行。
+     *  旧版本只存了关键词，首次升级时把它们转成「搜索词」行，不至于变空。 */
+    var recentItems by mutableStateOf(
+        prefs.recentItems.ifEmpty {
+            prefs.searchHistory.map {
+                RecentItem(
+                    key = "kw|$it",
+                    kind = "keyword",
+                    title = it,
+                    subtitle = "搜索词",
+                )
+            }
+        }
+    ); private set
+
+    private fun putRecent(item: RecentItem) {
+        val next = (listOf(item) + recentItems.filter { it.key != item.key }).take(20)
+        recentItems = next
+        prefs.recentItems = next
+    }
+
+    /** 从搜索结果点过一首歌：记一条带封面、副标题的行，并异步补一句歌词片段 */
+    fun recordRecentSong(s: Song) {
+        val key = "song|${s.ssid}"
+        putRecent(
+            RecentItem(
+                key = key,
+                kind = "song",
+                title = s.title,
+                subtitle = "歌曲 · ${s.artist}",
+                cover = s.coverUrl,
+                ssid = s.ssid,
+                artist = s.artist,
+            )
+        )
+        val nid = neteaseIdOf(s.ssid) ?: return
+        // 图里歌曲行有「歌词："…"」第三行。只取第一句正文，短超时、失败就留空，
+        // 不阻塞点击、不占播放解析线程。
+        viewModelScope.launch(Dispatchers.IO) {
+            val line = withTimeoutOrNull(2_500L) {
+                runCatching {
+                    val lrc = Prefetcher.warmLyric(nid).lrc
+                    lrc.lineSequence()
+                        .map { it.replace(Regex("""\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]"""), "").trim() }
+                        .firstOrNull {
+                            it.isNotBlank() &&
+                                !it.startsWith("作词") && !it.startsWith("作曲") &&
+                                !it.startsWith("编曲") && !it.startsWith("制作人")
+                        }
+                }.getOrNull()
+            }
+            if (!line.isNullOrBlank()) {
+                withContext(Dispatchers.Main) { updateRecentLyric(key, line.take(38)) }
+            }
+        }
+    }
+
+    /** 从搜索结果点过艺人或专辑 */
+    fun recordRecentGroup(g: Group) {
+        val isArtist = g.nmKind == "artist"
+        putRecent(
+            RecentItem(
+                key = "${g.nmKind}|${g.nmId}|${g.title}",
+                kind = if (isArtist) "artist" else "album",
+                title = g.title,
+                subtitle = if (isArtist) "艺人" else "专辑 · ${g.artist.ifBlank { g.subtitle }}",
+                cover = g.cover,
+                artist = g.artist,
+                nmId = g.nmId,
+                nmKind = g.nmKind,
+            )
+        )
+    }
+
+    private fun updateRecentLyric(key: String, line: String) {
+        val next = recentItems.map { if (it.key == key) it.copy(lyricLine = line) else it }
+        recentItems = next
+        prefs.recentItems = next
+    }
+
+    /** 移除单条最近搜索（行右侧菜单用） */
+    fun removeRecent(key: String) {
+        val next = recentItems.filter { it.key != key }
+        recentItems = next
+        prefs.recentItems = next
+    }
+
     fun recordSearch(q: String) {
         val v = q.trim()
         if (v.isEmpty()) return
         val next = (listOf(v) + searchHistory).distinct().take(20)
         searchHistory = next
         prefs.searchHistory = next
+        // 关键词也进实体列表，旧版升级后仍看得到搜过的词
+        putRecent(
+            RecentItem(key = "kw|$v", kind = "keyword", title = v, subtitle = "搜索词")
+        )
     }
+
     fun clearSearchHistory() {
         searchHistory = emptyList()
         prefs.searchHistory = emptyList()
+        recentItems = emptyList()
+        prefs.recentItems = emptyList()
     }
 
     /** 逐字歌词（第 1 期只落数据层；播放器老歌词列表仍用行级 lyric） */

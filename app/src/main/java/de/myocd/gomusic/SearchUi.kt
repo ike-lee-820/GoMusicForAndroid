@@ -27,7 +27,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
@@ -90,40 +89,18 @@ fun SearchPage(vm: MainViewModel) {
                     vm.query = it
                     if (it.isEmpty()) vm.searchAll("")
                 },
-                placeholder = "歌曲、艺人、专辑",
+                placeholder = "艺人、歌曲、歌词以及更多",
                 go = go,
                 onSearch = { if (vm.query.isNotBlank()) vm.searchAll(vm.query) },
             )
-            if (vm.query.isBlank() && vm.searchHistory.isNotEmpty()) {
-                Spacer(Modifier.height(16.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("最近搜索", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = go.muted)
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "清除", fontSize = 13.sp, color = go.primary,
-                        modifier = Modifier.clickable { vm.clearSearchHistory() }.padding(4.dp),
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(vm.searchHistory) { w ->
-                        Row(
-                            Modifier.clip(RoundedCornerShape(999.dp))
-                                .background(go.surfaceHi)
-                                .clickable { vm.query = w; vm.searchAll(w) }
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(Icons.Outlined.Search, null, tint = go.muted, modifier = Modifier.size(13.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(w, fontSize = 13.sp, color = go.on)
-                        }
-                    }
-                }
-            }
+            // 26.11.59：最近搜索改成结果区里的实体行列表（Apple Music 样式），
+            // 不再在搜索框下面堆一排胶囊。
             Spacer(Modifier.height(14.dp))
-            SearchSegmented(labels, vm.searchFilter, go) { vm.chooseSearchFilter(it) }
-            Spacer(Modifier.height(8.dp))
+            // 没有搜索结果时不显示分类控件，初始态与参考图一致
+            if (agg != null) {
+                SearchSegmented(labels, vm.searchFilter, go) { vm.chooseSearchFilter(it) }
+                Spacer(Modifier.height(8.dp))
+            }
         }
 
         val results: @Composable () -> Unit = {
@@ -192,7 +169,7 @@ private fun SearchResults(
     artists: List<Group>,
 ) {
     when {
-        vm.query.isBlank() -> CenteredHint(go, "输入关键词开始搜索", "试试歌名、歌手或专辑名")
+        vm.query.isBlank() -> RecentSearchList(vm, go)
         agg == null -> CenteredHint(go, "正在搜索…", null)
         songs.isEmpty() && albums.isEmpty() && artists.isEmpty() ->
             CenteredHint(go, "没有找到「${vm.query}」", "换个关键词试试")
@@ -269,7 +246,7 @@ private fun MixedResults(
                     TopCard(
                         go, s.title, "歌曲 · ${s.artist}", s.coverUrl,
                         circle = false, play = true,
-                    ) { vm.playSongs(listOf(s), 0); vm.openPlayer() }
+                    ) { playSong(vm, s) }
                 }
                 val second = artists.firstOrNull() ?: albums.firstOrNull()
                 if (second != null) {
@@ -279,7 +256,7 @@ private fun MixedResults(
                         second.cover,
                         circle = artists.firstOrNull() === second,
                         play = false,
-                    ) { vm.openNmGroup(second) }
+                    ) { openGroup(vm, second) }
                 }
             }
         }
@@ -351,7 +328,7 @@ private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         items(list) { g ->
             Column(
-                Modifier.width(88.dp).clickable { vm.openNmGroup(g) },
+                Modifier.width(88.dp).clickable { openGroup(vm, g) },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Cover(g.cover, Modifier.size(76.dp), 38.dp, circle = true, hd = true)
@@ -370,7 +347,7 @@ private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
 private fun AlbumRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         items(list) { g ->
-            Column(Modifier.width(132.dp).clickable { vm.openNmGroup(g) }) {
+            Column(Modifier.width(132.dp).clickable { openGroup(vm, g) }) {
                 Cover(g.cover, Modifier.size(132.dp), 12.dp, hd = true)
                 Spacer(Modifier.height(6.dp))
                 Text(g.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = go.on, maxLines = 1)
@@ -410,7 +387,7 @@ private fun ArtistResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
 @Composable
 private fun ArtistTile(vm: MainViewModel, go: GoColors, g: Group, modifier: Modifier) {
     Column(
-        modifier.clickable { vm.openNmGroup(g) },
+        modifier.clickable { openGroup(vm, g) },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Cover(g.cover, Modifier.size(76.dp), 38.dp, circle = true, hd = true)
@@ -437,7 +414,7 @@ private fun AlbumResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
             ) {
                 row.forEach { g ->
                     Column(
-                        Modifier.weight(1f).clickable { vm.openNmGroup(g) },
+                        Modifier.weight(1f).clickable { openGroup(vm, g) },
                     ) {
                         Cover(
                             g.cover,
@@ -486,7 +463,7 @@ private fun SongRow(vm: MainViewModel, go: GoColors, s: Song) {
     Column {
         Row(
             Modifier.fillMaxWidth().height(62.dp)
-                .clickable { vm.playSongs(listOf(s), 0); vm.openPlayer() }
+                .clickable { playSong(vm, s) }
                 .padding(vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -507,7 +484,7 @@ private fun SongRow(vm: MainViewModel, go: GoColors, s: Song) {
                         text = { Text("播放") },
                         onClick = {
                             menu = false
-                            vm.playSongs(listOf(s), 0); vm.openPlayer()
+                            playSong(vm, s)
                         },
                     )
                     DropdownMenuItem(
@@ -527,6 +504,213 @@ private fun SongRow(vm: MainViewModel, go: GoColors, s: Song) {
         Box(
             Modifier.fillMaxWidth().height((0.5f).dp)
                 .padding(start = 60.dp).background(go.separator),
+        )
+    }
+}
+
+// =====================================================================
+// 26.11.59：最近搜索 —— Apple Music 式行列表
+//
+// 参考图里不是一排关键词胶囊，而是带封面 / 圆头像、主标题、副标题、
+// 歌曲行还带一句歌词片段与 ⋮ 菜单的纵向列表，标题下有一条整宽分隔线。
+// 关键词记录仍保留（升级兼容），渲染成放大镜图标的「搜索词」行。
+// =====================================================================
+
+/** Apple Music 的强调色：亮色用深玫红，暗色用亮玫红 */
+private fun GoColors.appleAccent(): Color =
+    if (on.red < 0.5f) Color(0xFFFF2D55) else Color(0xFFFF375F)
+
+/** 搜索结果里点歌曲：先记最近搜索，再播放 */
+private fun playSong(vm: MainViewModel, s: Song) {
+    vm.recordRecentSong(s)
+    vm.playSongs(listOf(s), 0)
+    vm.openPlayer()
+}
+
+/** 搜索结果里点艺人 / 专辑：先记最近搜索，再同步入栈 */
+private fun openGroup(vm: MainViewModel, g: Group) {
+    vm.recordRecentGroup(g)
+    vm.openNmGroup(g)
+}
+
+@Composable
+private fun RecentSearchList(vm: MainViewModel, go: GoColors) {
+    val recent = vm.recentItems
+    if (recent.isEmpty()) {
+        CenteredHint(go, "输入关键词开始搜索", "试试歌名、歌手或专辑名")
+        return
+    }
+    val accent = go.appleAccent()
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 32.dp),
+    ) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "最近搜索",
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = go.on,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "清除", fontSize = 15.sp, color = accent,
+                    modifier = Modifier.clickable { vm.clearSearchHistory() }.padding(4.dp),
+                )
+            }
+        }
+        item {
+            Box(
+                Modifier.fillMaxWidth().height((0.5f).dp)
+                    .background(go.separator),
+            )
+        }
+        items(recent, key = { it.key }) { it ->
+            RecentRow(vm, go, it)
+        }
+    }
+}
+
+@Composable
+private fun RecentRow(vm: MainViewModel, go: GoColors, it: RecentItem) {
+    var menu by remember { mutableStateOf(false) }
+    val isArtist = it.kind == "artist"
+    val isKeyword = it.kind == "keyword"
+    val isSong = it.kind == "song"
+    Column {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 78.dp)
+                .clickable { openRecent(vm, it) }
+                .padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isKeyword) {
+                Box(
+                    Modifier.size(64.dp).clip(CircleShape)
+                        .background(go.surfaceHi),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Search, null,
+                        tint = go.muted, modifier = Modifier.size(22.dp),
+                    )
+                }
+            } else {
+                Cover(
+                    it.cover,
+                    Modifier.size(64.dp),
+                    if (isArtist) 32.dp else 6.dp,
+                    circle = isArtist,
+                    hd = true,
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    it.title, fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = go.on, maxLines = 1,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(it.subtitle, fontSize = 14.sp, color = go.muted, maxLines = 1)
+                if (isSong && it.lyricLine.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "歌词：\"${it.lyricLine}…\"",
+                        fontSize = 14.sp, color = go.muted, maxLines = 1,
+                    )
+                }
+            }
+            // 参考图里只有歌曲行带 ⋮
+            if (isSong) {
+                Box {
+                    Icon(
+                        Icons.Outlined.MoreVert, "更多", tint = go.muted,
+                        modifier = Modifier.size(22.dp).clickable { menu = true },
+                    )
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("播放") },
+                            onClick = {
+                                menu = false
+                                val s = recentSong(vm, it)
+                                vm.playSongs(listOf(s), 0)
+                                vm.openPlayer()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("加入歌单") },
+                            onClick = {
+                                menu = false
+                                vm.pick(listOf(it.ssid), it.title, it.cover)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("从最近搜索移除") },
+                            onClick = { menu = false; vm.removeRecent(it.key) },
+                        )
+                    }
+                }
+            } else if (!isKeyword) {
+                Box {
+                    Icon(
+                        Icons.Outlined.MoreVert, "更多", tint = go.muted,
+                        modifier = Modifier.size(22.dp).clickable { menu = true },
+                    )
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("打开") },
+                            onClick = { menu = false; openRecent(vm, it) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("从最近搜索移除") },
+                            onClick = { menu = false; vm.removeRecent(it.key) },
+                        )
+                    }
+                }
+            }
+        }
+        Box(
+            Modifier.fillMaxWidth().height((0.5f).dp)
+                .padding(start = 78.dp).background(go.separator),
+        )
+    }
+}
+
+private fun recentSong(vm: MainViewModel, it: RecentItem): Song =
+    vm.snapshots[it.ssid] ?: vm.songMap[it.ssid] ?: Song(
+        ssid = it.ssid,
+        title = it.title,
+        artist = it.artist,
+        coverUrl = it.cover,
+        source = SRC_NETEASE,
+    )
+
+private fun openRecent(vm: MainViewModel, it: RecentItem) {
+    when (it.kind) {
+        "keyword" -> {
+            vm.query = it.title
+            vm.searchAll(it.title)
+        }
+        "song" -> {
+            vm.playSongs(listOf(recentSong(vm, it)), 0)
+            vm.openPlayer()
+        }
+        else -> vm.openNmGroup(
+            Group(
+                title = it.title,
+                subtitle = "",
+                cover = it.cover,
+                songs = emptyList(),
+                artist = it.artist,
+                source = SRC_NETEASE,
+                nmId = it.nmId,
+                nmKind = it.nmKind,
+            )
         )
     }
 }

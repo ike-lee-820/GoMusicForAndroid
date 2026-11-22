@@ -1,6 +1,8 @@
 package de.myocd.gomusic
 
 import android.content.Context
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -67,6 +70,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -83,17 +87,22 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -171,8 +180,28 @@ fun HigPlayerRoot(vm: MainViewModel) {
     val bgModel = remember(s?.coverUrl) {
         imageModel(ImageCache.cached(s?.coverUrl) ?: s?.coverUrl)
     }
+    // 26.11.52：三页共用「一张」专辑封面。两个页面各自只留透明占位并上报
+    // 自己在 root 坐标系里的位置/尺寸，真正的图由下面的 SharedCover 画，
+    // 用单个 t 在「大图」与「左上角小图」之间插值，切页就是连续缩放位移。
+    var bigX by remember { mutableFloatStateOf(0f) }
+    var bigY by remember { mutableFloatStateOf(0f) }
+    var bigS by remember { mutableFloatStateOf(0f) }
+    var bigReady by remember { mutableStateOf(false) }
+    var smallX by remember { mutableFloatStateOf(0f) }
+    var smallY by remember { mutableFloatStateOf(0f) }
+    var smallS by remember { mutableFloatStateOf(0f) }
+    var smallReady by remember { mutableStateOf(false) }
+    // 封面占位测的是 root 坐标，而 SharedCover 的 offset 是相对这个根 Box 的。
+    // 记下根 Box 自己在 root 里的位置再相减，外层 AnimatedVisibility / 系统栏
+    // 带来任何平移都不会让封面错位。
+    var rootX by remember { mutableFloatStateOf(0f) }
+    var rootY by remember { mutableFloatStateOf(0f) }
     Box(
         Modifier.fillMaxSize().background(go.bg)
+            .onGloballyPositioned { c ->
+                val p = c.positionInRoot()
+                rootX = p.x; rootY = p.y
+            }
             // 背景空白区吃掉触摸：否则会穿透到下面的主页列表 / 底栏，
             // 点一下背景就误触切歌或跳页（用户说的「点击背景会错乱」）。
             // 子组件优先命中，这里只处理没被任何控件接住的事件。
@@ -193,14 +222,84 @@ fun HigPlayerRoot(vm: MainViewModel) {
                 .padding(horizontal = 20.dp),
         ) {
             when (vm.playerPage) {
-                PLAYER_LYRICS -> LyricsPane(vm, s)
-                PLAYER_QUEUE -> QueuePane(vm, s)
-                else -> CoverPane(vm, s)
+                PLAYER_LYRICS -> LyricsPane(vm, s) { x, y, sz ->
+                    smallX = x; smallY = y; smallS = sz; smallReady = true
+                }
+                PLAYER_QUEUE -> QueuePane(vm, s) { x, y, sz ->
+                    smallX = x; smallY = y; smallS = sz; smallReady = true
+                }
+                else -> CoverPane(vm, s) { x, y, sz ->
+                    bigX = x; bigY = y; bigS = sz; bigReady = true
+                }
             }
         }
+        SharedCover(
+            vm, s,
+            bigX, bigY, bigS, bigReady,
+            smallX, smallY, smallS, smallReady,
+            rootX, rootY,
+        )
         // 图 17 样式的更多操作表：盖在播放器最上层
         if (vm.showMoreSheet) PlayerMoreSheet(vm, s) { vm.showMoreSheet = false }
     }
+}
+
+/**
+ * 26.11.52：共享专辑封面。
+ * t=0 是大图（封面页中央），t=1 是信息区左上角的小图（歌词 / 队列页）。
+ * 两个页面里原来的 Cover 都换成透明占位，所以整个切换过程只有这一张图在动，
+ * 不会出现「大图先消失、小图后冒出来」的跳变。
+ */
+@Composable
+private fun SharedCover(
+    vm: MainViewModel,
+    s: Song?,
+    bigX: Float, bigY: Float, bigS: Float, bigReady: Boolean,
+    smallX: Float, smallY: Float, smallS: Float, smallReady: Boolean,
+    rootX: Float, rootY: Float,
+) {
+    val density = LocalDensity.current
+    val morph = remember { Animatable(0f) }
+    LaunchedEffect(vm.playerPage) {
+        morph.animateTo(
+            if (vm.playerPage == PLAYER_COVER) 0f else 1f,
+            spring<Float>(dampingRatio = 0.92f, stiffness = 360f),
+        )
+    }
+    // 只在共享层内部读动画值，避免每帧重组整棵播放器子树
+    val t = morph.value
+    if (!bigReady && !smallReady) return
+    val bx = if (bigReady) bigX else smallX
+    val by = if (bigReady) bigY else smallY
+    val bs = if (bigReady) bigS else smallS
+    val sx = if (smallReady) smallX else bx
+    val sy = if (smallReady) smallY else by
+    val ss = if (smallReady) smallS else bs
+    val x = bx + (sx - bx) * t
+    val y = by + (sy - by) * t
+    val sz = bs + (ss - bs) * t
+    if (sz <= 0f) return
+    Box(
+        Modifier
+            .offset {
+                IntOffset((x - rootX).roundToInt(), (y - rootY).roundToInt())
+            }
+            .size((sz / density.density).dp)
+            .clip(RoundedCornerShape(8.dp))
+            // 大图态点封面进专辑详情；小图态点它回封面页（与信息区点击一致）
+            .clickable {
+                if (t > 0.5f) vm.gotoPlayerPage(PLAYER_COVER)
+                else s?.let { vm.openAlbumAndClose(it) }
+            },
+    ) {
+        Cover(s?.coverUrl, Modifier.fillMaxSize(), 8.dp)
+    }
+}
+
+/** 与背景相对的纯色：暗色背景纯白、亮色背景纯黑；返回 (前景, 反色) */
+private fun GoColors.contrastPair(): Pair<Color, Color> {
+    val lum = on.red * 0.299f + on.green * 0.587f + on.blue * 0.114f
+    return if (lum > 0.5f) Color.White to Color.Black else Color.Black to Color.White
 }
 
 // =====================================================================
@@ -209,7 +308,11 @@ fun HigPlayerRoot(vm: MainViewModel) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CoverPane(vm: MainViewModel, s: Song?) {
+private fun CoverPane(
+    vm: MainViewModel,
+    s: Song?,
+    onBigCover: (Float, Float, Float) -> Unit,
+) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
         // 收起
@@ -222,15 +325,15 @@ private fun CoverPane(vm: MainViewModel, s: Song?) {
             contentAlignment = Alignment.Center,
         ) {
             val side = minOf(maxWidth * 0.74f, maxHeight * 0.92f)
-            if (s != null) {
-                Cover(
-                    s.coverUrl,
-                    // 26.11.49：点专辑封面直接进专辑详情，不是专辑简介
-                    Modifier.width(side).aspectRatio(1f)
-                        .clickable { vm.openAlbumAndClose(s) },
-                    8.dp,
-                )
-            }
+            // 26.11.52：这里只留尺寸不变的透明占位并上报位置，真正的封面由
+            // SharedCover 统一绘制，切页时才能连续缩放而不是换一张图。
+            Box(
+                Modifier.width(side).aspectRatio(1f)
+                    .onGloballyPositioned { c ->
+                        val p = c.positionInRoot()
+                        onBigCover(p.x, p.y, c.size.width.toFloat())
+                    },
+            )
         }
         // 信息行：跑马灯 + 星标 + 更多。点击进专辑页，长按出 5A Context Menu
         var infoMenu by remember { mutableStateOf(false) }
@@ -600,42 +703,88 @@ private fun ProgressLine(vm: MainViewModel, go: GoColors) {
 
 @Composable
 private fun MainControls(vm: MainViewModel, go: GoColors) {
+    // 26.11.52：播放键去掉圆底，改成图 2/3 那种简洁的实心大三角 / 双竖条。
+    // 颜色仍是「与背景相对」的纯白 / 纯黑，不再耦合 go.bg / go.on 的圆底配色。
+    val (fg, _) = go.contrastPair()
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PIconBtn("prev", "上一首", size = 44.dp, tint = go.on, box = 56.dp) { vm.prev() }
+        PIconBtn("prev", "上一首", size = 44.dp, tint = fg, box = 56.dp) { vm.prev() }
         PIconBtn(
             if (vm.isPlaying) "pause" else "play",
             if (vm.isPlaying) "暂停" else "播放",
-            size = 40.dp, tint = go.bg, bg = go.on, box = 72.dp,
+            size = 56.dp, tint = fg, bg = Color.Transparent, box = 72.dp,
         ) { vm.togglePlay() }
-        PIconBtn("next", "下一首", size = 44.dp, tint = go.on, box = 56.dp) { vm.next() }
+        PIconBtn("next", "下一首", size = 44.dp, tint = fg, box = 56.dp) { vm.next() }
+    }
+}
+
+/**
+ * 26.11.52：底部三键。
+ * 未选中 = 与背景相对的纯白 / 纯黑图标、无背景；
+ * 选中（进入对应页面）= 圆角方块背景用对比色，图标反色（图 1 左下第一个按钮）；
+ * 再点一次同一个键回到封面页。
+ */
+@Composable
+private fun PlayerTabKey(
+    selected: Boolean,
+    fg: Color,
+    inv: Color,
+    onClick: () -> Unit,
+    icon: @Composable (Color) -> Unit,
+) {
+    Box(
+        Modifier.size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) fg else Color.Transparent)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        icon(if (selected) inv else fg)
     }
 }
 
 @Composable
 private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
+    val (fg, inv) = go.contrastPair()
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(44.dp).clickable { vm.gotoPlayerPage(PLAYER_LYRICS) }, contentAlignment = Alignment.Center) {
+        PlayerTabKey(
+            selected = vm.playerPage == PLAYER_LYRICS,
+            fg = fg, inv = inv,
+            onClick = {
+                vm.gotoPlayerPage(
+                    if (vm.playerPage == PLAYER_LYRICS) PLAYER_COVER else PLAYER_LYRICS
+                )
+            },
+        ) { c ->
             Icon(
                 Icons.Outlined.ChatBubbleOutline, "歌词",
-                tint = if (vm.playerPage == PLAYER_LYRICS) go.primary else go.on,
-                modifier = Modifier.size(24.dp),
+                tint = c, modifier = Modifier.size(24.dp),
             )
         }
-        Box(Modifier.size(44.dp).clickable { vm.showCast = true }, contentAlignment = Alignment.Center) {
-            Icon(Icons.Outlined.Cast, "投屏", tint = go.on, modifier = Modifier.size(24.dp))
+        PlayerTabKey(
+            selected = false, fg = fg, inv = inv,
+            onClick = { vm.showCast = true },
+        ) { c ->
+            Icon(Icons.Outlined.Cast, "投屏", tint = c, modifier = Modifier.size(24.dp))
         }
-        PIconBtn(
-            "queue", "播放列表", size = PlayerIconSpec.Func,
-            tint = if (vm.playerPage == PLAYER_QUEUE) go.primary else go.on,
-        ) { vm.gotoPlayerPage(PLAYER_QUEUE) }
+        PlayerTabKey(
+            selected = vm.playerPage == PLAYER_QUEUE,
+            fg = fg, inv = inv,
+            onClick = {
+                vm.gotoPlayerPage(
+                    if (vm.playerPage == PLAYER_QUEUE) PLAYER_COVER else PLAYER_QUEUE
+                )
+            },
+        ) { c ->
+            PlayerIcon("queue", "播放列表", modifier = Modifier.size(24.dp), tint = c)
+        }
     }
 }
 
@@ -652,7 +801,13 @@ private fun PlayerBottomBar(vm: MainViewModel, go: GoColors) {
 
 /** 歌词页 / 队列页共用的顶部信息区：点一下回封面页 */
 @Composable
-private fun InfoHeader(vm: MainViewModel, s: Song?, go: GoColors, onBack: () -> Unit) {
+private fun InfoHeader(
+    vm: MainViewModel,
+    s: Song?,
+    go: GoColors,
+    onBack: () -> Unit,
+    onSmallCover: (Float, Float, Float) -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().height(64.dp)
             .clip(RoundedCornerShape(12.dp))
@@ -660,7 +815,13 @@ private fun InfoHeader(vm: MainViewModel, s: Song?, go: GoColors, onBack: () -> 
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Cover(s?.coverUrl, Modifier.size(44.dp), 8.dp)
+        // 26.11.52：透明占位，图由 SharedCover 画在完全相同的 root 坐标上
+        Box(
+            Modifier.size(44.dp).onGloballyPositioned { c ->
+                val p = c.positionInRoot()
+                onSmallCover(p.x, p.y, c.size.width.toFloat())
+            },
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(s?.title.orEmpty(), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = go.on, maxLines = 1)
@@ -685,10 +846,14 @@ private fun InfoHeader(vm: MainViewModel, s: Song?, go: GoColors, onBack: () -> 
 // =====================================================================
 
 @Composable
-private fun LyricsPane(vm: MainViewModel, s: Song?) {
+private fun LyricsPane(
+    vm: MainViewModel,
+    s: Song?,
+    onSmallCover: (Float, Float, Float) -> Unit,
+) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
-        InfoHeader(vm, s, go) { vm.gotoPlayerPage(PLAYER_COVER) }
+        InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
         Box(Modifier.weight(1f).fillMaxWidth()) { WordLyricsList(vm, go) }
         PlayerBottomBar(vm, go)
         Spacer(Modifier.height(12.dp))
@@ -973,10 +1138,14 @@ private fun WordLineText(
 // =====================================================================
 
 @Composable
-private fun QueuePane(vm: MainViewModel, s: Song?) {
+private fun QueuePane(
+    vm: MainViewModel,
+    s: Song?,
+    onSmallCover: (Float, Float, Float) -> Unit,
+) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
-        InfoHeader(vm, s, go) { vm.gotoPlayerPage(PLAYER_COVER) }
+        InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
         Spacer(Modifier.height(12.dp))
         // Segmented：随机 / 列表循环 / 单曲循环。
         // 原来 Row 固定 44dp 又给文字上下各 10dp padding，行高被压到 38dp，

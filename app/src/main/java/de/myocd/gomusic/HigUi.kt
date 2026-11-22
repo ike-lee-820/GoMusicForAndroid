@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -182,10 +183,12 @@ fun MinePage(vm: MainViewModel) {
             HigSettingsButton(vm, go)
         }
         Spacer(Modifier.height(18.dp))
-        MineSection("我的歌单", "查看全部", go) { MineCardRow(vm.playlists.map { it.name to it.cover }, go) {
-            val p = vm.playlists.getOrNull(it)
-            if (p != null) vm.stack.add(Screen.PlaylistPage(p.id))
-        } }
+        MineSection("我的歌单", "查看全部", go, onMore = { detail = 3 }) {
+            MineCardRow(vm.playlists.map { it.name to it.cover }, go) {
+                val p = vm.playlists.getOrNull(it)
+                if (p != null) vm.stack.add(Screen.PlaylistPage(p.id))
+            }
+        }
         MineSection("我的喜欢", "查看全部", go, onMore = { detail = 1 }) {
             MineCardRow(liked.map { it.title to it.coverUrl }, go) { detail = 1 }
         }
@@ -196,6 +199,12 @@ fun MinePage(vm: MainViewModel) {
     when (detail) {
         1 -> GoSheet({ detail = null }, "我的喜欢") { MineSongList(vm, liked, 1) }
         2 -> GoSheet({ detail = null }, "听歌历史") { MineSongList(vm, vm.historySongs, 2) }
+        // 26.11.61：以前「我的歌单 → 查看全部」是空 lambda，点了没反应
+        3 -> GoSheet({ detail = null }, "全部歌单") {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                PlaylistsTab(vm, rememberLazyListState())
+            }
+        }
     }
 }
 

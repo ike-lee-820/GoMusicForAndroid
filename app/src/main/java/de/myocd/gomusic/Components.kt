@@ -584,15 +584,21 @@ fun GoSheet(
 ) {
     val go = LocalGo.current
     BackHandler(enabled = true) { onDismiss() }
+    // 26.11.61：状态栏区域与顶部横条必须同色。以前根背景是 go.bg、
+    // 横条是 go.surface，透明状态栏下就会露出一条明显不同色的带子。
+    // 现在根整体铺 surface（顶栏同色），内容区再单独铺回 go.bg。
     Box(
         Modifier
             .fillMaxSize()
-            .background(go.bg)
+            .background(go.surface)
             .statusBarsPadding()
             .navigationBarsPadding()
             .pointerInput(Unit) { detectTapGestures { } },
     ) {
-        Column(Modifier.fillMaxSize().padding(top = 56.dp), content = content)
+        Column(
+            Modifier.fillMaxSize().padding(top = 56.dp).background(go.bg),
+            content = content,
+        )
         Row(
             Modifier
                 .fillMaxWidth()

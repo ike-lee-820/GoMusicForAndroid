@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.awaitAll
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
@@ -197,7 +198,12 @@ object Netease {
      * 完整 URL 与完整响应都会写进日志文件（见 [NmLog]）。
      * 失败时记日志并返回空对象，绝不让异常冒到调用方造成闪退。
      */
-    private fun get(path: String, vararg params: Pair<String, String>): JsonObject {
+    private fun get(
+        path: String,
+        vararg params: Pair<String, String>,
+        http: OkHttpClient = Api.client,
+        tries: Int = 2,
+    ): JsonObject {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
         // unblock=true：启用解灰（变灰歌曲匹配第三方音源）。
@@ -221,13 +227,13 @@ object Netease {
         // 失败自动重试：网络抖动 / 服务端偶发错误时多试一次。
         // 不再 sleep 300/700ms —— 一次接口抖动就白等 1 秒，切歌、搜索、
         // 打开页面都会跟着卡。失败立刻重发，靠短超时客户端兜底。
-        val delays = longArrayOf(0L)
-        for (i in 0..delays.size) {
+        val times = tries.coerceAtLeast(1)
+        for (i in 0 until times) {
             try {
                 // 不要再带 Connection: close —— 它关掉了连接复用，
                 // 每个请求都要重新 TCP + TLS 握手，是「网易云请求慢」的主因
                 val req = Request.Builder().url(url).build()
-                Api.client.newCall(req).execute().use { r ->
+                http.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
                     NmLog.res(url, r.code, t)
                     if (t.isBlank()) throw IOException("HTTP ${r.code} (空响应)")
@@ -356,6 +362,8 @@ object Netease {
             "type" to type.toString(),
             "limit" to limit.toString(),
             "offset" to offset.toString(),
+            http = searchClient,
+            tries = 1,
         )
 
     /** 搜索结果的数组：兼容 result.xxx 与顶层 xxx 两种结构 */
@@ -398,7 +406,10 @@ object Netease {
 
     /** /song/detail?ids=1,2,3 -> id -> 详情 */
     private fun songDetail(ids: List<Long>): Map<Long, Song> {
-        val root = get("/song/detail", "ids" to ids.joinToString(","))
+        val root = get(
+            "/song/detail", "ids" to ids.joinToString(","),
+            http = searchClient, tries = 1,
+        )
         val arr = resultArray(root, "songs")
         if (arr.isEmpty()) NmLog.note("song/detail 没有 songs 字段")
         return arr.mapNotNull { o ->
@@ -736,6 +747,18 @@ object Netease {
             urlInFlight.remove(k)
         }
     }
+
+    /**
+     * 26.11.61：搜索专用短超时客户端。
+     * 通用 client 的 callTimeout 是 15s，且 get() 默认重试 2 次，
+     * 一次「搜索 + song/detail 补全」串行最坏能等 30s 以上 —— 这就是搜索极慢。
+     * 搜索必须快：2s 连上、5s 截止、只发一次，失败就退化到本机曲库结果。
+     */
+    private val searchClient: OkHttpClient = Api.client.newBuilder()
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(5, TimeUnit.SECONDS)
+        .build()
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
     private val urlClient: OkHttpClient = OkHttpClient.Builder()
@@ -1087,9 +1110,23 @@ object Netease {
     }
 
     fun searchAll(keywords: String, limit: Int = 20): Aggregate = runBlocking(Dispatchers.IO) {
-        val s = async { runCatching { searchSongs(keywords, limit) }.getOrDefault(emptyList()) }
-        val a = async { runCatching { searchAlbums(keywords, 10) }.getOrDefault(emptyList()) }
-        val r = async { runCatching { searchArtists(keywords, 10) }.getOrDefault(emptyList()) }
+        // 26.11.61：每路 8s 截止，任何一路卡住都不拖住整次搜索。
+        // 界面的本地结果已经先亮出来，这里超时就只留其余两路。
+        val s = async {
+            withTimeoutOrNull(8_000L) {
+                runCatching { searchSongs(keywords, limit) }.getOrDefault(emptyList())
+            } ?: emptyList()
+        }
+        val a = async {
+            withTimeoutOrNull(8_000L) {
+                runCatching { searchAlbums(keywords, 10) }.getOrDefault(emptyList())
+            } ?: emptyList()
+        }
+        val r = async {
+            withTimeoutOrNull(8_000L) {
+                runCatching { searchArtists(keywords, 10) }.getOrDefault(emptyList())
+            } ?: emptyList()
+        }
         Aggregate(s.await(), a.await(), r.await())
     }
 

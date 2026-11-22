@@ -21,7 +21,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /** 服务器地址 */
-const val BASE = "https://gomusic.myocd.de5.net"
 
 @Serializable
 data class Song(
@@ -282,11 +281,14 @@ object Api {
     private val ORDER = listOf("normal", "high", "low", "extreme", "source", "lossless")
     fun rank(k: String): Int = ORDER.indexOf(k).let { if (it < 0) 99 else it }
 
+    /**
+     * 26.11.61：源站已停用。只接受完整 URL / data: / file:，
+     * 根相对路径（旧源站返回的 /api/...）不再拼到任何域名，直接丢弃。
+     */
     fun abs(u: String?): String? = when {
         u.isNullOrBlank() -> null
-        u.startsWith("http") || u.startsWith("data:") -> u
-        u.startsWith("/") -> BASE + u
-        else -> "$BASE/$u"
+        u.startsWith("http") || u.startsWith("data:") || u.startsWith("file:") -> u
+        else -> null
     }
 
     /**
@@ -297,20 +299,12 @@ object Api {
      * 一次普通接口最坏要白等好几秒。现在保留 keep-alive、去掉等待，
      * 重试次数 3 次收到 2 次。
      */
+    /**
+     * 26.11.61：旧曲库源站已完全停用。
+     * 保留签名是为了让所有旧调用点继续编译，但绝不再发出任何 HTTP 请求。
+     */
     private fun get(path: String, tries: Int = 2, http: OkHttpClient = client): String {
-        var last: Exception? = null
-        repeat(tries) {
-            try {
-                val req = Request.Builder().url(BASE + path).build()
-                http.newCall(req).execute().use { r ->
-                    if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
-                    return r.body!!.string()
-                }
-            } catch (e: Exception) {
-                last = e
-            }
-        }
-        throw last ?: IOException("请求失败")
+        throw IOException("源站已停用，不再请求 $path")
     }
 
     /** 下载到输出流；[onProgress] 回调 (已读字节, 总字节，-1 表示未知) */
@@ -356,15 +350,12 @@ object Api {
      * [quick] = true 时用短超时客户端、只请求一次：
      * 一次失败就立刻判定为离线，不再重试等待。
      */
-    fun songs(quick: Boolean = true): List<Song> = json.decodeFromString<List<Song>>(
-        if (quick) get("/api/songs", tries = 1, http = probeClient)
-        else get("/api/songs")
-    )
+    /** 源站停用：曲库由本地已下载 / 历史快照 / 歌单组装，见 MainViewModel.load() */
+    fun songs(quick: Boolean = true): List<Song> = emptyList()
 
-    fun artists(): Map<String, ArtistInfo> =
-        json.decodeFromString<Map<String, ArtistInfo>>(get("/api/artists"))
+    fun artists(): Map<String, ArtistInfo> = emptyMap()
 
-    fun lyrics(ssid: String): String = get("/api/lyrics/$ssid")
+    fun lyrics(ssid: String): String = ""
 
     private fun JsonElement?.str(): String? =
         (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
@@ -375,34 +366,14 @@ object Api {
         else -> emptyList()
     }
 
-    fun detail(ssid: String): SongDetail {
-        detailCache[ssid]?.let { return it }
-        val obj = json.parseToJsonElement(get("/api/song/$ssid")) as JsonObject
-        val audio = linkedMapOf<String, List<String>>()
-        when (val a = obj["audio"]) {
-            is JsonObject -> a.forEach { (k, v) ->
-                val l = urls(v)
-                if (l.isNotEmpty()) audio[k] = l
-            }
-            is JsonArray -> urls(a).takeIf { it.isNotEmpty() }?.let { audio["normal"] = it }
-            else -> {}
-        }
-        val d = SongDetail(
-            ssid = ssid,
-            lyrics = obj["lyrics"].str() ?: obj["lrc"].str() ?: "",
-            cover = abs(obj["cover"].str() ?: obj["coverUrl"].str()),
-            audio = audio,
-        )
-        detailCache[ssid] = d
-        return d
-    }
+    /** 源站停用：不再取 /api/song/:id，返回空详情让调用点走本地兜底 */
+    fun detail(ssid: String): SongDetail = SongDetail(
+        ssid = ssid, lyrics = "", cover = null, audio = emptyMap(),
+    )
 
     /** 选择最接近所需音质的播放地址（多段文件当前只取第一段） */
     fun audioUrl(ssid: String, quality: String): String {
-        val d = detail(ssid)
-        if (d.audio.isEmpty()) throw IOException("没有可用音频")
-        val key = d.audio.keys.minByOrNull { kotlin.math.abs(rank(it) - rank(quality)) }!!
-        return d.audio[key]!!.first()
+        throw IOException("源站已停用，该歌曲没有在线音源")
     }
 }
 
@@ -452,14 +423,7 @@ fun lyricLines(t: String): List<LrcLine> {
  * `/api/proxy/raw/:repo/:path?o=<owner>` 代理访问。
  * 列表里 coverUrl 缺失时用这个兜底。
  */
-fun guessCoverUrl(s: Song): String? {
-    val repo = s.repoName?.takeIf { it.isNotBlank() } ?: return null
-    val owner = s.owner?.takeIf { it.isNotBlank() } ?: return null
-    val album = s.album.takeIf { it.isNotBlank() } ?: return null
-    val encAlbum = java.net.URLEncoder.encode(album, "UTF-8").replace("+", "%20")
-    val encOwner = java.net.URLEncoder.encode(owner, "UTF-8")
-    return "$BASE/api/proxy/raw/$repo/$encAlbum/cover.webp?o=$encOwner"
-}
+fun guessCoverUrl(s: Song): String? = null // 26.11.61：源站封面代理已停用
 
 /**
  * 封面高清化。
@@ -512,7 +476,7 @@ fun imageModel(u: String?): Any? {
     }
     if (u.startsWith("content://") || u.startsWith("file://")) return android.net.Uri.parse(u)
     // 只有确实存在的本地绝对路径才当文件；
-    // 服务端返回的封面常是 /api/... 这类根相对路径，必须拼上 BASE，不能当成本地文件
+    // 26.11.61：源站停用后根相对封面路径直接丢弃，不再拼域名
     if (u.startsWith("/")) {
         val f = java.io.File(u)
         if (f.exists()) return f

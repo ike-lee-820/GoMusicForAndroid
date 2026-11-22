@@ -877,33 +877,32 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loading = true
             error = null
-            var ok = false
-            // 只尝试一次：失败立即进入离线模式，不重试、不退避等待
-            try {
-                songs = withContext(Dispatchers.IO) {
-                    // 列表没给封面时，按文档用仓库里的「专辑名/cover.webp」兜底
-                    Api.songs(quick = true).map {
-                        if (it.coverUrl.isNullOrBlank()) it.copy(coverUrl = guessCoverUrl(it)) else it
-                    }
-                }
-                ok = true
-            } catch (e: Exception) {
-                error = netMsg(e)
-            }
-            if (ok) {
-                offline = false
-                error = null
-            } else {
-                // 进入离线模式：用已下载的内容填充
-                offline = true
-                songs = LocalLib.songs(prefs.downloads)
-            }
+            // 26.11.61：旧曲库源站已停用，启动时不再发任何请求等超时。
+            // 曲库完全由本地数据组装：已下载、播放过的快照、歌单里的歌、
+            // 以及搜索过的网易云歌曲。网易云搜索 / 榜单仍走独立接口，
+            // 所以这里不置 offline，下载与音质探测照常可用。
+            songs = withContext(Dispatchers.IO) { buildLocalLibrary() }
+            offline = false
             loading = false
-            if (!offline) {
-                runCatching { artistInfo = withContext(Dispatchers.IO) { Api.artists() } }
-            }
             pendingLink?.let { pendingLink = null; handleLink(it) }
         }
+    }
+
+    /** 26.11.61：不再依赖源站 /api/songs，从本地持久化数据组装曲库 */
+    private fun buildLocalLibrary(): List<Song> {
+        val out = LinkedHashMap<String, Song>()
+        runCatching { LocalLib.songs(prefs.downloads) }
+            .getOrDefault(emptyList()).forEach { out[it.ssid] = it }
+        snapshots.values.forEach { s ->
+            if (s.title.isNotBlank()) out.putIfAbsent(s.ssid, s)
+        }
+        nmKnown.values.forEach { s -> out.putIfAbsent(s.ssid, s) }
+        playlists.forEach { pl ->
+            pl.songs.forEach { id ->
+                snapshots[id]?.let { s -> out.putIfAbsent(id, s) }
+            }
+        }
+        return out.values.toList()
     }
 
     /** 设置里手动重连 */
@@ -2354,9 +2353,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         searchFilter = 0
         readAggregateCache(k)?.let { aggregate = it; return }
         // 本机曲库也参与歌曲搜索：断网或网易云 /search 返回空时，歌曲板块仍有结果
-        val local = songMap.values.filter {
+        val local = songMap.values.asSequence().filter {
             it.title.contains(k, true) || it.artist.contains(k, true) || it.album.contains(k, true)
-        }.take(20)
+        }.take(20).toList()
+        // 26.11.61：先把本机曲库结果亮出来，不等三路网络最慢那一路。
+        // 网络回来后用合并结果覆盖，失败也保留本地这部分。
+        aggregate = Netease.Aggregate(local, emptyList(), emptyList())
         viewModelScope.launch {
             val r = withContext(Dispatchers.IO) {
                 Netease.cookie = prefs.nmCookie
@@ -3419,10 +3421,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toastJob = viewModelScope.launch { delay(2500); toastMsg = null }
     }
 
-    fun songLink(ssid: String) = "$BASE/?s=$ssid"
-    fun albumLink(artist: String, album: String) =
-        "$BASE/?p=alb&ar=${Uri.encode(artist)}&al=${Uri.encode(album)}"
-    fun artistLink(artist: String) = "$BASE/?p=art&ar=${Uri.encode(artist)}"
+    /** 26.11.61：分享链接不再指向已停用的源站，改指向网易云歌曲页 */
+    fun songLink(ssid: String): String {
+        val nid = neteaseIdOf(ssid)
+        return if (nid != null) "https://music.163.com/#/song?id=$nid" else ""
+    }
+    fun albumLink(artist: String, album: String) = ""
+    fun artistLink(artist: String) = ""
 
     /**
      * 26.11.34：系统「打开方式 / 分享」送来的本地音频。

@@ -97,6 +97,10 @@ class PlaybackService : MediaSessionService() {
         override fun onTimelineChanged(timeline: Timeline, reason: Int) { savePlaybackState() }
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             savePlaybackState()
+            // 26.11.55：媒体项真正切完了才删上一首缓存。以前在
+            // ResolvingDataSource 里换地址就删，而下一首的数据源是提前打开的，
+            // 会把还在读的当前首缓存删掉导致断流，切歌就卡半天。
+            PlayCache.dropPrevious()
             // 上一首播完、播放器自动跳到下一首（AUTO），或单曲循环重播（REPEAT）。
             //
             // 这本来该接着出声，但音轨切换时不少 ROM 会发一次短暂的

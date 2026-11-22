@@ -53,6 +53,9 @@ object Prefetcher {
         jobs.keys.filter { it !in keepSet }.forEach { jobs.remove(it)?.cancel() }
         keep.forEach { nid ->
             if (jobs[nid]?.isActive == true) return@forEach
+            // 26.11.55：地址已经取好（或上一轮刚取完）就别再发一轮。
+            // 现在 prefetchAudioUrl 是同步的，isActive 才真实反映在途状态。
+            if (Netease.hasAudioUrl(nid, quality, level)) return@forEach
             jobs[nid] = scope.launch {
                 listOf(
                     async { runCatching { Netease.prefetchAudioUrl(nid, quality, level) } },

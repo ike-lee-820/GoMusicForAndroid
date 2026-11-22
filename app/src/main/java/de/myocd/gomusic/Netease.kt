@@ -11,7 +11,6 @@ import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -634,15 +633,29 @@ object Netease {
     private fun cacheKey(id: Long, quality: String, level: String?): String =
         "$id|$quality|${level.orEmpty()}|${cookie.take(8).hashCode()}"
 
-    /** 预取音源地址：在后台提前把地址取好，等真正播放时直接命中缓存 */
+    /**
+     * 预取音源地址：调用方须已在 IO 线程。
+     *
+     * 26.11.55：以前这里内部又起一个 GlobalScope，函数立刻返回 —— 于是
+     * Prefetcher 的 awaitAll 立刻完成、jobs 立刻 inactive，切歌时
+     * transition 与 timelineChanged 两个回调各发一轮预取，且 cancel 根本
+     * 取消不掉真正跑着的请求。十几路请求涌向同一个 host，把正在解析的
+     * 播放地址挤到队列后面，切下一首就卡半天。改成同步执行后，预取任务
+     * 的「在途」状态才真实，去重与取消才生效。
+     */
     fun prefetchAudioUrl(id: Long, quality: String, level: String? = null) {
         val k = cacheKey(id, quality, level)
         val hit = urlCache[k]
         if (hit != null && System.currentTimeMillis() - hit.third < URL_TTL_MS) return
-        GlobalScope.launch(Dispatchers.IO) {
-            runCatching { audioUrl(id, quality, level) }
-                .onFailure { NmLog.note("预取音源失败：${it.message}") }
-        }
+        runCatching { audioUrl(id, quality, level) }
+            .onFailure { NmLog.note("预取音源失败：${it.message}") }
+    }
+
+    /** 该档位地址是否已在缓存且未过期：预取调度用它跳过已完成的任务 */
+    fun hasAudioUrl(id: Long, quality: String, level: String? = null): Boolean {
+        val k = cacheKey(id, quality, level)
+        val hit = urlCache[k] ?: return false
+        return System.currentTimeMillis() - hit.third < URL_TTL_MS
     }
 
     fun audioUrl(id: Long, quality: String, level: String? = null): String? =
@@ -696,18 +709,22 @@ object Netease {
         // 在途去重：预取和播放解析同时到时，后来的直接等前一次的结果，
         // 不再各发一轮（否则同一首歌瞬间打出二十几个请求）
         val lock = urlInFlight.computeIfAbsent(k) { java.util.concurrent.locks.ReentrantLock() }
-        val mine = lock.tryLock()
-        if (!mine) {
-            // 最多等 3 秒（while 而不是 repeat：lambda 里不能用 break）
+        if (!lock.tryLock()) {
+            // 26.11.55：预取正在跑时，播放解析以前只等 3 秒就 return null。
+            // 预取整条降档链最长 8 秒，等不到就被判「没有可用音源」→
+            // 播放器报错 → 服务层兜底重新 prepare → 再等一轮，体感就是
+            // 「切下一首卡半天」。改成等满整条链；若仍无结果就拿回锁自己算，
+            // 绝不让正在切歌的这一次解析空手而归。
             var waited = 0
-            while (waited < 3000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
-                runCatching { Thread.sleep(100) }
-                waited += 100
+            while (waited < 9_000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
+                runCatching { Thread.sleep(50) }
+                waited += 50
             }
             urlCache[k]?.let { (u, lv, t) ->
                 if (System.currentTimeMillis() - t < URL_TTL_MS) return u to lv
             }
-            return null
+            if (urlMiss.containsKey(k)) return null
+            lock.lock()
         }
         return try {
             val hit = resolveAudioUrl(id, quality, level)

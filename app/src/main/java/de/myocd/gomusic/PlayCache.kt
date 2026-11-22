@@ -26,6 +26,9 @@ object PlayCache {
     /** 当前正在用的音源地址 */
     @Volatile
     private var curUrl: String? = null
+    /** 上一首的音源地址，等真正切歌后再删 */
+    @Volatile
+    private var prevUrl: String? = null
 
     @Synchronized
     fun get(ctx: Context): SimpleCache {
@@ -42,19 +45,28 @@ object PlayCache {
     }
 
     /**
-     * 开始播某个音源：换地址（切歌 / 换音质）时立刻清掉上一个音源的缓存。
+     * 记录正在用的音源地址。
+     *
+     * 26.11.55：以前在这里立刻 removeResource(上一首)。但 ExoPlayer 会在
+     * 当前首快播完时提前打开下一首的数据源，那时当前首还在读自己那份缓存；
+     * 当场删掉就断流重新走网络，听感正是「切下一首要卡半天」。
+     * 改成只记地址，等 [dropPrevious]（媒体项真正切换完成）再删。
      * 同一个地址重复调用（重新缓冲）不会误删正在用的那份。
      */
     fun noteUrl(url: String) {
         if (url == curUrl) return
-        val old = curUrl
+        prevUrl = curUrl
         curUrl = url
+    }
+
+    /** 媒体项切换完成后清上一首缓存；必须在 onMediaItemTransition 里调用 */
+    fun dropPrevious() {
+        val old = prevUrl ?: return
+        prevUrl = null
         val c = cache ?: return
-        if (old != null) {
-            runCatching {
-                c.removeResource(old)
-                NmLog.note("已清除上一首播放缓存")
-            }
+        runCatching {
+            c.removeResource(old)
+            NmLog.note("已清除上一首播放缓存")
         }
     }
 
@@ -66,6 +78,7 @@ object PlayCache {
         runCatching { cache?.release() }
         cache = null
         curUrl = null
+        prevUrl = null
     }
 
     /** 清空播放缓存（设置里「清除缓存」用） */
@@ -79,5 +92,6 @@ object PlayCache {
         }
         runCatching { File(ctx.applicationContext.cacheDir, DIR).deleteRecursively() }
         curUrl = null
+        prevUrl = null
     }
 }

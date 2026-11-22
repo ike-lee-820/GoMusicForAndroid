@@ -2002,10 +2002,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // 点下去就先把要播这首的地址取起来：取地址要打十几个请求，
         // 而它同时在 ExoPlayer 的准备线程上同步做。提前起一轮，
         // 等播放器真正来解析时多半已经落在缓存里，不用干等。
-        runCatching { prefetchCurrent(list, index) }
+        // 26.11.55：预取改成同步执行，必须放到 IO，不能再占主线程。
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { prefetchCurrent(list, index) }
+        }
         c.setMediaItems(list.map(::toItem), index.coerceIn(0, list.lastIndex), 0)
         c.prepare()
         c.play()
+        // 队列刚建立就把后面两首也预热上。以前只靠切歌回调触发预取，
+        // 而 ExoPlayer 会在当前首快结束时提前解析下一首 —— 那时缓存还是空的，
+        // 预取永远比播放解析晚一步，于是「切下一首卡半天」。
+        prefetchAhead()
     }
 
     /**
@@ -2429,6 +2436,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 走 Prefetcher 的独立 OkHttp dispatcher 与独立协程域，不和当前播放解析抢线程；
      * 切歌时旧任务会被取消，不会累积请求。
      */
+    private var lastPrefetchKey: String? = null
+    private var lastPrefetchAt = 0L
+
     private fun prefetchAhead() {
         val c = controller ?: return
         val p = Prefs(app)
@@ -2438,6 +2448,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             neteaseIdOf(c.getMediaItemAt(it).mediaId)
         }
         if (ids.isEmpty()) return
+        // 26.11.55：一次切歌会连着触发 onTimelineChanged、
+        // onMediaItemTransition，playSongs 里还会主动调一次，三处 ids 一样。
+        // 以前每处都发一轮预取（每首十几个请求），把播放地址解析挤到队尾。
+        // 同一批 1.5 秒内只发一次；ids 变了（真的切歌 / 改音质）立即放行。
+        val key = "${c.mediaItemCount}|$i|${ids.joinToString(",")}|$quality|${p.nmLevel}"
+        val now = System.currentTimeMillis()
+        if (key == lastPrefetchKey && now - lastPrefetchAt < 1_500L) return
+        lastPrefetchKey = key
+        lastPrefetchAt = now
         Prefetcher.prefetchAhead(ids, quality, p.nmLevel.takeIf { it.isNotBlank() })
     }
 

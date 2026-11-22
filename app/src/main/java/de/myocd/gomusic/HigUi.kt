@@ -173,7 +173,14 @@ fun MinePage(vm: MainViewModel) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp),
     ) {
-        Text("我的", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("我的", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
+            Spacer(Modifier.weight(1f))
+            HigSettingsButton(vm, go)
+        }
         Spacer(Modifier.height(18.dp))
         MineSection("我的歌单", "查看全部", go) { MineCardRow(vm.playlists.map { it.name to it.cover }, go) {
             val p = vm.playlists.getOrNull(it)
@@ -259,26 +266,13 @@ private fun ColumnScope.MineSongList(
     }
 
     Column(Modifier.fillMaxSize()) {
-        // 搜索：本地过滤，不发请求、不写搜索历史
-        Row(
-            Modifier.fillMaxWidth().height(44.dp)
-                .clip(RoundedCornerShape(10.dp)).background(go.surfaceHi)
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Search, "搜索", tint = go.muted, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            SearchField(
-                query, { query = it }, "搜索歌曲 / 歌手 / 专辑",
-                Modifier.weight(1f), showIcon = false,
-            )
-            if (query.isNotEmpty()) {
-                Text(
-                    "✕", fontSize = 16.sp, color = go.muted,
-                    modifier = Modifier.clickable { query = "" }.padding(4.dp),
-                )
-            }
-        }
+        // 26.11.58：本地过滤，不发请求、不写搜索历史；只画一层槽
+        HigSearchBar(
+            value = query,
+            onChange = { query = it },
+            placeholder = "搜索歌曲 / 歌手 / 专辑",
+            go = go,
+        )
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (selecting) {

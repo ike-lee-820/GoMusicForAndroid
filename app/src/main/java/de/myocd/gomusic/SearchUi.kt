@@ -74,33 +74,26 @@ fun SearchPage(vm: MainViewModel) {
         val sideWidth = minOf(320.dp, maxWidth * 0.34f)
 
         val header: @Composable ColumnScope.() -> Unit = {
-            Text("搜索", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = go.on)
-            Spacer(Modifier.height(10.dp))
-            // iOS 风格搜索框：圆角灰色槽、放大镜、占位、清除
             Row(
-                Modifier.fillMaxWidth().height(40.dp)
-                    .clip(RoundedCornerShape(11.dp))
-                    .background(go.surfaceHi)
-                    .padding(horizontal = 10.dp),
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Outlined.Search, null, tint = go.muted, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(7.dp))
-                SearchField(
-                    vm.query, { vm.query = it }, "歌曲、艺人、专辑",
-                    Modifier.weight(1f), showIcon = false,
-                    onSearch = { if (vm.query.isNotBlank()) vm.searchAll(vm.query) },
-                )
-                if (vm.query.isNotEmpty()) {
-                    Icon(
-                        Icons.Outlined.Close, "清除", tint = go.muted,
-                        modifier = Modifier.size(16.dp).clickable {
-                            vm.query = ""
-                            vm.searchAll("")
-                        },
-                    )
-                }
+                Text("搜索", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = go.on)
+                Spacer(Modifier.weight(1f))
+                HigSettingsButton(vm, go)
             }
+            Spacer(Modifier.height(10.dp))
+            // 26.11.58：单层槽，不再套 SearchField 的第二层背景和圆角
+            HigSearchBar(
+                value = vm.query,
+                onChange = {
+                    vm.query = it
+                    if (it.isEmpty()) vm.searchAll("")
+                },
+                placeholder = "歌曲、艺人、专辑",
+                go = go,
+                onSearch = { if (vm.query.isNotBlank()) vm.searchAll(vm.query) },
+            )
             if (vm.query.isBlank() && vm.searchHistory.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {

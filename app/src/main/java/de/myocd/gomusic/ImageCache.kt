@@ -1,6 +1,7 @@
 package de.myocd.gomusic
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import java.io.File
 import java.security.MessageDigest
 
@@ -35,11 +36,27 @@ object ImageCache {
     }
 
     /** 已缓存则返回本地文件绝对路径，否则 null */
-    fun cached(url: String?): String? {
+    fun cached(url: String?): String? = cached(url, 0)
+
+    /**
+     * 26.11.55：带最小边长校验的缓存命中。
+     * 早期版本缓存过 300×300 / 180×180 的缩略图，后来即使换了高清 URL，
+     * 只要 key 相同就会一直复用那张糊图。这里解码 bounds 后直接淘汰过小文件。
+     */
+    fun cached(url: String?, minSide: Int): String? {
         if (url.isNullOrBlank()) return null
         if (!url.startsWith("http")) return null
         val f = fileOf(url)
-        return if (f.exists() && f.length() > 0) f.absolutePath else null
+        if (!f.exists() || f.length() <= 0) return null
+        if (minSide > 0) {
+            val ok = try {
+                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(f.absolutePath, o)
+                maxOf(o.outWidth, o.outHeight) >= minSide
+            } catch (e: Exception) { false }
+            if (!ok) { f.delete(); return null }
+        }
+        return f.absolutePath
     }
 
     /** 后台把网络图片存到缓存目录（已存在则跳过） */

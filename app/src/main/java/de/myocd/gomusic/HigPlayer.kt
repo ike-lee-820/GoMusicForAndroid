@@ -186,8 +186,11 @@ internal fun HigConfirm(
 fun HigPlayerRoot(vm: MainViewModel) {
     val s = vm.currentSong
     val go = LocalGo.current
-    val bgModel = remember(s?.coverUrl) {
-        imageModel(ImageCache.cached(s?.coverUrl) ?: s?.coverUrl)
+    // 26.11.55：背景也要从高清原图模糊。之前用的是可能被降过参数的封面，
+    // 再叠 18~42dp 模糊就糊成一片色块。
+    val bgUrl = hdCoverUrl(s?.coverUrl, 2000) ?: s?.coverUrl
+    val bgModel = remember(bgUrl) {
+        imageModel(ImageCache.cached(bgUrl, 640) ?: bgUrl)
     }
     // 26.11.52：三页共用「一张」专辑封面。两个页面各自只留透明占位并上报
     // 自己在 root 坐标系里的位置/尺寸，真正的图由下面的 SharedCover 画，
@@ -370,7 +373,7 @@ private fun SharedCover(
                 else s?.let { vm.openAlbumAndClose(it) }
             },
     ) {
-        Cover(s?.coverUrl, Modifier.fillMaxSize(), 8.dp)
+        Cover(s?.coverUrl, Modifier.fillMaxSize(), 8.dp, hd = true)
     }
 }
 
@@ -636,7 +639,7 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Cover(s?.coverUrl, Modifier.size(84.dp), 8.dp)
+                Cover(s?.coverUrl, Modifier.size(84.dp), 8.dp, hd = true)
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     Text(

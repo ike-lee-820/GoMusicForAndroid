@@ -478,7 +478,7 @@ fun guessCoverUrl(s: Song): String? {
  * 只影响 URL，不改变缓存逻辑：URL 变了，旧的 300y300 缓存不会命中，
  * 会自动重新下一张高清图，无需手动清缓存。
  */
-fun hdCoverUrl(u: String?, size: Int = 1000): String? {
+fun hdCoverUrl(u: String?, size: Int = 1600): String? {
     if (u.isNullOrBlank()) return null
     if (!u.startsWith("http")) return u
     val i = u.indexOf('?')
@@ -488,9 +488,17 @@ fun hdCoverUrl(u: String?, size: Int = 1000): String? {
         p.isEmpty() || p.startsWith("param=") || p.startsWith("thumbnail") ||
             p.startsWith("imageView2") || p.startsWith("imageMogr2")
     }.toMutableList()
+    // 26.11.55：网易云图片统一改写成调用方需要的档位。旧版写死
+    // ?param=1000y1000，把 2769×2250 的原图降成小图，播放器大封面
+    // 在 3x 屏上放大近三倍就发糊；同时早期 300×300 的缓存会被一直复用。
+    // 现在大图传 2000、列表小图传 500，尺寸由用途决定。
     val isNm = base.contains("126.net")
     if (isNm || query.contains("param=")) kept.add(0, "param=${size}y${size}")
-    val newBase = Regex("""R\d+x\d+M""").replace(base) { "R${size}x${size}M" }
+    // QQ 图 R500x500M 这类只在原尺寸较小时放大，不把大图改小
+    val newBase = Regex("""R(\d+)x(\d+)M""").replace(base) { m ->
+        val w = m.groupValues[1].toIntOrNull() ?: 0
+        if (w in 1 until size) "R${size}x${size}M" else m.value
+    }
     return if (kept.isEmpty()) newBase else "$newBase?${kept.joinToString("&")}"
 }
 

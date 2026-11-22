@@ -294,7 +294,7 @@ object Netease {
      * 默认 1000x1000（原来 300），播放器大封面在 3x 屏上不再被放大三倍。
      * 上游自带的 ?param=100y100 也会被强制覆盖，具体见 [hdCoverUrl]。
      */
-    private fun pic(u: String?, size: Int = 1000): String? {
+    private fun pic(u: String?, size: Int = 2000): String? {
         if (u.isNullOrBlank()) return null
         if (!u.startsWith("http")) return null
         return hdCoverUrl(u, size)

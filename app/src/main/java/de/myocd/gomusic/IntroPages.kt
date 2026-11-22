@@ -196,7 +196,7 @@ private fun IntroImage(vm: MainViewModel, cover: String?, name: String) {
             detectTapGestures(onLongPress = { ask = true })
         },
     ) {
-        Cover(cover, Modifier.fillMaxSize(), 24.dp)
+        Cover(cover, Modifier.fillMaxSize(), 24.dp, hd = true)
     }
     if (ask) {
         GoSheet({ ask = false }, "图片") {

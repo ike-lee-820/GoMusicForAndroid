@@ -820,7 +820,7 @@ private fun HomeArtistRow(vm: MainViewModel, list: List<Group>) {
     ) {
         items(list, key = { "nm${it.nmId}" }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
-                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 8.dp, circle = true)
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 8.dp, circle = true, hd = true)
                 VS(6)
                 Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
                 Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
@@ -840,7 +840,7 @@ private fun HomeAlbumRow(vm: MainViewModel, list: List<Group>) {
     ) {
         items(list, key = { "nm${it.nmId}" }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
-                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, hd = true)
                 VS(6)
                 Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
                 Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
@@ -860,7 +860,7 @@ private fun HomeTopRow(vm: MainViewModel, list: List<Group>) {
     ) {
         items(list, key = { "top${it.nmId}" }) { g ->
             Column(Modifier.width(84.dp).clickable { vm.openNmGroup(g) }) {
-                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp)
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, hd = true)
                 VS(6)
                 Txt(titleWithSource(g.title, g.source), 12, maxLines = 1)
                 Txt(g.subtitle, 11, color = go.muted, maxLines = 1)
@@ -1516,7 +1516,7 @@ fun AlbumPage(vm: MainViewModel, s: Screen.Album) {
                     val w = minOf(LocalConfiguration.current.screenWidthDp * 0.72f, 320f).dp
                     // 点封面 / 标题进专辑简介页（大图、标题、歌手、简介）
                     val openIntro = { vm.openLocalAlbumIntro(s.artist, s.album, cover, list) }
-                    Cover(cover, Modifier.size(w).clickable { openIntro() }, 24.dp)
+                    Cover(cover, Modifier.size(w).clickable { openIntro() }, 24.dp, hd = true)
                     VS(16)
                     Txt(
                         s.album.ifBlank { "未知专辑" }, 20,
@@ -1565,7 +1565,7 @@ fun ArtistPage(vm: MainViewModel, s: Screen.Artist) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     // 点大图 / 名字进歌手简介页（大图、名字、简介、详细信息）
                     val openIntro = { vm.openLocalArtistIntro(s.name, img, list) }
-                    Cover(img, Modifier.size(160.dp).clickable { openIntro() }, circle = true)
+                    Cover(img, Modifier.size(160.dp).clickable { openIntro() }, circle = true, hd = true)
                     VS(12)
                     Txt(
                         s.name, 20,
@@ -1863,6 +1863,7 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                             vm.openNmSongAlbum(s)
                         },
                         16.dp,
+                        hd = true,
                     )
                     VS(10)
                     // 歌手
@@ -2109,6 +2110,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                     vm.openNmSongAlbum(s)
                 },
                 20.dp,
+                hd = true,
             )
             VS(20)
             // 歌名

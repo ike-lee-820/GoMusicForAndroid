@@ -264,17 +264,27 @@ fun titleWithSource(title: String, source: String): String = title
  * 保留 source 参数是为了调用点不用改。
  */
 @Composable
-fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle: Boolean = false) {
+fun Cover(
+    url: String?,
+    modifier: Modifier = Modifier,
+    radius: Dp = 8.dp,
+    circle: Boolean = false,
+    /** 26.11.55：大封面专用——取高清原图、淘汰历史低清缓存、不让 Coil 降采样 */
+    hd: Boolean = false,
+) {
     val go = LocalGo.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val shape = if (circle) CircleShape else RoundedCornerShape(radius)
-    // 缓存命中就直接用本地文件，避免重复走网络
-    val hit = remember(url) { ImageCache.cached(url) }
-    val model = remember(url, hit) { imageModel(hit ?: url) }
-    // 没缓存的网络图片后台落盘，下次直接读本地
-    LaunchedEffect(url, hit) {
-        if (url != null && hit == null) {
+    // 大图取 2000 档、列表小图取 500 档：既不为 48dp 缩略图拉原图，
+    // 也不会让播放器大封面放大一张 300px 的小图。
+    val src = hdCoverUrl(url, if (hd) 2000 else 500) ?: url
+    // 命中前校验分辨率：早期缓存的 300×300 / 180×180 直接作废
+    val hit = remember(src) { ImageCache.cached(src, if (hd) 640 else 240) }
+    val model = remember(src, hit) { imageModel(hit ?: src) }
+    LaunchedEffect(src, hit) {
+        if (src != null && hit == null) {
             withContext(Dispatchers.IO) {
-                ImageCache.store(url)
+                ImageCache.store(src)
                 ImageCache.trim()
             }
         }
@@ -282,10 +292,16 @@ fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp, circle
     Box(modifier.clip(shape).background(go.surfaceHi), contentAlignment = Alignment.Center) {
         Icon(Icons.Outlined.MusicNote, null, tint = go.muted.copy(alpha = 0.5f), modifier = Modifier.size(24.dp))
         if (model != null) {
-            // FilterQuality.High：源图比控件小或需要放大时用更平滑的采样，
-            // Coil 默认是 Low（双线性），大封面放大后会明显发糊。
+            // 大封面显式 ORIGINAL：Coil 默认会按控件尺寸降采样，
+            // 在 3x 屏上 1000dp 的封面被采样成小图再放大就会明显发糊。
+            val img: Any? = if (hd) {
+                coil.request.ImageRequest.Builder(ctx)
+                    .data(model)
+                    .size(coil.size.Size.ORIGINAL)
+                    .build()
+            } else model
             AsyncImage(
-                model, null, Modifier.fillMaxSize(),
+                img, null, Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop,
                 filterQuality = FilterQuality.High,
             )

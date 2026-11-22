@@ -437,7 +437,7 @@ private fun MineCardRow(items: List<Pair<String, String?>>, go: GoColors, onClic
             Column(
                 Modifier.width(140.dp).clickable { onClick(i) },
             ) {
-                Cover(cover, Modifier.size(140.dp), 8.dp)
+                Cover(cover, Modifier.size(140.dp), 8.dp, hd = true)
                 Spacer(Modifier.height(6.dp))
                 Text(name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = go.on, maxLines = 1)
             }

@@ -58,6 +58,9 @@ object PlayCache {
         }
     }
 
+    /** 26.11.55：当前实际交给播放器的音源地址，投屏直接复用，不再重新解析 */
+    fun current(): String? = curUrl
+
     @Synchronized
     fun release() {
         runCatching { cache?.release() }

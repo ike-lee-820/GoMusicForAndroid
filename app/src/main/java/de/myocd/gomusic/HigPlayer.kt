@@ -57,6 +57,7 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.Videocam
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -94,15 +95,61 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** 从播放器里点「查看专辑 / 歌手」时自动收起，让二级页直接露出来 */
+/**
+ * 从播放器里点「专辑详情 / 歌手」时自动收起，让二级页直接露出来。
+ *
+ * 26.11.49：以前 openLocalAlbumIntro / openArtistByName 会先发
+ * searchAlbums / searchArtists，网络回来才 push 页面 —— 就是用户说的
+ * 「要等一会才会弹出来」。现在两条路都是同步入栈，不把导航挂在网络请求后面：
+ *   - 网易云且带了 id：直接开对应的网易云详情页（openNmSongAlbum/Artist 内部同步）
+ *   - 其余：进本地「专辑详情 / 歌手页」（Screen.Album / Screen.Artist）
+ * 不再是「专辑简介 / 歌手简介」（Screen.AlbumIntro / ArtistIntro）。
+ * 设备本地文件仍按 26.11.34 的约定不跳转、不联网查询。
+ */
 private fun MainViewModel.openAlbumAndClose(s: Song) {
-    openLocalAlbumIntro(s.artist, s.album, s.coverUrl, listOf(s))
     showPlayer = false
+    if (s.source == SRC_DEVICE || LocalAudio.isDevice(s.ssid)) return
+    if (s.source == SRC_NETEASE && s.nmAlbumId > 0) openNmSongAlbum(s)
+    else stack.add(Screen.Album(s.artist, s.album))
 }
 
 private fun MainViewModel.openArtistAndClose(s: Song) {
-    openArtistByName(s.artist)
     showPlayer = false
+    if (s.source == SRC_DEVICE || LocalAudio.isDevice(s.ssid)) return
+    if (s.source == SRC_NETEASE && s.nmArtistId > 0) openNmSongArtist(s)
+    else stack.add(Screen.Artist(s.artist))
+}
+
+/** HIG 风格确认框：清空 / 批量删除共用，按钮文案可配 */
+@Composable
+internal fun HigConfirm(
+    text: String,
+    okLabel: String,
+    onDismiss: () -> Unit,
+    onOk: () -> Unit,
+) {
+    val go = LocalGo.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = go.surface,
+        titleContentColor = go.on,
+        textContentColor = go.muted,
+        title = {
+            Text(text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = go.on)
+        },
+        confirmButton = {
+            Text(
+                okLabel, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = go.primary,
+                modifier = Modifier.clickable { onOk() }.padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        },
+        dismissButton = {
+            Text(
+                "取消", fontSize = 15.sp, color = go.muted,
+                modifier = Modifier.clickable { onDismiss() }.padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        },
+    )
 }
 
 /**
@@ -175,7 +222,9 @@ private fun CoverPane(vm: MainViewModel, s: Song?) {
             if (s != null) {
                 Cover(
                     s.coverUrl,
-                    Modifier.width(side).aspectRatio(1f),
+                    // 26.11.49：点专辑封面直接进专辑详情，不是专辑简介
+                    Modifier.width(side).aspectRatio(1f)
+                        .clickable { vm.openAlbumAndClose(s) },
                     8.dp,
                 )
             }
@@ -200,13 +249,16 @@ private fun CoverPane(vm: MainViewModel, s: Song?) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         s?.artist.orEmpty(), fontSize = 17.sp, color = go.muted, maxLines = 1,
-                        modifier = Modifier.fillMaxWidth().basicMarquee(),
+                        // 26.11.49：歌手单独可点，立即进歌手页；父 Box 的
+                        // combinedClickable 仍负责歌名区域与长按菜单，子级优先命中
+                        modifier = Modifier.fillMaxWidth().basicMarquee()
+                            .clickable { if (s != null) vm.openArtistAndClose(s) },
                     )
                 }
                 DropdownMenu(expanded = infoMenu, onDismissRequest = { infoMenu = false }) {
                     if (s != null) {
                         DropdownMenuItem(
-                            text = { Text("查看专辑", fontSize = 15.sp) },
+                            text = { Text("专辑详情", fontSize = 15.sp) },
                             onClick = {
                                 infoMenu = false
                                 vm.openAlbumAndClose(s)
@@ -340,7 +392,7 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
             })
             add(MoreRow("播放 MV", Icons.Outlined.PlayArrow) { vm.playMv() })
             add(MoreRow("翻译歌词", Icons.Outlined.Translate) { vm.translateLyric() })
-            add(MoreRow("查看专辑", Icons.Outlined.Album) { vm.openAlbumAndClose(s) })
+            add(MoreRow("专辑详情", Icons.Outlined.Album) { vm.openAlbumAndClose(s) })
             add(MoreRow("查看歌手", Icons.Outlined.Person) { vm.openArtistAndClose(s) })
         }
         add(
@@ -921,7 +973,24 @@ private fun QueuePane(vm: MainViewModel, s: Song?) {
             }
         }
         Spacer(Modifier.height(18.dp))
-        Text("继续播放", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = go.on)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("继续播放", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = go.on)
+            Spacer(Modifier.weight(1f))
+            // 26.11.49：新版播放列表漏了清空入口，补回来（保留正在播放的那一首）
+            var confirmClear by remember { mutableStateOf(false) }
+            Text(
+                "清空", fontSize = 14.sp, color = go.primary,
+                modifier = Modifier.clickable { confirmClear = true }.padding(8.dp),
+            )
+            if (confirmClear) {
+                HigConfirm(
+                    "清空播放列表？（保留正在播放的这一首）",
+                    "清空",
+                    onDismiss = { confirmClear = false },
+                    onOk = { confirmClear = false; vm.clearQueue() },
+                )
+            }
+        }
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             itemsIndexed(vm.queue) { i, e ->

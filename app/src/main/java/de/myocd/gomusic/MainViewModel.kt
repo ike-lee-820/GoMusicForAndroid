@@ -1452,6 +1452,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.history = l
     }
 
+    /** 26.11.49：听歌历史批量删除（一次写盘，避免逐条刷 prefs） */
+    fun removeHistoryBatch(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val l = history.filter { it !in ids }
+        history = l
+        prefs.history = l
+    }
+
     /** 历史页开关 */
     var showHistory by mutableStateOf(false)
 
@@ -2189,6 +2197,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         favorites = next
         prefs.favorites = next
         return ssid in next
+    }
+
+    /** 26.11.49：我的喜欢批量移除 */
+    fun removeFavorites(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val next = favorites - ids.toSet()
+        favorites = next
+        prefs.favorites = next
+    }
+
+    /** 26.11.49：我的喜欢清空 */
+    fun clearFavorites() {
+        favorites = emptySet()
+        prefs.favorites = emptySet()
     }
 
     /** 搜索记录（最近在前），提交时才写 */

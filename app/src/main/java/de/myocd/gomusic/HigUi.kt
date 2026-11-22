@@ -1,7 +1,9 @@
 package de.myocd.gomusic
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -368,8 +371,8 @@ fun MinePage(vm: MainViewModel) {
         }
     }
     when (detail) {
-        1 -> GoSheet({ detail = null }, "我的喜欢") { MineSongList(vm, liked) }
-        2 -> GoSheet({ detail = null }, "听歌历史") { MineSongList(vm, vm.historySongs) }
+        1 -> GoSheet({ detail = null }, "我的喜欢") { MineSongList(vm, liked, 1) }
+        2 -> GoSheet({ detail = null }, "听歌历史") { MineSongList(vm, vm.historySongs, 2) }
     }
 }
 
@@ -412,33 +415,173 @@ private fun MineCardRow(items: List<Pair<String, String?>>, go: GoColors, onClic
     }
 }
 
+/**
+ * 26.11.49：我的喜欢 / 听歌历史详情页。
+ * 之前只有一个能点播放的列表，没有搜索、多选、批量删除、清空。
+ * kind = 1 我的喜欢 / 2 听歌历史，删除与清空走各自的持久化集合。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ColumnScope.MineSongList(
-    vm: MainViewModel, songs: List<Song>,
+    vm: MainViewModel, songs: List<Song>, kind: Int,
 ) {
     val go = LocalGo.current
-    if (songs.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("还没有内容", fontSize = 15.sp, color = go.muted)
+    var query by remember { mutableStateOf("") }
+    var selecting by remember { mutableStateOf(false) }
+    val checked = remember { mutableStateListOf<String>() }
+    var confirmClear by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    val shown = remember(songs, query) {
+        val q = query.trim()
+        if (q.isEmpty()) songs
+        else songs.filter {
+            it.title.contains(q, ignoreCase = true) ||
+                it.artist.contains(q, ignoreCase = true) ||
+                it.album.contains(q, ignoreCase = true)
         }
-        return
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        items(songs) { s ->
-            Row(
-                Modifier.fillMaxWidth().height(64.dp)
-                    .clickable { vm.playSongs(songs, songs.indexOf(s)); vm.openPlayer() }
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Cover(s.coverUrl, Modifier.size(48.dp), 8.dp)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(s.title, fontSize = 16.sp, color = go.on, maxLines = 1)
-                    Text(s.artist, fontSize = 13.sp, color = go.muted, maxLines = 1)
+
+    Column(Modifier.fillMaxSize()) {
+        // 搜索：本地过滤，不发请求、不写搜索历史
+        Row(
+            Modifier.fillMaxWidth().height(44.dp)
+                .clip(RoundedCornerShape(10.dp)).background(go.surfaceHi)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.Search, "搜索", tint = go.muted, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            SearchField(
+                query, { query = it }, "搜索歌曲 / 歌手 / 专辑",
+                Modifier.weight(1f), showIcon = false,
+            )
+            if (query.isNotEmpty()) {
+                Text(
+                    "✕", fontSize = 16.sp, color = go.muted,
+                    modifier = Modifier.clickable { query = "" }.padding(4.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (selecting) {
+                val all = shown.isNotEmpty() && shown.all { it.ssid in checked }
+                Text(
+                    if (all) "取消全选" else "全选", fontSize = 14.sp, color = go.primary,
+                    modifier = Modifier.clickable {
+                        if (all) checked.clear()
+                        else shown.forEach { if (it.ssid !in checked) checked.add(it.ssid) }
+                    }.padding(6.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "删除（${checked.size}）", fontSize = 14.sp,
+                    color = if (checked.isEmpty()) go.muted else Color(0xFFFF453A),
+                    modifier = Modifier.clickable(enabled = checked.isNotEmpty()) { confirmDelete = true }
+                        .padding(6.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "完成", fontSize = 14.sp, color = go.primary,
+                    modifier = Modifier.clickable { selecting = false; checked.clear() }.padding(6.dp),
+                )
+            } else {
+                Text(
+                    "选择", fontSize = 14.sp, color = go.primary,
+                    modifier = Modifier.clickable { selecting = true }.padding(6.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "清空", fontSize = 14.sp, color = Color(0xFFFF453A),
+                    modifier = Modifier.clickable { confirmClear = true }.padding(6.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        if (shown.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (query.isBlank()) "还没有内容" else "没有找到「$query」",
+                    fontSize = 15.sp, color = go.muted,
+                )
+            }
+        } else {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                items(shown, key = { it.ssid }) { s ->
+                    val on = s.ssid in checked
+                    Row(
+                        Modifier.fillMaxWidth().height(64.dp)
+                            .combinedClickable(
+                                onClick = {
+                                    if (selecting) {
+                                        if (on) checked.remove(s.ssid) else checked.add(s.ssid)
+                                    } else {
+                                        vm.playSongs(shown, shown.indexOf(s)); vm.openPlayer()
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!selecting) { selecting = true; checked.add(s.ssid) }
+                                },
+                            )
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (selecting) {
+                            // 自绘选择圈，不依赖图标库版本
+                            Box(
+                                Modifier.size(22.dp).clip(CircleShape)
+                                    .background(if (on) go.primary else go.surfaceHi),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (on) {
+                                    Text(
+                                        "✓", fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold, color = Color.White,
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                        }
+                        Cover(s.coverUrl, Modifier.size(48.dp), 8.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(s.title, fontSize = 16.sp, color = go.on, maxLines = 1)
+                            Text(s.artist, fontSize = 13.sp, color = go.muted, maxLines = 1)
+                        }
+                    }
+                    Box(
+                        Modifier.fillMaxWidth().height((0.5f).dp)
+                            .padding(start = 76.dp).background(go.separator),
+                    )
                 }
             }
-            Box(Modifier.fillMaxWidth().height((0.5f).dp).padding(start = 76.dp).background(go.separator))
         }
+    }
+
+    if (confirmClear) {
+        HigConfirm(
+            if (kind == 1) "清空我的喜欢？" else "清空听歌历史？",
+            "清空",
+            onDismiss = { confirmClear = false },
+            onOk = {
+                confirmClear = false
+                if (kind == 1) vm.clearFavorites() else vm.clearHistory()
+                checked.clear(); selecting = false
+            },
+        )
+    }
+    if (confirmDelete) {
+        HigConfirm(
+            "删除选中的 ${checked.size} 首？",
+            "删除",
+            onDismiss = { confirmDelete = false },
+            onOk = {
+                confirmDelete = false
+                val ids = checked.toSet()
+                if (kind == 1) vm.removeFavorites(ids) else vm.removeHistoryBatch(ids)
+                checked.clear(); selecting = false
+            },
+        )
     }
 }

@@ -36,11 +36,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Equalizer
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -51,6 +53,7 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.Videocam
@@ -63,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.LongState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -289,6 +293,8 @@ private data class MoreRow(
     val label: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
     val action: () -> Unit,
+    /** 点完是否收起整张卡片；音质 / 倍速要留在卡片里切子页 */
+    val closeAfter: Boolean = true,
 )
 
 /**
@@ -300,7 +306,12 @@ private data class MoreRow(
 private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
     val go = LocalGo.current
     val ctx = LocalContext.current
-    BackHandler(enabled = true) { onClose() }
+    // 0 主菜单 / 1 音质 / 2 倍速。26.11.46：把改版时丢掉的音质、倍速入口补回来，
+    // 用子页而不是嵌套 DropdownMenu，避免底部卡片里菜单层叠错位。
+    var subPage by remember { mutableIntStateOf(0) }
+    BackHandler(enabled = true) {
+        if (subPage != 0) subPage = 0 else onClose()
+    }
 
     val lyrics = vm.wordLyric?.lines?.joinToString("\n") { it.text }.orEmpty()
     val credits = vm.wordLyric?.lines?.filter { it.meta }
@@ -333,6 +344,14 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
             add(MoreRow("查看专辑", Icons.Outlined.Album) { vm.openAlbumAndClose(s) })
             add(MoreRow("查看歌手", Icons.Outlined.Person) { vm.openArtistAndClose(s) })
         }
+        add(
+            MoreRow("音质", Icons.Outlined.GraphicEq, closeAfter = false) {
+                // 打开时才探测可用档位：切歌时跑十几个请求会拖慢起播
+                vm.probeQualities()
+                subPage = 1
+            }
+        )
+        add(MoreRow("倍速", Icons.Outlined.Speed, closeAfter = false) { subPage = 2 })
         add(MoreRow("均衡器", Icons.Outlined.Equalizer) { vm.showEq = true })
         add(MoreRow("3D 环绕", Icons.Outlined.MusicNote) { vm.showSurround = true })
         add(MoreRow("录制视频", Icons.Outlined.Videocam) { vm.showRecorder = true })
@@ -381,25 +400,115 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
                 }
             }
             Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                rows.forEach { r ->
-                    Row(
-                        Modifier.fillMaxWidth().height(58.dp)
-                            .clickable { onClose(); r.action() }
-                            .padding(horizontal = 20.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            r.icon, r.label, tint = go.primary,
-                            modifier = Modifier.size(26.dp),
+            if (subPage == 0) {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    rows.forEach { r ->
+                        Row(
+                            Modifier.fillMaxWidth().height(58.dp)
+                                .clickable { if (r.closeAfter) onClose(); r.action() }
+                                .padding(horizontal = 20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                r.icon, r.label, tint = go.primary,
+                                modifier = Modifier.size(26.dp),
+                            )
+                            Spacer(Modifier.width(18.dp))
+                            Text(r.label, fontSize = 17.sp, color = go.on)
+                        }
+                        Box(
+                            Modifier.fillMaxWidth().height((0.5f).dp)
+                                .padding(start = 20.dp).background(go.separator),
                         )
-                        Spacer(Modifier.width(18.dp))
-                        Text(r.label, fontSize = 17.sp, color = go.on)
                     }
-                    Box(
-                        Modifier.fillMaxWidth().height((0.5f).dp)
-                            .padding(start = 20.dp).background(go.separator),
+                }
+            } else {
+                // 子页：标题栏带返回，下面是一组可直接点的选项
+                Row(
+                    Modifier.fillMaxWidth().height(52.dp)
+                        .clickable { subPage = 0 }
+                        .padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.ArrowBack, "返回",
+                        tint = go.primary, modifier = Modifier.size(24.dp),
                     )
+                    Spacer(Modifier.width(14.dp))
+                    Text(
+                        if (subPage == 1) "音质" else "倍速",
+                        fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = go.on,
+                    )
+                }
+                Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (subPage == 1) {
+                        if (!vm.nmQualityMode) {
+                            Text(
+                                "本站曲库只有服务端提供的单一音源，没有多档位可切换",
+                                fontSize = 15.sp, color = go.muted,
+                                modifier = Modifier.padding(20.dp),
+                            )
+                        } else {
+                            NM_LEVELS.forEach { lv ->
+                                val ok = lv !in vm.qualitiesAbsent
+                                val sel = lv == vm.curLevel
+                                Row(
+                                    Modifier.fillMaxWidth().height(58.dp)
+                                        .clickable {
+                                            when {
+                                                !ok -> vm.toast("这首歌没有${nmLevelLabel(lv)}的音源")
+                                                sel -> onClose()
+                                                else -> {
+                                                    vm.updateQuality(lv)
+                                                    vm.toast("已切换到${nmLevelLabel(lv)}")
+                                                    onClose()
+                                                }
+                                            }
+                                        }
+                                        .padding(horizontal = 20.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        nmLevelLabel(lv), fontSize = 17.sp,
+                                        color = when {
+                                            !ok -> go.muted.copy(alpha = 0.45f)
+                                            sel -> go.primary
+                                            else -> go.on
+                                        },
+                                        fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    when {
+                                        sel -> Text("✓", fontSize = 16.sp, color = go.primary)
+                                        !ok -> Text("无音源", fontSize = 12.sp, color = go.muted)
+                                    }
+                                }
+                                Box(
+                                    Modifier.fillMaxWidth().height((0.5f).dp)
+                                        .padding(start = 20.dp).background(go.separator),
+                                )
+                            }
+                        }
+                    } else {
+                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { sp ->
+                            Row(
+                                Modifier.fillMaxWidth().height(58.dp)
+                                    .clickable { vm.updateSpeed(sp); onClose() }
+                                    .padding(horizontal = 20.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    if (sp == 1f) "正常" else "${sp}x",
+                                    fontSize = 17.sp, color = go.on,
+                                )
+                            }
+                            Box(
+                                Modifier.fillMaxWidth().height((0.5f).dp)
+                                    .padding(start = 20.dp).background(go.separator),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -545,6 +654,11 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
         return
     }
     val state = rememberLazyListState()
+    // 26.11.46：只有带 yrc 逐字时间轴的「高级歌词」才做逐帧推进和自动跟随滚动。
+    // 老 /lyric、本站、本地、离线歌词只有行级时间轴，用户明确要求「不要滚动」：
+    // 不逐帧刷新、不 animateScrollToItem、不画扫光，整页停在自己滑到的位置，
+    // 只把当前行静态高亮。
+    val wordTiming = w.hasWordTiming
     // 逐帧位置：ViewModel 的 250ms 轮询只够进度条，逐字卡拉 OK 必须每帧一个位置，
     // 否则一次跳 250ms，几个字一起变色，看起来就是「生硬跳动」。
     val framePos = remember { mutableLongStateOf(vm.positionMs) }
@@ -552,6 +666,12 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
     LaunchedEffect(w) {
         var lastActive = -1
         while (true) {
+            if (!wordTiming) {
+                // 行级歌词：250ms 足够定位当前行，绝不驱动列表滚动
+                delay(250)
+                framePos.longValue = vm.positionMs
+                continue
+            }
             if (vm.isPlaying) withFrameNanos { it } else delay(100)
             framePos.longValue = vm.controller?.currentPosition?.coerceAtLeast(0) ?: vm.positionMs
             // 用户手动滑歌词后 4 秒内不自动抢回当前行
@@ -586,7 +706,7 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
                 if (line.meta) {
                     Text(line.text, fontSize = 12.sp, color = go.muted.copy(alpha = 0.6f))
                 } else {
-                    WordLineText(line, framePos, go, alpha)
+                    WordLineText(line, framePos, go, alpha, wordTiming)
                     if (!line.trans.isNullOrBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
@@ -631,7 +751,27 @@ private fun mixColor(a: Color, b: Color, t: Float): Color {
  * 字号固定 26sp：字号随进度变会让 Text 每帧重新测量、整行抖动。
  */
 @Composable
-private fun WordLineText(line: WordLine, posState: LongState, go: GoColors, alpha: Float) {
+private fun WordLineText(
+    line: WordLine,
+    posState: LongState,
+    go: GoColors,
+    alpha: Float,
+    wordTiming: Boolean,
+) {
+    // 26.11.46：没有逐字时间轴就只做静态大字高亮。
+    // 之前把整行塞成一个字组，再叠整行扫光，老歌词也会「滚」一道光——
+    // 用户要的「不滚动」在这里一并停掉。
+    if (!wordTiming) {
+        Text(
+            line.text,
+            fontSize = 26.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = go.on.copy(alpha = alpha),
+            textAlign = TextAlign.Start,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        return
+    }
     val posMs = posState.longValue
     val frames = WordLyricParser.frameAt(line, posMs)
 

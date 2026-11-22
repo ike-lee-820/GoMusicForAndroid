@@ -292,9 +292,11 @@ private fun FavoriteStar(
 private data class MoreRow(
     val label: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val action: () -> Unit,
-    /** 点完是否收起整张卡片；音质 / 倍速要留在卡片里切子页 */
+    /** 点完是否收起整张卡片；音质 / 倍速要留在卡片里切子页。
+     *  必须放在 action 前面且带默认值，否则「MoreRow(标签, 图标) { … }」
+     *  的尾随 lambda 会被当成这个 Boolean，整排全编译不过。 */
     val closeAfter: Boolean = true,
+    val action: () -> Unit,
 )
 
 /**
@@ -345,13 +347,13 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
             add(MoreRow("查看歌手", Icons.Outlined.Person) { vm.openArtistAndClose(s) })
         }
         add(
-            MoreRow("音质", Icons.Outlined.GraphicEq, closeAfter = false) {
+            MoreRow("音质", Icons.Outlined.GraphicEq, false) {
                 // 打开时才探测可用档位：切歌时跑十几个请求会拖慢起播
                 vm.probeQualities()
                 subPage = 1
             }
         )
-        add(MoreRow("倍速", Icons.Outlined.Speed, closeAfter = false) { subPage = 2 })
+        add(MoreRow("倍速", Icons.Outlined.Speed, false) { subPage = 2 })
         add(MoreRow("均衡器", Icons.Outlined.Equalizer) { vm.showEq = true })
         add(MoreRow("3D 环绕", Icons.Outlined.MusicNote) { vm.showSurround = true })
         add(MoreRow("录制视频", Icons.Outlined.Videocam) { vm.showRecorder = true })

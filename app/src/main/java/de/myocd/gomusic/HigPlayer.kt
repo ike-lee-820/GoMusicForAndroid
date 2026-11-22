@@ -76,11 +76,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.input.pointer.pointerInput
@@ -745,12 +740,18 @@ private fun mixColor(a: Color, b: Color, t: Float): Color {
 }
 
 /**
- * 单字连续流动：每个字按自己的播放进度 t 做平滑颜色插值，
- * 而不是 PENDING / ACTIVE / SUNG 三态硬切。相邻字时间错开，
- * 看起来就是一道光从字里扫过去；正在唱的那个字再叠一条
- * 随 progress 从左往右推进的擦除高光带。
+ * 26.11.47：逐字高亮**没有任何叠加层**。
  *
- * 字号固定 26sp：字号随进度变会让 Text 每帧重新测量、整行抖动。
+ * 之前几版一直在画「一条光带」——先是 drawBehind 画在字后面像一根棍子，
+ * 再改成 drawWithContent + SrcAtop 把光带贴到字形上，但那终究还是一条
+ * 会移动的渐变条，用户看到的仍是「棍子在滚」。这次把 Brush / BlendMode /
+ * drawWithContent / lineProgress 全部删掉，只剩字本身的颜色：
+ *
+ *   未唱的字 = 暗，已唱的字 = 亮，正在唱的字按自己的时间窗从暗平滑插值到亮。
+ *
+ * 明暗分界就是沿着字形逐字推进，不画任何矩形、渐变、光晕或背景条。
+ * 位置仍逐帧读取，所以边界是连续滑动的，不会一次跳好几个字。
+ * 字号固定 26sp，避免每帧重新测量导致整行抖动。
  */
 @Composable
 private fun WordLineText(
@@ -760,9 +761,7 @@ private fun WordLineText(
     alpha: Float,
     wordTiming: Boolean,
 ) {
-    // 26.11.46：没有逐字时间轴就只做静态大字高亮。
-    // 之前把整行塞成一个字组，再叠整行扫光，老歌词也会「滚」一道光——
-    // 用户要的「不滚动」在这里一并停掉。
+    // 无逐字时间轴：静态大字，不滚动、不扫光（26.11.46 起）
     if (!wordTiming) {
         Text(
             line.text,
@@ -777,9 +776,9 @@ private fun WordLineText(
     val posMs = posState.longValue
     val frames = WordLyricParser.frameAt(line, posMs)
 
-    val dim = go.on.copy(alpha = alpha * 0.34f)
-    val lit = go.primary.copy(alpha = alpha)
-    val sung = go.on.copy(alpha = alpha)
+    // 只有两档亮度，不用主色：主色会在字流里形成一条彩色带，又被看成「棍子」
+    val dark = go.on.copy(alpha = alpha * 0.28f)
+    val bright = go.on.copy(alpha = alpha)
     val text: AnnotatedString = buildAnnotatedString {
         frames.forEach { f ->
             val t = when (f.phase) {
@@ -787,20 +786,17 @@ private fun WordLineText(
                 CharPhase.ACTIVE -> f.progress
                 CharPhase.SUNG -> 1f
             }
-            val e = smoothstep(t)
-            // 暗 → 主色 → 唱完的白，三段都是连续插值（字本身逐个点亮）
-            val c = if (e < 0.72f) mixColor(dim, lit, e / 0.72f)
-            else mixColor(lit, sung, (e - 0.72f) / 0.28f)
-            pushStyle(SpanStyle(color = c, fontWeight = FontWeight.SemiBold, fontSize = 26.sp))
+            pushStyle(
+                SpanStyle(
+                    color = mixColor(dark, bright, smoothstep(t)),
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 26.sp,
+                )
+            )
             append(f.char.text)
             pop()
         }
     }
-
-    // 整行进度：光从左往右连续扫，不再按「当前是哪个字」跳。
-    val lineProgress = (
-        (posMs - line.startMs).toFloat() / line.durMs.coerceAtLeast(1).toFloat()
-        ).coerceIn(0f, 1f)
 
     Text(
         text,
@@ -808,32 +804,7 @@ private fun WordLineText(
         fontWeight = FontWeight.SemiBold,
         color = go.on.copy(alpha = alpha),
         textAlign = TextAlign.Start,
-        // 26.11.45：滚动光必须「在字上面」，不是字后面的一根棍子。
-        // drawWithContent 先画文字，再用 SrcAtop 叠一道窄亮带：
-        // 源只保留在目标已有像素（字形）上，所以光只出现在笔画里，
-        // 折行、字距、不同语言都能连续流过，不会画出背景矩形。
-        modifier = Modifier.fillMaxWidth().drawWithContent {
-            drawContent()
-            if (lineProgress <= 0f || lineProgress >= 1f) return@drawWithContent
-            val sweep = size.width * lineProgress
-            val from = (sweep - 30.dp.toPx()).coerceAtLeast(0f)
-            val to = (sweep + 10.dp.toPx()).coerceAtMost(size.width)
-            if (to <= from) return@drawWithContent
-            drawRect(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        go.primary.copy(alpha = 0f),
-                        go.primary.copy(alpha = 0.85f * alpha),
-                        go.primary.copy(alpha = 0f),
-                    ),
-                    startX = from,
-                    endX = to,
-                ),
-                topLeft = Offset.Zero,
-                size = Size(size.width, size.height),
-                blendMode = BlendMode.SrcAtop,
-            )
-        },
+        modifier = Modifier.fillMaxWidth(),
     )
 }
 

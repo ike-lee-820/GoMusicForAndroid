@@ -911,9 +911,12 @@ private fun MainControls(vm: MainViewModel, go: GoColors, compact: Boolean = fal
     // 26.11.52：播放键去掉圆底，改成图 2/3 那种简洁的实心大三角 / 双竖条。
     // 颜色仍是「与背景相对」的纯白 / 纯黑，不再耦合 go.bg / go.on 的圆底配色。
     val (fg, _) = go.contrastPair()
-    val side = if (compact) 32.dp else 44.dp
+    // 26.11.62：换成截图里那套粗圆角实心图标后，双箭头是宽扁形状
+    // （160 画布里 152×110），等比放进方形按钮会比播放三角矮一截。
+    // 侧键略放大到 48/36，让「双箭头 : 大三角」的高度比贴近截图的 ~0.66。
+    val side = if (compact) 36.dp else 48.dp
     val main = if (compact) 40.dp else 56.dp
-    val sideBox = if (compact) 44.dp else 56.dp
+    val sideBox = if (compact) 48.dp else 60.dp
     val mainBox = if (compact) 56.dp else 72.dp
     Row(
         Modifier.fillMaxWidth(),

@@ -1,8 +1,11 @@
 package de.myocd.gomusic
 
 import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateDpAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -83,6 +86,9 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -102,7 +108,9 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -196,6 +204,23 @@ fun HigPlayerRoot(vm: MainViewModel) {
     // 带来任何平移都不会让封面错位。
     var rootX by remember { mutableFloatStateOf(0f) }
     var rootY by remember { mutableFloatStateOf(0f) }
+    // 26.11.53：切页时背景模糊半径平滑变化 —— 封面页较清晰，歌词页更朦胧，
+    // 队列页居中。不是三张不同的背景图，只是同一张封面底图的模糊度动画。
+    val blur by animateDpAsState(
+        targetValue = when (vm.playerPage) {
+            PLAYER_COVER -> 18.dp
+            PLAYER_LYRICS -> 42.dp
+            else -> 30.dp
+        },
+        animationSpec = spring(dampingRatio = 0.9f, stiffness = 260f),
+        label = "playerBgBlur",
+    )
+    val onBig: (Float, Float, Float) -> Unit = { x, y, sz ->
+        bigX = x; bigY = y; bigS = sz; bigReady = true
+    }
+    val onSmall: (Float, Float, Float) -> Unit = { x, y, sz ->
+        smallX = x; smallY = y; smallS = sz; smallReady = true
+    }
     Box(
         Modifier.fillMaxSize().background(go.bg)
             .onGloballyPositioned { c ->
@@ -210,26 +235,32 @@ fun HigPlayerRoot(vm: MainViewModel) {
         if (bgModel != null) {
             AsyncImage(
                 bgModel, null,
-                Modifier.fillMaxSize().blur(40.dp),
+                Modifier.fillMaxSize().blur(blur),
                 contentScale = ContentScale.Crop,
                 filterQuality = FilterQuality.High,
             )
         }
         // 亮/暗只换叠加色，图层结构不变
         Box(Modifier.fillMaxSize().background(go.scrim))
-        Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
-                .padding(horizontal = 20.dp),
+        BoxWithConstraints(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         ) {
-            when (vm.playerPage) {
-                PLAYER_LYRICS -> LyricsPane(vm, s) { x, y, sz ->
-                    smallX = x; smallY = y; smallS = sz; smallReady = true
+            // 26.11.53：横屏适配。宽明显大于高时改成左右双栏：
+            // 左栏仍是原来的封面 / 歌词 / 队列三页与控制键（紧凑尺寸），
+            // 右栏常驻大字歌词。竖屏完全走原来那条单列路径，零改动。
+            val land = maxWidth > maxHeight * 1.15f
+            if (land) {
+                Row(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                        PlayerBody(vm, s, onBig, onSmall, compact = true)
+                    }
+                    Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                        WordLyricsList(vm, go, compact = true)
+                    }
                 }
-                PLAYER_QUEUE -> QueuePane(vm, s) { x, y, sz ->
-                    smallX = x; smallY = y; smallS = sz; smallReady = true
-                }
-                else -> CoverPane(vm, s) { x, y, sz ->
-                    bigX = x; bigY = y; bigS = sz; bigReady = true
+            } else {
+                Box(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+                    PlayerBody(vm, s, onBig, onSmall, compact = false)
                 }
             }
         }
@@ -241,6 +272,24 @@ fun HigPlayerRoot(vm: MainViewModel) {
         )
         // 图 17 样式的更多操作表：盖在播放器最上层
         if (vm.showMoreSheet) PlayerMoreSheet(vm, s) { vm.showMoreSheet = false }
+    }
+}
+
+/** 三页骨架：封面 / 歌词 / 队列，横竖屏共用，只是紧凑参数不同 */
+@Composable
+private fun PlayerBody(
+    vm: MainViewModel,
+    s: Song?,
+    onBig: (Float, Float, Float) -> Unit,
+    onSmall: (Float, Float, Float) -> Unit,
+    compact: Boolean,
+) {
+    Column(Modifier.fillMaxSize()) {
+        when (vm.playerPage) {
+            PLAYER_LYRICS -> LyricsPane(vm, s, onSmall, compact)
+            PLAYER_QUEUE -> QueuePane(vm, s, onSmall, compact)
+            else -> CoverPane(vm, s, onBig, compact)
+        }
     }
 }
 
@@ -312,6 +361,7 @@ private fun CoverPane(
     vm: MainViewModel,
     s: Song?,
     onBigCover: (Float, Float, Float) -> Unit,
+    compact: Boolean = false,
 ) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
@@ -405,12 +455,9 @@ private fun CoverPane(
                 )
             }
         }
-        Spacer(Modifier.height(22.dp))
-        ProgressLine(vm, go)
-        Spacer(Modifier.height(18.dp))
-        MainControls(vm, go)
-        Spacer(Modifier.height(26.dp))
-        BottomThreeKeys(vm, go)
+        // 26.11.53：封面页与歌词页 / 队列页共用同一段底栏，进度条、
+        // 控制键、三键的高度与间距完全一致 —— 切页时进度条纵坐标不再跳动。
+        PlayerBottomBar(vm, go, compact)
         Spacer(Modifier.height(12.dp))
     }
 }
@@ -425,9 +472,26 @@ private fun HigRoundBtn(go: GoColors, content: @Composable () -> Unit) {
 }
 
 /**
- * 星标：**未收藏一定是空心**（Outlined），收藏后才实心主色。
- * 封面页、歌词页、队列页、更多列表共用这一处，状态不会再各画各的。
+ * 26.11.53：星标改成自绘五角星，**未收藏时只描细边（真正的空心）**，
+ * 收藏后才填充主色。之前用 Material 的 Outlined.Star，描边在小尺寸下
+ * 看起来像实心；封面页、歌词页、队列页、信息区共用这一处。
  */
+private fun DrawScope.starPath(): Path {
+    val cx = size.width / 2f
+    val cy = size.height / 2f
+    val r = size.minDimension / 2f * 0.9f
+    val p = Path()
+    for (i in 0 until 10) {
+        val a = Math.toRadians(-90.0 + i * 36.0)
+        val rr = if (i % 2 == 0) r else r * 0.46f
+        val x = cx + (cos(a) * rr).toFloat()
+        val y = cy + (sin(a) * rr).toFloat()
+        if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+    }
+    p.close()
+    return p
+}
+
 @Composable
 private fun FavoriteStar(
     vm: MainViewModel,
@@ -436,12 +500,18 @@ private fun FavoriteStar(
     modifier: Modifier = Modifier,
 ) {
     val fav = vm.isFavorite(ssid)
-    Icon(
-        if (fav) Icons.Filled.Star else Icons.Outlined.Star,
-        if (fav) "移出我的喜欢" else "加入我的喜欢",
-        tint = if (fav) go.primary else go.on,
-        modifier = modifier.clickable { vm.toggleFavorite(ssid) },
-    )
+    val (fg, _) = go.contrastPair()
+    val c = if (fav) go.primary else fg
+    Canvas(
+        modifier.clickable { vm.toggleFavorite(ssid) },
+    ) {
+        val path = starPath()
+        if (fav) {
+            drawPath(path, c)
+        } else {
+            drawPath(path, c, style = Stroke(width = 2.dp.toPx()))
+        }
+    }
 }
 
 private data class MoreRow(
@@ -680,44 +750,52 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
 private fun ProgressLine(vm: MainViewModel, go: GoColors) {
     val left = fmt(vm.positionMs)
     val right = "-" + fmt((vm.durationMs - vm.positionMs).coerceAtLeast(0))
+    // 26.11.53：进度条轨道、已播段、圆点、时间文字全部用与播放按钮同一个
+    // 「与背景相对」的对比色，不再各自取 go.muted / 硬编码白。
+    val (fg, _) = go.contrastPair()
     Column(Modifier.fillMaxWidth()) {
         SimpleSeekBar(
             vm.positionMs, vm.durationMs,
             Modifier.fillMaxWidth().height(32.dp),
+            color = fg,
         ) { vm.seekTo(it) }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(left, fontSize = 13.sp, color = go.muted)
+            Text(left, fontSize = 13.sp, color = fg.copy(alpha = 0.7f))
             Spacer(Modifier.weight(1f))
             Text(
                 if (vm.quality == "lossless") "无损" else vm.quality,
-                fontSize = 12.sp, color = go.on,
+                fontSize = 12.sp, color = fg,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp))
                     .background(go.surfaceHi.copy(alpha = 0.55f))
                     .padding(horizontal = 12.dp, vertical = 5.dp),
             )
             Spacer(Modifier.weight(1f))
-            Text(right, fontSize = 13.sp, color = go.muted)
+            Text(right, fontSize = 13.sp, color = fg.copy(alpha = 0.7f))
         }
     }
 }
 
 @Composable
-private fun MainControls(vm: MainViewModel, go: GoColors) {
+private fun MainControls(vm: MainViewModel, go: GoColors, compact: Boolean = false) {
     // 26.11.52：播放键去掉圆底，改成图 2/3 那种简洁的实心大三角 / 双竖条。
     // 颜色仍是「与背景相对」的纯白 / 纯黑，不再耦合 go.bg / go.on 的圆底配色。
     val (fg, _) = go.contrastPair()
+    val side = if (compact) 32.dp else 44.dp
+    val main = if (compact) 40.dp else 56.dp
+    val sideBox = if (compact) 44.dp else 56.dp
+    val mainBox = if (compact) 56.dp else 72.dp
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        PIconBtn("prev", "上一首", size = 44.dp, tint = fg, box = 56.dp) { vm.prev() }
+        PIconBtn("prev", "上一首", size = side, tint = fg, box = sideBox) { vm.prev() }
         PIconBtn(
             if (vm.isPlaying) "pause" else "play",
             if (vm.isPlaying) "暂停" else "播放",
-            size = 56.dp, tint = fg, bg = Color.Transparent, box = 72.dp,
+            size = main, tint = fg, bg = Color.Transparent, box = mainBox,
         ) { vm.togglePlay() }
-        PIconBtn("next", "下一首", size = 44.dp, tint = fg, box = 56.dp) { vm.next() }
+        PIconBtn("next", "下一首", size = side, tint = fg, box = sideBox) { vm.next() }
     }
 }
 
@@ -789,12 +867,12 @@ private fun BottomThreeKeys(vm: MainViewModel, go: GoColors) {
 }
 
 @Composable
-private fun PlayerBottomBar(vm: MainViewModel, go: GoColors) {
+private fun PlayerBottomBar(vm: MainViewModel, go: GoColors, compact: Boolean = false) {
     Column(Modifier.fillMaxWidth()) {
         ProgressLine(vm, go)
-        Spacer(Modifier.height(12.dp))
-        MainControls(vm, go)
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(if (compact) 4.dp else 12.dp))
+        MainControls(vm, go, compact)
+        Spacer(Modifier.height(if (compact) 6.dp else 18.dp))
         BottomThreeKeys(vm, go)
     }
 }
@@ -845,23 +923,67 @@ private fun InfoHeader(
 // 播放栏改为常驻。
 // =====================================================================
 
+/**
+ * 26.11.53：在歌词展示区里观察垂直拖拽方向。
+ * 手指上滑 → 显示播放控制区；下滑 → 隐藏。只读取 Initial pass、不消费事件，
+ * 所以 LazyColumn 自己的滚动、点击歌词跳转、自动跟随全都不受影响。
+ * 一次手势只触发一次，避免连续不停切换显隐。
+ */
+private fun Modifier.lyricsControlGesture(onUp: () -> Unit, onDown: () -> Unit): Modifier =
+    pointerInput(Unit) {
+        awaitPointerEventScope {
+            while (true) {
+                val down = awaitPointerEvent(PointerEventPass.Initial)
+                if (down.type != PointerEventType.Press) continue
+                var lastY = down.changes.firstOrNull()?.position?.y ?: 0f
+                var acc = 0f
+                var fired = false
+                while (true) {
+                    val e = awaitPointerEvent(PointerEventPass.Initial)
+                    if (e.type == PointerEventType.Release) break
+                    if (e.type == PointerEventType.Move) {
+                        val y = e.changes.firstOrNull()?.position?.y ?: lastY
+                        acc += y - lastY
+                        lastY = y
+                        if (!fired && kotlin.math.abs(acc) > 64f) {
+                            fired = true
+                            if (acc < 0f) onUp() else onDown()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 @Composable
 private fun LyricsPane(
     vm: MainViewModel,
     s: Song?,
     onSmallCover: (Float, Float, Float) -> Unit,
+    compact: Boolean = false,
 ) {
     val go = LocalGo.current
+    // 默认显示；下滑隐藏、上滑恢复。隐藏是用户主动行为，不影响三页默认
+    // 状态下进度条纵坐标一致（那时控制区都在位）。
+    var controls by remember { mutableStateOf(true) }
     Column(Modifier.fillMaxSize()) {
         InfoHeader(vm, s, go, { vm.gotoPlayerPage(PLAYER_COVER) }, onSmallCover)
-        Box(Modifier.weight(1f).fillMaxWidth()) { WordLyricsList(vm, go) }
-        PlayerBottomBar(vm, go)
+        Box(
+            Modifier.weight(1f).fillMaxWidth()
+                .lyricsControlGesture(
+                    onUp = { controls = true },
+                    onDown = { controls = false },
+                ),
+        ) { WordLyricsList(vm, go, compact) }
+        AnimatedVisibility(visible = controls) {
+            PlayerBottomBar(vm, go, compact)
+        }
         Spacer(Modifier.height(12.dp))
     }
 }
 
 @Composable
-private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
+private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = false) {
     // 所有来源（/lyric/new 的 yrc、退回的老 /lyric、本站、本地、离线）
     // 都已在 ViewModel 里统一成 WordLyric，因此这里只有一套大字渲染，
     // 老歌词不再掉回旧的 LyricsList 小字列表。
@@ -953,7 +1075,7 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors) {
                     }
                 }
             },
-        contentPadding = PaddingValues(vertical = 120.dp),
+        contentPadding = PaddingValues(vertical = if (compact) 40.dp else 120.dp),
         // 26.11.49：不同歌词行之间的 18dp 保持原样，只改同一句折行行距
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
@@ -1142,6 +1264,7 @@ private fun QueuePane(
     vm: MainViewModel,
     s: Song?,
     onSmallCover: (Float, Float, Float) -> Unit,
+    compact: Boolean = false,
 ) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
@@ -1226,7 +1349,7 @@ private fun QueuePane(
                 Box(Modifier.fillMaxWidth().height((0.5f).dp).padding(start = 60.dp).background(go.separator))
             }
         }
-        PlayerBottomBar(vm, go)
+        PlayerBottomBar(vm, go, compact)
         Spacer(Modifier.height(12.dp))
     }
 }

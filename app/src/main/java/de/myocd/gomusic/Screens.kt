@@ -2045,6 +2045,8 @@ fun SimpleSeekBar(
     // 若 onSeek 在前、modifier 在后，SimpleSeekBar(a, b) { ... } 里的
     // lambda 会被当成 modifier，编译报类型不符 + 缺少 onSeek
     modifier: Modifier = Modifier,
+    /** 26.11.53：进度条颜色可由调用方指定；播放器传与按钮一致的对比色 */
+    color: Color = Color.White,
     onSeek: (Long) -> Unit,
 ) {
     var drag by remember { mutableStateOf<Float?>(null) }
@@ -2072,14 +2074,14 @@ fun SimpleSeekBar(
             },
         contentAlignment = Alignment.CenterStart,
     ) {
-        Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.22f), CircleShape))
-        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(3.dp).background(Color.White, CircleShape))
+        Box(Modifier.fillMaxWidth().height(3.dp).background(color.copy(alpha = 0.22f), CircleShape))
+        Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).height(3.dp).background(color, CircleShape))
         // 拖动时显示圆点，方便对准
         Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
             Box(
                 Modifier.size(if (drag != null) 12.dp else 8.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = if (drag != null) 1f else 0.75f)),
+                    .background(color.copy(alpha = if (drag != null) 1f else 0.75f)),
             )
         }
     }

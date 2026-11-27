@@ -22,8 +22,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,6 +38,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -203,6 +207,50 @@ private fun CenteredHint(go: GoColors, title: String, sub: String?) {
  * 26.11.64：输入态。零网络请求，打字立刻看到本机曲库匹配；
  * 顶部一句「按回车搜索全网」明确告诉用户三路网络搜索要回车才发。
  */
+/**
+ * 26.11.65：搜索列表滑到底自动请求下一页。
+ *
+ * 用 visibleItemsInfo 判断，不碰 isScrollInProgress（它对程序滚动也返回 true，
+ * 之前歌词自动跟随就是被这个坑过）。LaunchedEffect 以布尔值为 key：
+ * 新一页回来后列表变长 → false，用户再滑到底 → true，自然触发下一轮。
+ */
+@Composable
+private fun rememberSearchListState(vm: MainViewModel): LazyListState {
+    val state = rememberLazyListState()
+    val atBottom by remember(vm) {
+        derivedStateOf {
+            val info = state.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount > 0 && last >= info.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(atBottom) {
+        if (atBottom) vm.loadMoreSearch()
+    }
+    return state
+}
+
+/** 底部状态行：自动加载之外的点击兜底（内容不足一屏时尤其有用） */
+@Composable
+private fun SearchFooter(vm: MainViewModel, go: GoColors) {
+    val can = vm.searchCanLoadMore()
+    Box(
+        Modifier.fillMaxWidth().padding(vertical = 16.dp)
+            .clickable(enabled = can && !vm.searchMoreLoading) { vm.loadMoreSearch() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            when {
+                vm.searchMoreLoading -> "正在加载更多…"
+                can -> "加载更多"
+                else -> "没有更多了"
+            },
+            fontSize = 12.sp,
+            color = go.muted,
+        )
+    }
+}
+
 @Composable
 private fun PendingResults(
     vm: MainViewModel,
@@ -283,6 +331,7 @@ private fun MixedResults(
 ) {
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = rememberSearchListState(vm),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
         item { SectionTitle(go, "最佳匹配") }
@@ -311,7 +360,8 @@ private fun MixedResults(
         }
         if (songs.isNotEmpty()) {
             item { SectionTitle(go, "歌曲", "查看全部") { vm.chooseSearchFilter(3) } }
-            items(songs.take(6)) { s -> SongRow(vm, go, s) }
+            // 26.11.65：不再固定 take(6)，翻页新到的歌曲要能直接看见
+            items(songs, key = { it.ssid }) { s -> SongRow(vm, go, s) }
         }
         if (artists.isNotEmpty()) {
             item { SectionTitle(go, "艺人") }
@@ -321,6 +371,7 @@ private fun MixedResults(
             item { SectionTitle(go, "专辑") }
             item { AlbumRow(vm, go, albums) }
         }
+        item { SearchFooter(vm, go) }
     }
 }
 
@@ -418,6 +469,7 @@ private fun ArtistResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
     if (list.isEmpty()) { CategoryEmpty(go, "没有找到相关歌手"); return }
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = rememberSearchListState(vm),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
         items(list.chunked(3)) { row ->
@@ -430,6 +482,7 @@ private fun ArtistResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
             }
             Spacer(Modifier.height(14.dp))
         }
+        item { SearchFooter(vm, go) }
     }
 }
 
@@ -454,6 +507,7 @@ private fun AlbumResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
     if (list.isEmpty()) { CategoryEmpty(go, "没有找到相关专辑"); return }
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = rememberSearchListState(vm),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
         items(list.chunked(2)) { row ->
@@ -485,6 +539,7 @@ private fun AlbumResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
             }
             Spacer(Modifier.height(14.dp))
         }
+        item { SearchFooter(vm, go) }
     }
 }
 
@@ -493,9 +548,11 @@ private fun SongResults(vm: MainViewModel, go: GoColors, list: List<Song>) {
     if (list.isEmpty()) { CategoryEmpty(go, "没有找到相关歌曲"); return }
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = rememberSearchListState(vm),
         contentPadding = PaddingValues(bottom = 32.dp),
     ) {
-        items(list) { s -> SongRow(vm, go, s) }
+        items(list, key = { it.ssid }) { s -> SongRow(vm, go, s) }
+        item { SearchFooter(vm, go) }
     }
 }
 

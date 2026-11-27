@@ -688,8 +688,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 歌词里有非中文才给翻译按钮（中文歌不需要） */
     val lyricNeedTrans: Boolean by derivedStateOf { lyricNeedsTranslation(lyricRows) }
 
-    /** 是否已经译过：自带译文，或已经翻过并写进了缓存 */
-    val lyricHasTrans: Boolean by derivedStateOf { lyricRows.any { !it.trans.isNullOrBlank() } }
+    /** 是否已经译过：逐字模型自带译文、歌词自带译文，或已经翻过并写进缓存 */
+    val lyricHasTrans: Boolean by derivedStateOf {
+        lyricRows.any { !it.trans.isNullOrBlank() } ||
+            wordLyric?.lines?.any { !it.trans.isNullOrBlank() } == true
+    }
 
     /**
      * 翻译当前歌词。
@@ -705,11 +708,88 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     val lyricTransTargets: Set<Int> by derivedStateOf { computeTransTargets(lyricRows) }
 
+    /**
+     * 26.11.65：把译文贴进逐字模型。
+     *
+     * 之前翻译只写 transCache / showTrans，而新播放器歌词页只读 wordLyric
+     * 的 line.trans，所以「翻译完成」后一个字都不显示。两套歌词模型之间
+     * 必须显式桥接一次。
+     *
+     * 对齐规则：优先按行时间戳就近匹配（yrc 与 lrc 常差 20~30ms，容差 800ms），
+     * 没有可用时间戳的纯文本歌词再按正文行顺序补齐；制作信息行不参与。
+     */
+    private fun mergeTransIntoWordLyric(res: List<String>) {
+        val w = wordLyric ?: return
+        val rows = lyricRows
+        val pairs = res.mapIndexedNotNull { k, v ->
+            val t = v.trim().takeIf { it.isNotEmpty() } ?: return@mapIndexedNotNull null
+            k to t
+        }
+        if (pairs.isEmpty()) return
+        val body = w.lines.indices.filter {
+            !w.lines[it].meta && w.lines[it].trans.isNullOrBlank()
+        }
+        if (body.isEmpty()) return
+        val used = BooleanArray(pairs.size)
+        val assign = HashMap<Int, String>()
+        // 1) 时间戳就近匹配
+        body.forEach { pos ->
+            val line = w.lines[pos]
+            if (line.startMs < 0) return@forEach
+            var bestJ = -1
+            var bestD = Long.MAX_VALUE
+            pairs.forEachIndexed { j, (k, _) ->
+                if (used[j]) return@forEachIndexed
+                val t = rows.getOrNull(k)?.timeMs ?: -1
+                if (t < 0) return@forEachIndexed
+                val d = kotlin.math.abs(t - line.startMs)
+                if (d < bestD) { bestD = d; bestJ = j }
+            }
+            if (bestJ >= 0 && bestD <= 800L) {
+                used[bestJ] = true
+                assign[pos] = pairs[bestJ].second
+            }
+        }
+        // 2) 剩下按正文行顺序补齐（纯文本歌词 / 时间戳对不上时）
+        var j = 0
+        body.forEach { pos ->
+            if (assign.containsKey(pos)) return@forEach
+            while (j < pairs.size && used[j]) j++
+            if (j < pairs.size) {
+                used[j] = true
+                assign[pos] = pairs[j].second
+            }
+        }
+        if (assign.isEmpty()) return
+        // 不覆盖 yrc 自带的译文（ytlrc / tlyric），它比机翻更准
+        wordLyric = w.copy(
+            lines = w.lines.mapIndexed { i, l ->
+                val t = assign[i] ?: return@mapIndexed l
+                if (!l.trans.isNullOrBlank()) l else l.copy(trans = t)
+            },
+            hasTranslation = true,
+        )
+    }
+
+    /**
+     * 26.11.65：所有歌词来源统一从这里装进逐字模型。
+     * 翻译结果已经持久化在 transCache，切歌回来 / 重开应用后 wordLyric 是重新
+     * 解析的，必须把缓存译文重新贴一次，否则「翻译完下次又不显示」。
+     */
+    private fun installWordLyric(w: WordLyric?, id: String, lrc: String) {
+        wordLyric = w ?: WordLyricParser.parse(lrc = lrc)
+        val cached = transCache[id]
+        if (!cached.isNullOrEmpty() && cached.any { it.isNotBlank() }) {
+            mergeTransIntoWordLyric(cached)
+        }
+    }
+
     fun translateLyric() {
         val rows = lyricRows
         val id = curSsid ?: return
-        if (rows.isEmpty()) { toast("暂无歌词"); return }
-        if (rows.any { !it.trans.isNullOrBlank() }) { showTrans = !showTrans; return }
+        if (rows.isEmpty() && wordLyric == null) { toast("暂无歌词"); return }
+        // 已经有译文（自带或译过）：按钮变成显示开关，不再重复请求
+        if (lyricHasTrans) { showTrans = !showTrans; return }
         if (transLoading) return
         // 只翻译正文段里含外文的行；纯中文行留空，不显示译文
         val order = lyricTransTargets.sorted()
@@ -726,6 +806,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             prefs.lyricTrans = transCache
             // 翻的过程中可能已经切歌了：缓存照存，但不要改动当前显示
             if (curSsid == id) {
+                mergeTransIntoWordLyric(res)
                 showTrans = true
                 toast("已翻译 ${res.count { it.isNotBlank() }}/${order.size} 句")
             }
@@ -755,6 +836,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             ) {
                 transCache = transCache + (id to lines)
                 prefs.lyricTrans = transCache
+                if (curSsid == id) mergeTransIntoWordLyric(lines)
                 NmLog.note("已从下载文件调取译文：$id")
             }
         }
@@ -2352,11 +2434,28 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 超过 2.5 秒三路仍空时给一句明确提示，不让界面一直转 */
     var searchHint by mutableStateOf(""); private set
 
+    // ---- 26.11.65：聚合搜索分页 ----
+    /** 歌曲 / 专辑 / 歌手各自是否还有下一页；做成 state 才能驱动列表底部重组 */
+    var searchHasMoreSongs by mutableStateOf(true); private set
+    var searchHasMoreAlbums by mutableStateOf(true); private set
+    var searchHasMoreArtists by mutableStateOf(true); private set
+    var searchMoreLoading by mutableStateOf(false); private set
+    /** 本机曲库混入歌曲结果的数量，算服务端 offset 时要扣掉 */
+    private var searchLocalCount = 0
+
+    fun searchCanLoadMore(filter: Int = searchFilter): Boolean = when (filter) {
+        1 -> searchHasMoreArtists
+        2 -> searchHasMoreAlbums
+        else -> searchHasMoreSongs
+    }
+
     private data class SearchCacheEntry(
         val agg: Netease.Aggregate,
         val at: Long,
         /** 三路全空视为失败结果，不缓存，下次回车允许重试 */
         val complete: Boolean,
+        /** 本机曲库混入的数量，翻页时算 offset 要扣掉 */
+        val localCount: Int = 0,
     )
     private val searchCacheTtl = 10 * 60 * 1000L
     /** 按关键词缓存聚合结果（LRU 20 条）：重复回车 / 切板块都不再打网络 */
@@ -2365,17 +2464,27 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 每次回车递增：旧请求即便晚到也不许覆盖新关键词的结果 */
     private var searchSeq = 0L
 
-    private fun readAggregateCache(k: String): Netease.Aggregate? = synchronized(aggregateCache) {
+    private fun readAggregateCache(k: String): SearchCacheEntry? = synchronized(aggregateCache) {
         val e = aggregateCache[k] ?: return null
         if (!e.complete || System.currentTimeMillis() - e.at > searchCacheTtl) {
             aggregateCache.remove(k)
             null
-        } else e.agg
+        } else e
     }
     private fun putAggregateCache(k: String, v: Netease.Aggregate) = synchronized(aggregateCache) {
         val ok = v.songs.isNotEmpty() || v.albums.isNotEmpty() || v.artists.isNotEmpty()
-        aggregateCache[k] = SearchCacheEntry(v, System.currentTimeMillis(), ok)
+        aggregateCache[k] = SearchCacheEntry(
+            v, System.currentTimeMillis(), ok, searchLocalCount,
+        )
         while (aggregateCache.size > 20) aggregateCache.remove(aggregateCache.keys.first())
+    }
+
+    private fun resetSearchPages() {
+        searchHasMoreSongs = true
+        searchHasMoreAlbums = true
+        searchHasMoreArtists = true
+        searchMoreLoading = false
+        searchLocalCount = 0
     }
 
     /** type=10 / 100 返回空时，用已经拿到的歌曲在本地聚合，零额外请求 */
@@ -2419,6 +2528,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         searchJob?.cancel(); searchJob = null
         searchBusy = false
         searchHint = ""
+        resetSearchPages()
         if (q.isBlank()) {
             searchPending = false
             localPreview = emptyList()
@@ -2441,14 +2551,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
         recordSearch(k)
         searchFilter = 0
-        readAggregateCache(k)?.let {
+        resetSearchPages()
+        readAggregateCache(k)?.let { e ->
             searchJob?.cancel(); searchJob = null
-            aggregate = it; searchBusy = false; searchHint = ""
+            aggregate = e.agg
+            searchLocalCount = e.localCount
+            searchBusy = false; searchHint = ""
             return
         }
 
         // 本机曲库先亮，不等网络；断网或接口失败时歌曲板块仍有内容
         val local = localMatch(k)
+        searchLocalCount = local.size
         aggregate = Netease.Aggregate(local, emptyList(), emptyList())
         searchBusy = true
         searchHint = ""
@@ -2519,6 +2633,95 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             } else if (seq == searchSeq) {
                 searchBusy = false
             }
+        }
+    }
+
+    private fun groupKey(g: Group): String =
+        if (g.nmId > 0) "nm${g.nmId}" else "loc${g.title}"
+
+    /**
+     * 26.11.65：聚合搜索页触底翻页。
+     *
+     * 旧 loadMoreNetease() 只服务四个旧 Tab 的 nmSongs / nmAlbums / nmArtists，
+     * 新搜索页读的是 aggregate，UI 里从来没人调用过任何翻页函数 ——
+     * 所以滑到底永远不会加载下一页。这里按当前选中板块补对应那一类。
+     *
+     * offset 直接由当前结果数推导（首页歌曲 20 条、专辑/歌手 10 条），
+     * 缓存命中后也能接着翻；本机曲库混入歌曲结果的部分要扣掉。
+     */
+    fun loadMoreSearch() {
+        val k = query.trim()
+        val cur = aggregate ?: return
+        if (k.isBlank() || searchMoreLoading || searchBusy) return
+        val filter = searchFilter
+        if (!searchCanLoadMore(filter)) return
+        // 按当前板块只补对应那一类：综合 / 歌曲补歌曲，专辑补专辑，歌手补歌手
+        val type = when (filter) {
+            1 -> 100
+            2 -> 10
+            else -> 1
+        }
+        val off = when (type) {
+            10 -> cur.albums.size
+            100 -> cur.artists.size
+            else -> (cur.songs.size - searchLocalCount).coerceAtLeast(0)
+        }
+        val seq = searchSeq
+        searchMoreLoading = true
+        viewModelScope.launch {
+            try {
+                // 异步可取消的搜索专用通道；不做详情补全、不做二次兜底
+                val page = withContext(Dispatchers.IO) {
+                    try {
+                        Netease.searchPage(k, type, NM_PAGE_SIZE, off)
+                    } catch (e: Throwable) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        null
+                    }
+                }
+                if (seq != searchSeq) return@launch
+                val now = aggregate ?: cur
+                if (page == null || !page.ok) {
+                    stopMore(type)
+                    return@launch
+                }
+                when (type) {
+                    10 -> {
+                        val seen = now.albums.map { groupKey(it) }.toHashSet()
+                        val real = page.albums.filter { groupKey(it) !in seen }
+                        aggregate = now.copy(albums = now.albums + real)
+                        searchHasMoreAlbums = page.size >= NM_PAGE_SIZE && real.isNotEmpty()
+                    }
+                    100 -> {
+                        val seen = now.artists.map { groupKey(it) }.toHashSet()
+                        val real = page.artists.filter { groupKey(it) !in seen }
+                        aggregate = now.copy(artists = now.artists + real)
+                        searchHasMoreArtists = page.size >= NM_PAGE_SIZE && real.isNotEmpty()
+                    }
+                    else -> {
+                        val seen = now.songs.map { it.ssid }.toHashSet()
+                        val real = page.songs.filter { it.ssid !in seen }
+                        aggregate = now.copy(songs = now.songs + real)
+                        searchHasMoreSongs = page.size >= NM_PAGE_SIZE && real.isNotEmpty()
+                    }
+                }
+                // 翻到的页也进缓存，切走再回来不用重翻
+                aggregate?.let { putAggregateCache(k, it) }
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                NmLog.err("loadMoreSearch($k,$off)", e)
+                stopMore(type)
+            } finally {
+                if (seq == searchSeq) searchMoreLoading = false
+            }
+        }
+    }
+
+    private fun stopMore(type: Int) {
+        when (type) {
+            10 -> searchHasMoreAlbums = false
+            100 -> searchHasMoreArtists = false
+            else -> searchHasMoreSongs = false
         }
     }
 
@@ -2818,7 +3021,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyric = lyricLines(t)
                     // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
                     // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
-                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
+                    installWordLyric(null, id, t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2897,11 +3100,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     x
                 } ?: ""
                 if (curSsid == id) {
-                    wordLyric = w
                     lyric = lyricLines(t)
-                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
-                    // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
-                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
+                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型；
+                    // 同时把持久化的接口译文重新贴回，切歌回来不会丢。
+                    installWordLyric(w, id, t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2922,7 +3124,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyric = lyricLines(t)
                     // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
                     // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
-                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
+                    installWordLyric(null, id, t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2953,7 +3155,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     lyric = lyricLines(t)
                     // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
                     // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
-                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
+                    installWordLyric(null, id, t)
                     lyricLoading = false
                     lyricSsid = id
                 }
@@ -2962,7 +3164,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val t = withContext(Dispatchers.IO) { localLyrics(id) }
                 if (curSsid == id && t.isNotBlank()) {
                     lyric = lyricLines(t)
-                    if (wordLyric == null) wordLyric = WordLyricParser.parse(lrc = t)
+                    installWordLyric(null, id, t)
                 }
                 if (curSsid == id) {
                     lyricLoading = false

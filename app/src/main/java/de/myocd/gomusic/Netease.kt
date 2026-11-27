@@ -1199,14 +1199,60 @@ object Netease {
         }
     }
 
-    private suspend fun rawSearchAsync(keywords: String, type: Int, limit: Int): JsonObject? =
+    private suspend fun rawSearchAsync(
+        keywords: String,
+        type: Int,
+        limit: Int,
+        offset: Int = 0,
+    ): JsonObject? =
         getSearch(
             "/search",
             "keywords" to keywords,
             "type" to type.toString(),
             "limit" to limit.toString(),
-            "offset" to "0",
+            "offset" to offset.toString(),
         )
+
+    /** 单个分类的一页结果：滑到底时按当前分类继续取，不重发另外两类 */
+    data class SearchPage(
+        val songs: List<Song> = emptyList(),
+        val albums: List<Group> = emptyList(),
+        val artists: List<Group> = emptyList(),
+        /** 这一页是否成功返回（超时/异常时 false，调用方据此决定是否允许再试） */
+        val ok: Boolean = false,
+    ) {
+        val size: Int get() = songs.size + albums.size + artists.size
+    }
+
+    /** type: 1 歌曲 / 10 专辑 / 100 歌手 */
+    suspend fun searchPage(
+        keywords: String,
+        type: Int,
+        limit: Int,
+        offset: Int,
+    ): SearchPage {
+        val root = rawSearchAsync(keywords, type, limit, offset) ?: return SearchPage()
+        return when (type) {
+            1 -> SearchPage(
+                songs = runCatching {
+                    searchSongs(keywords, limit, offset, enrichResult = false, rootOverride = root)
+                }.getOrDefault(emptyList()),
+                ok = true,
+            )
+            10 -> SearchPage(
+                albums = runCatching {
+                    searchAlbums(keywords, limit, offset, fallback = false, rootOverride = root)
+                }.getOrDefault(emptyList()),
+                ok = true,
+            )
+            else -> SearchPage(
+                artists = runCatching {
+                    searchArtists(keywords, limit, offset, fallback = false, rootOverride = root)
+                }.getOrDefault(emptyList()),
+                ok = true,
+            )
+        }
+    }
 
     /**
      * 26.11.63：流式聚合搜索。

@@ -1336,7 +1336,9 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                         line, framePos, go, alpha, wordTiming,
                         lyricSizeSp, lyricFamily, lyricWeight, lyricLineHeight,
                     )
-                    if (!line.trans.isNullOrBlank()) {
+                    // 26.11.65：译文要跟随「翻译歌词」按钮的显示开关。
+                    // 之前只读 line.trans，按钮切换 showTrans 在这里没人消费。
+                    if (vm.showTrans && !line.trans.isNullOrBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
                             line.trans, fontSize = 13.sp,

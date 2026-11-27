@@ -277,12 +277,12 @@ private fun PendingResults(
             }
         }
         if (local.isNotEmpty()) {
-            item { SectionTitle(go, "本机曲库") }
+            // 26.11.66：只显示曲库内容，不再加「本机曲库」这行大标题
             items(local, key = { it.ssid }) { s -> SongRow(vm, go, s) }
         } else {
             item {
                 Text(
-                    "本机曲库暂无匹配，回车可搜索歌手、专辑、歌曲",
+                    "暂无匹配，回车可搜索歌手、专辑、歌曲",
                     fontSize = 13.sp,
                     color = go.muted,
                     modifier = Modifier.padding(top = 12.dp),
@@ -332,7 +332,7 @@ private fun MixedResults(
     LazyColumn(
         Modifier.fillMaxSize(),
         state = rememberSearchListState(vm),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        contentPadding = PaddingValues(bottom = 64.dp),
     ) {
         item { SectionTitle(go, "最佳匹配") }
         item {
@@ -340,19 +340,23 @@ private fun MixedResults(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                songs.firstOrNull()?.let { s ->
+                // 26.11.66：第一首若还没补到封面（或本机歌无图），
+                // 往后找一张有图的，别让最佳匹配左边永远是个灰方块
+                (songs.firstOrNull { !it.coverUrl.isNullOrBlank() } ?: songs.firstOrNull())?.let { s ->
                     TopCard(
                         go, s.title, "歌曲 · ${s.artist}", s.coverUrl,
                         circle = false, play = true,
                     ) { playSong(vm, s) }
                 }
-                val second = artists.firstOrNull() ?: albums.firstOrNull()
+                val topArtist = artists.firstOrNull { !it.cover.isNullOrBlank() } ?: artists.firstOrNull()
+                val topAlbum = albums.firstOrNull { !it.cover.isNullOrBlank() } ?: albums.firstOrNull()
+                val second = topArtist ?: topAlbum
                 if (second != null) {
                     TopCard(
                         go, second.title,
-                        if (artists.firstOrNull() === second) "艺人" else "专辑 · ${second.artist.ifBlank { second.subtitle }}",
+                        if (second === topArtist) "艺人" else "专辑 · ${second.artist.ifBlank { second.subtitle }}",
                         second.cover,
-                        circle = artists.firstOrNull() === second,
+                        circle = second === topArtist,
                         play = false,
                     ) { openGroup(vm, second) }
                 }
@@ -425,7 +429,13 @@ private fun RowScope.TopCard(
 
 @Composable
 private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyRow(
+        // 26.11.66：嵌套在 LazyColumn 的 item 里时，横排高度不确定会把
+        // 头像下方的名字/副标题裁掉。给足整行高度并留上下内边距。
+        Modifier.height(126.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(vertical = 4.dp),
+    ) {
         items(list) { g ->
             Column(
                 Modifier.width(88.dp).clickable { openGroup(vm, g) },
@@ -445,7 +455,12 @@ private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
 
 @Composable
 private fun AlbumRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyRow(
+        // 26.11.66：132dp 封面 + 两行文字，给足高度避免下半部分被截断
+        Modifier.height(188.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(vertical = 4.dp),
+    ) {
         items(list) { g ->
             Column(Modifier.width(132.dp).clickable { openGroup(vm, g) }) {
                 Cover(g.cover, Modifier.size(132.dp), 12.dp, hd = true)

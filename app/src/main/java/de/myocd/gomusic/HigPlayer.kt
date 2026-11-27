@@ -1330,7 +1330,13 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                     },
             ) {
                 if (line.meta) {
-                    Text(line.text, fontSize = 12.sp, color = go.muted.copy(alpha = 0.6f))
+                    // 26.11.66：监制栏（作词/作曲/编曲/制作人）固定 12sp，
+                    // 调小歌词字号时它一动不动。改成按歌词字号等比缩放并留上下限。
+                    Text(
+                        line.text,
+                        fontSize = (lyricSizeSp * 0.46f).coerceIn(10f, 16f).sp,
+                        color = go.muted.copy(alpha = 0.6f),
+                    )
                 } else {
                     WordLineText(
                         line, framePos, go, alpha, wordTiming,
@@ -1341,14 +1347,16 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                     if (vm.showTrans && !line.trans.isNullOrBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            line.trans, fontSize = 13.sp,
+                            line.trans,
+                            fontSize = (lyricSizeSp * 0.50f).coerceIn(10f, 18f).sp,
                             color = go.muted.copy(alpha = alpha),
                         )
                     }
                     if (!line.roman.isNullOrBlank()) {
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            line.roman, fontSize = 12.sp,
+                            line.roman,
+                            fontSize = (lyricSizeSp * 0.42f).coerceIn(9f, 15f).sp,
                             color = go.muted.copy(alpha = alpha * 0.8f),
                         )
                     }

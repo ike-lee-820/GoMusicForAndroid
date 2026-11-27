@@ -10,7 +10,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.ConnectionPool
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
 import java.net.URLEncoder
@@ -1795,6 +1798,109 @@ object Netease {
         val ok = r.code() == 200
         NmLog.note("歌单改名 pid=$pid -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
         return ok
+    }
+
+    // -------------------------------------------------------------------
+    // 26.11.66：云端歌单完整同步
+    //
+    // 所有写接口都复用 get()：它已经自动带 cookie、timestamp、randomCNIP
+    // 与 unblock，/playlist/tracks 要求的 timestamp 不需要额外拼。
+    // -------------------------------------------------------------------
+
+    /** 新建云端歌单，返回新歌单 id；失败返回 0 */
+    fun playlistCreate(name: String): Long {
+        if (name.isBlank()) return 0L
+        val r = get("/playlist/create", "name" to name)
+        if (r.code() != 200) {
+            NmLog.note("新建云端歌单失败 code=${r.code()}")
+            return 0L
+        }
+        val v = r.obj("playlist")?.let { idOf(it) }
+            ?: r.obj("data")?.let { idOf(it) }
+            ?: idOf(r)
+        NmLog.note("新建云端歌单「$name」-> id=$v")
+        return v
+    }
+
+    /** 删除云端歌单（id 可多个，这里一次删一个） */
+    fun playlistDelete(pid: Long): Boolean {
+        if (pid <= 0L) return false
+        val r = get("/playlist/delete", "id" to pid.toString())
+        val ok = r.code() == 200
+        NmLog.note("删除云端歌单 pid=$pid -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 全量更新歌单（描述 / 标签为空时只改名，避免把云端原有信息清掉） */
+    fun playlistUpdate(pid: Long, name: String, desc: String = "", tags: String = ""): Boolean {
+        if (pid <= 0L || name.isBlank()) return false
+        val params = ArrayList<Pair<String, String>>()
+        params += "id" to pid.toString()
+        params += "name" to name
+        if (desc.isNotBlank()) params += "desc" to desc
+        if (tags.isNotBlank()) params += "tags" to tags
+        val r = get("/playlist/update", *params.toTypedArray())
+        return r.code() == 200
+    }
+
+    /** 调整云端「歌单列表」顺序：ids 为全部云端歌单 id 的目标顺序 */
+    fun playlistOrder(ids: List<Long>): Boolean {
+        val clean = ids.filter { it > 0L }
+        if (clean.isEmpty()) return false
+        val r = get("/playlist/order/update", "ids" to clean.joinToString(",", "[", "]"))
+        val ok = r.code() == 200
+        NmLog.note("云端歌单排序 ${clean.size} 个 -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /** 调整云端歌单内「歌曲」顺序：ids 为该歌单全部歌曲 id 的目标顺序 */
+    fun songOrder(pid: Long, ids: List<Long>): Boolean {
+        val clean = ids.filter { it > 0L }
+        if (pid <= 0L || clean.isEmpty()) return false
+        val r = get(
+            "/song/order/update",
+            "pid" to pid.toString(),
+            "ids" to clean.joinToString(",", "[", "]"),
+        )
+        val ok = r.code() == 200
+        NmLog.note("云端歌曲排序 pid=$pid ${clean.size} 首 -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
+    /**
+     * 上传歌单封面：multipart/form-data，字段名 imgFile。
+     * 参考 api-enhanced/public/playlist_cover_update.html。
+     */
+    fun playlistCover(pid: Long, bytes: ByteArray, mime: String = "image/jpeg"): Boolean {
+        if (pid <= 0L || bytes.isEmpty()) return false
+        val type = runCatching { mime.toMediaType() }
+            .getOrDefault("image/jpeg".toMediaType())
+        val fileBody = bytes.toRequestBody(type)
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("imgFile", "cover.jpg", fileBody)
+            .build()
+        val sb = StringBuilder(NM_BASE)
+            .append("/playlist/cover/update?id=").append(pid)
+            .append("&imgSize=300&imgX=0&imgY=0")
+            .append("&timestamp=").append(System.currentTimeMillis())
+        if (cookie.isNotBlank()) sb.append("&cookie=").append(encCookie(cookie))
+        val url = sb.toString()
+        return try {
+            val req = Request.Builder().url(url).post(body).build()
+            Api.client.newCall(req).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.req(url)
+                NmLog.res(url, r.code, t)
+                val el = runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject
+                val ok = r.isSuccessful && (el == null || el.code() == 200 || el.code() == -1)
+                NmLog.note("上传歌单封面 pid=$pid -> ${if (ok) "成功" else "失败 HTTP ${r.code}"}")
+                ok
+            }
+        } catch (e: Exception) {
+            NmLog.err(url, e)
+            false
+        }
     }
 
     /** 用 cookie 换取账号昵称；失败返回 null 表示登录态失效 */

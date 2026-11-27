@@ -968,6 +968,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             offline = false
             loading = false
             pendingLink?.let { pendingLink = null; handleLink(it) }
+            // 26.11.66：进入应用即静默同步网易云歌单（登录过才跑，一次会话只跑一次）
+            autoSyncNmPlaylists()
         }
     }
 
@@ -1011,6 +1013,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             showNmLogin = true
         } else {
             refreshNmAccount()
+            autoSyncDone = false
+            autoSyncNmPlaylists()
         }
     }
 
@@ -1030,6 +1034,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.nmCookie = Netease.cookie
         homeLoaded = false
         showNmLogin = false
+        // 26.11.66：启动时若还没登录，那次自动同步没跑；登录成功后立刻补一次
+        autoSyncDone = false
+        autoSyncNmPlaylists()
         viewModelScope.launch(Dispatchers.IO) {
             val n = name?.takeIf { it.isNotBlank() }
                 ?: runCatching { Netease.accountName() }.getOrNull()
@@ -2351,13 +2358,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             val line = withTimeoutOrNull(2_500L) {
                 runCatching {
-                    val lrc = Prefetcher.warmLyric(nid).lrc
-                    lrc.lineSequence()
-                        .map { it.replace(Regex("""\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]"""), "").trim() }
-                        .firstOrNull {
-                            it.isNotBlank() &&
-                                !it.startsWith("作词") && !it.startsWith("作曲") &&
-                                !it.startsWith("编曲") && !it.startsWith("制作人")
+                    val r = Prefetcher.warmLyric(nid)
+                    // 26.11.66：高级逐字歌词的 lrc 开头是 yrc 的 JSON 制作信息
+                    // （{"t":0,"c":[{"tx":"作词: "}…]}），按行取会直接把 JSON 原样
+                    // 显示成「歌词」。优先用逐字模型里 meta=false 的正文行。
+                    val fromWord = r.word.lines.firstOrNull { l ->
+                        !l.meta && l.text.isNotBlank() && !l.text.trim().startsWith("{")
+                    }?.text?.trim()
+                    fromWord ?: r.lrc.lineSequence()
+                        .map {
+                            it.replace(
+                                Regex("""\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]"""), ""
+                            ).trim()
+                        }
+                        .firstOrNull { t ->
+                            t.isNotBlank() &&
+                                !t.startsWith("{") && !t.contains("\"tx\"") &&
+                                !t.startsWith("作词") && !t.startsWith("作曲") &&
+                                !t.startsWith("编曲") && !t.startsWith("制作人")
                         }
                 }.getOrNull()
             }
@@ -2601,6 +2619,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         if (newArtists.isEmpty()) newArtists = fallbackArtists
                     }
                     aggregate = Netease.Aggregate(newSongs, newAlbums, newArtists)
+                    // 26.11.66：歌曲一路回来就后台补封面，不占首屏、不串行等详情。
+                    // /search 的 al.picUrl 经常为空，enrichResult=false 时更是整批没图，
+                    // 这才是「最佳匹配和后续结果都不显示图片」的根因。
+                    if (songs != null) enrichSearchCovers(seq, k)
                     if (songs?.isNotEmpty() == true || albums?.isNotEmpty() == true ||
                         artists?.isNotEmpty() == true
                     ) {
@@ -2613,26 +2635,67 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             val finalAgg = aggregate
             if (seq == searchSeq && result != null && finalAgg != null) {
                 putAggregateCache(k, finalAgg)
-                // 封面补全放到后台，不占首屏时间；失败静默沿用搜索结果
-                val need = finalAgg.songs.filter { it.coverUrl.isNullOrBlank() && it.nmId > 0 }.take(20)
-                if (need.isNotEmpty()) {
-                    launch(Dispatchers.IO) {
-                        val filled = runCatching { Netease.enrich(need) }.getOrDefault(need)
-                        withContext(Dispatchers.Main) {
-                            if (seq != searchSeq) return@withContext
-                            aggregate?.let { cur ->
-                                aggregate = cur.copy(songs = cur.songs.map { s ->
-                                    filled.firstOrNull { f -> f.ssid == s.ssid } ?: s
-                                })
-                            }
-                        }
-                    }
-                }
+                enrichSearchCovers(seq, k)
                 searchBusy = false
                 searchHint = ""
             } else if (seq == searchSeq) {
                 searchBusy = false
             }
+        }
+    }
+
+    /**
+     * 26.11.66：搜索结果的封面统一在后台补。
+     *
+     * 三路搜索为了提速都关掉了详情补全（enrichResult=false），/search 的
+     * al.picUrl 又经常是空串，于是综合页「最佳匹配」和翻页回来的新歌
+     * 全是灰占位。这里只挑缺封面的网易云歌曲，一次 /song/detail 批量补齐，
+     * 完全异步、不进首屏关键链；补完顺带把本地兜底生成的专辑/歌手卡
+     * 的封面也填上。
+     */
+    private val coverInFlight = HashSet<Long>()
+
+    private fun enrichSearchCovers(seq: Long, k: String) {
+        val snapshot = aggregate ?: return
+        val need = snapshot.songs
+            .filter { it.coverUrl.isNullOrBlank() && it.nmId > 0 && it.nmId !in coverInFlight }
+            .take(40)
+        if (need.isEmpty()) return
+        need.forEach { coverInFlight += it.nmId }
+        viewModelScope.launch {
+            val filled = withContext(Dispatchers.IO) {
+                runCatching { Netease.enrich(need) }.getOrDefault(need)
+            }
+            need.forEach { coverInFlight -= it.nmId }
+            if (seq != searchSeq) return@launch
+            val cur = aggregate ?: return@launch
+            val byId = filled.associateBy { it.ssid }
+            val songs = cur.songs.map { s ->
+                val f = byId[s.ssid] ?: return@map s
+                if (!s.coverUrl.isNullOrBlank()) s
+                else s.copy(
+                    coverUrl = f.coverUrl ?: s.coverUrl,
+                    album = f.album.takeIf { it.isNotBlank() } ?: s.album,
+                    artist = f.artist.takeIf { it.isNotBlank() } ?: s.artist,
+                    nmAlbumId = f.nmAlbumId.takeIf { it > 0 } ?: s.nmAlbumId,
+                    nmArtistId = f.nmArtistId.takeIf { it > 0 } ?: s.nmArtistId,
+                    mvId = f.mvId.takeIf { it > 0 } ?: s.mvId,
+                )
+            }
+            // 兜底聚合出来的专辑/歌手没有封面时用补好的歌曲按名字回填
+            val (fa, fr) = groupsFromSongs(songs)
+            val albumCovers = fa.associateBy { it.title }
+            val artistCovers = fr.associateBy { it.title }
+            val albums = cur.albums.map { g ->
+                if (!g.cover.isNullOrBlank()) g
+                else albumCovers[g.title]?.cover?.let { g.copy(cover = it) } ?: g
+            }
+            val artists = cur.artists.map { g ->
+                if (!g.cover.isNullOrBlank()) g
+                else artistCovers[g.title]?.cover?.let { g.copy(cover = it) } ?: g
+            }
+            aggregate = Netease.Aggregate(songs, albums, artists)
+            putAggregateCache(k, aggregate!!)
         }
     }
 
@@ -2707,6 +2770,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 // 翻到的页也进缓存，切走再回来不用重翻
                 aggregate?.let { putAggregateCache(k, it) }
+                // 26.11.66：翻页走的是 enrichResult=false 快路径，新歌没有封面，
+                // 同样在后台补一次，别让「后续结果」全是灰图。
+                enrichSearchCovers(seq, k)
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 NmLog.err("loadMoreSearch($k,$off)", e)
@@ -3220,7 +3286,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         keepForPlaylist(songsByIds(ids))
         val p = Playlist(UUID.randomUUID().toString(), name.trim(), ids, cover)
         savePl(playlists + p)
+        uploadLocalPlaylist(p.id)
         return p
+    }
+
+    /** 26.11.66：本地新建歌单 → 云端 create + 加歌 + 回填 nmId */
+    private fun uploadLocalPlaylist(localId: String) {
+        if (!canSyncCloud()) return
+        val p = playlists.firstOrNull { it.id == localId } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val pid = runCatching { Netease.playlistCreate(cloudName(p)) }.getOrDefault(0L)
+            if (pid <= 0L) return@launch
+            val nids = p.songs.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }
+            if (nids.isNotEmpty()) runCatching { Netease.playlistAdd(pid, nids) }
+            withContext(Dispatchers.Main) {
+                savePl(playlists.map {
+                    if (it.id == localId && it.nmId <= 0L)
+                        it.copy(nmId = pid, cloudBase = cloudName(it)) else it
+                })
+            }
+        }
     }
 
     /**
@@ -3241,17 +3326,37 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 同步状态：true 表示正在同步，界面上给个转圈 */
     var nmSyncing by mutableStateOf(false); private set
+    private var autoSyncDone = false
+
+    /** 与本地歌单重名时，云端那份展示名后面加的标签 */
+    private val CLOUD_TAG = " 云"
+
+    /** 云端原始名：带「云」标签的本地展示名要还原后再回写 / 比对 */
+    private fun cloudName(p: Playlist): String = p.cloudBase ?: p.name
+
+    private fun canSyncCloud(): Boolean = nmOn && prefs.nmCookie.isNotBlank()
+
+    /** 进入应用时静默同步一次；手动按钮仍走 syncNmPlaylists() */
+    private fun autoSyncNmPlaylists() {
+        if (!canSyncCloud() || autoSyncDone) return
+        autoSyncDone = true
+        syncNmPlaylists(quiet = true)
+    }
 
     /**
-     * 把「我的网易云歌单」同步到本地歌单。
+     * 26.11.66：网易云歌单双向同步。
      *
-     * 按 nmId 匹配：本地已有对应歌单就更新歌曲与名字，没有才新建。
-     * 不做删除 —— 网易云那边删掉的歌单，本地保留（万一只是接口没返回，
-     * 直接删掉用户的本地歌单代价太大）。
+     * ① 取云端自建歌单；② 本地没有的下载下来，与本地歌单重名的那份
+     * 在名字后加「云」标签，并用 cloudBase 记住云端原名（下次同步靠 nmId
+     * 识别，不会反复加标签，也不会把「云」字传回云端）；
+     * ③ 本地自建歌单反向在云端 create 并回填 nmId，之后所有改动都能回写；
+     * ④ 顺序也同步到云端。
+     *
+     * 云端删掉的歌单本地仍保留：接口偶发漏返回时直接删用户本地歌单代价太大。
      */
-    fun syncNmPlaylists() {
-        if (!nmOn) { toast("请先开启「接入网易云曲库」"); return }
-        if (prefs.nmCookie.isBlank()) { toast("请先登录网易云"); return }
+    fun syncNmPlaylists(quiet: Boolean = false) {
+        if (!nmOn) { if (!quiet) toast("请先开启「接入网易云曲库」"); return }
+        if (prefs.nmCookie.isBlank()) { if (!quiet) toast("请先登录网易云"); return }
         if (nmSyncing) return
         nmSyncing = true
         viewModelScope.launch(Dispatchers.IO) {
@@ -3262,47 +3367,105 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     if (uid > 0L) prefs.nmUid = uid
                 }
                 if (uid <= 0L) {
-                    withContext(Dispatchers.Main) { toast("取不到网易云 uid，请重新登录后再同步") }
+                    withContext(Dispatchers.Main) {
+                        nmSyncing = false
+                        if (!quiet) toast("取不到网易云 uid，请重新登录后再同步")
+                    }
                     return@launch
                 }
                 val mine = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
-                if (mine.isEmpty()) {
-                    withContext(Dispatchers.Main) { toast("没有取到网易云歌单（可能未登录或没有自建歌单）") }
-                    return@launch
-                }
+                val local = withContext(Dispatchers.Main) { playlists.toMutableList() }
+                val all = ArrayList<Song>()
                 var added = 0
                 var updated = 0
-                var cur = playlists.toMutableList()
-                val all = ArrayList<Song>()
                 for (g in mine) {
                     val songs = runCatching { Netease.songsOf("playlist", g.nmId, 1000) }
                         .getOrDefault(emptyList())
-                    if (songs.isEmpty()) continue
                     all.addAll(songs)
                     val ids = songs.map { it.ssid }
-                    val at = cur.indexOfFirst { it.nmId == g.nmId }
+                    val at = local.indexOfFirst { it.nmId == g.nmId && g.nmId > 0L }
                     if (at >= 0) {
-                        cur[at] = cur[at].copy(name = g.title, songs = ids, cover = g.cover ?: cur[at].cover)
+                        val old = local[at]
+                        val name = if (old.cloudBase != null && old.name.endsWith(CLOUD_TAG))
+                            g.title + CLOUD_TAG else g.title
+                        local[at] = old.copy(
+                            name = name, cloudBase = g.title, songs = ids,
+                            cover = g.cover ?: old.cover,
+                        )
                         updated++
                     } else {
-                        cur.add(Playlist(UUID.randomUUID().toString(), g.title, ids, g.cover, g.nmId))
+                        val clash = local.any {
+                            it.nmId != g.nmId &&
+                                (it.name == g.title || it.cloudBase == g.title)
+                        }
+                        val name = if (clash) g.title + CLOUD_TAG else g.title
+                        local.add(
+                            Playlist(
+                                UUID.randomUUID().toString(), name, ids,
+                                g.cover, g.nmId, g.title,
+                            )
+                        )
                         added++
                     }
                 }
-                withContext(Dispatchers.Main) {
-                    // 记进快照：歌单里存的是 ssid，不记住的话打开歌单是空的。
-                    // 统一放主线程做 —— snapshots 是界面状态，IO 线程改不安全
-                    rememberSongs(all)
-                    savePl(cur)
-                    nmSyncing = false
-                    toast("同步完成：新增 $added 个，更新 $updated 个")
+                // 本地上传：本地自建（nmId=0）的歌单在云端建一份并回填 id
+                var uploaded = 0
+                for (i in local.indices) {
+                    val pl = local[i]
+                    if (pl.nmId > 0L) continue
+                    val pid = runCatching { Netease.playlistCreate(cloudName(pl)) }
+                        .getOrDefault(0L)
+                    if (pid <= 0L) continue
+                    val nids = pl.songs.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }
+                    if (nids.isNotEmpty()) runCatching { Netease.playlistAdd(pid, nids) }
+                    local[i] = pl.copy(nmId = pid, cloudBase = cloudName(pl))
+                    uploaded++
                 }
+                withContext(Dispatchers.Main) {
+                    rememberSongs(all)
+                    savePl(local)
+                    nmSyncing = false
+                    if (!quiet) toast("同步完成：下载 $added 新 / $updated 更新，上传 $uploaded 个")
+                }
+                val ids = local.mapNotNull { it.nmId.takeIf { v -> v > 0L } }
+                if (ids.size >= 2) runCatching { Netease.playlistOrder(ids) }
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     nmSyncing = false
-                    toast("同步失败：${e.message ?: "未知错误"}")
+                    if (!quiet) toast("同步失败：${e.message ?: "未知错误"}")
                 }
             }
+        }
+    }
+
+    /** 歌单顺序变更后回写云端（ids 为全部云端歌单的目标顺序） */
+    private fun syncPlaylistOrder() {
+        if (!canSyncCloud()) return
+        val ids = playlists.mapNotNull { it.nmId.takeIf { v -> v > 0L } }
+        if (ids.size < 2) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { Netease.playlistOrder(ids) }
+        }
+    }
+
+    /** 歌单整体上移 / 下移，并同步云端顺序 */
+    fun movePlaylist(id: String, from: Int, to: Int) {
+        val l = playlists.toMutableList()
+        if (from !in l.indices || to !in l.indices || from == to) return
+        val x = l.removeAt(from)
+        l.add(to, x)
+        savePl(l)
+        syncPlaylistOrder()
+    }
+
+    /** 更换歌单封面：本地先显示，再 multipart 上传云端 */
+    fun setPlaylistCover(id: String, localUri: String, bytes: ByteArray?) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        savePl(playlists.map { if (it.id == id) it.copy(cover = localUri) else it })
+        if (bytes == null || p.nmId <= 0L || !canSyncCloud()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runCatching { Netease.playlistCover(p.nmId, bytes) }.getOrDefault(false)
+            withContext(Dispatchers.Main) { if (!ok) toast("云端封面上传未成功（本地已显示）") }
         }
     }
 
@@ -3403,27 +3566,48 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun renamePlaylist(id: String, name: String) {
         val p = playlists.firstOrNull { it.id == id } ?: return
         val n = name.trim()
-        savePl(playlists.map { if (it.id == id) it.copy(name = n) else it })
-        // 网易云歌单：改名回写云端
-        if (p.nmId > 0L && prefs.nmCookie.isNotBlank()) {
+        // 带「云」标签的展示名还原成云端原名，标签不传回云端
+        val cloud = if (p.cloudBase != null && n.endsWith(CLOUD_TAG))
+            n.removeSuffix(CLOUD_TAG) else n
+        savePl(playlists.map {
+            if (it.id == id)
+                it.copy(name = n, cloudBase = if (it.cloudBase != null) cloud else null)
+            else it
+        })
+        if (p.nmId > 0L && canSyncCloud()) {
             viewModelScope.launch(Dispatchers.IO) {
-                val ok = runCatching { Netease.playlistRename(p.nmId, n) }.getOrDefault(false)
-                withContext(Dispatchers.Main) { if (!ok) toast("网易云歌单改名未成功（本地已改）") }
+                val ok = runCatching { Netease.playlistUpdate(p.nmId, cloud) }.getOrDefault(false)
+                withContext(Dispatchers.Main) { if (!ok) toast("云端歌单改名未成功（本地已改）") }
             }
         }
     }
 
-    fun deletePlaylist(id: String) = savePl(playlists.filter { it.id != id })
+    fun deletePlaylist(id: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        savePl(playlists.filter { it.id != id })
+        if (p.nmId > 0L && canSyncCloud()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val ok = runCatching { Netease.playlistDelete(p.nmId) }.getOrDefault(false)
+                withContext(Dispatchers.Main) { if (!ok) toast("云端歌单删除未成功（本地已删）") }
+            }
+        }
+        syncPlaylistOrder()
+    }
 
     fun movePl(id: String, from: Int, to: Int) {
-        savePl(playlists.map { p ->
-            if (p.id != id) p else {
-                val l = p.songs.toMutableList()
-                val x = l.removeAt(from)
-                l.add(to, x)
-                p.copy(songs = l)
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        val l = p.songs.toMutableList()
+        if (from !in l.indices || to !in l.indices || from == to) return
+        val x = l.removeAt(from)
+        l.add(to, x)
+        savePl(playlists.map { if (it.id == id) it.copy(songs = l) else it })
+        // 26.11.66：/song/order/update 要的是整张歌单的目标顺序，不是被移动的那一首
+        if (p.nmId > 0L && canSyncCloud()) {
+            val ids = l.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }
+            if (ids.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) {
+                runCatching { Netease.songOrder(p.nmId, ids) }
             }
-        })
+        }
     }
 
     fun removeFromPl(id: String, ssid: String) {
@@ -3439,7 +3623,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 传过去要么被忽略、要么报错，所以直接跳过。
      */
     private fun syncNmRemove(p: Playlist, ssids: List<String>) {
-        if (p.nmId <= 0L || prefs.nmCookie.isBlank()) return
+        if (p.nmId <= 0L || !canSyncCloud()) return
         val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
         if (ids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -3453,7 +3637,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 同样只同步网易云来源的歌（见 [syncNmRemove]）。
      */
     private fun syncNmAdd(p: Playlist, ssids: List<String>) {
-        if (p.nmId <= 0L || prefs.nmCookie.isBlank()) return
+        if (p.nmId <= 0L || !canSyncCloud()) return
         val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
         if (ids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {

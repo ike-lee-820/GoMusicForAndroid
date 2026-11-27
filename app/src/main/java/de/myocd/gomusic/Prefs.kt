@@ -50,6 +50,12 @@ data class Playlist(
      * 否则每次同步都会新建一份重名的歌单。
      */
     val nmId: Long = 0L,
+    /**
+     * 26.11.66：云端歌单的原始名字。
+     * 与本地歌单重名时，本地展示名会加「云」标签，但回写云端 / 下次同步
+     * 识别都要用这个原始名，不能把标签反复叠加，也不能把「云」字传到云端。
+     */
+    val cloudBase: String? = null,
 )
 
 /** 对应网页端 localStorage：play_counts / user_playlists / play_mode / quality / theme_color */

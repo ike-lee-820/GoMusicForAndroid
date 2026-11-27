@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1265,6 +1266,19 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->
             val songs = remember(p.songs, vm.songs) { vm.songsByIds(p.songs) }
             var menu by remember { mutableStateOf(false) }
+            val ctx = LocalContext.current
+            // 26.11.66：换封面走 multipart 上传云端，本地先显示选中的图
+            val coverPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.GetContent()
+            ) { uri: Uri? ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                val bytes = runCatching {
+                    ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }.getOrNull()
+                vm.setPlaylistCover(p.id, uri.toString(), bytes)
+            }
+            // list 可能被搜索词过滤，排序要用真实索引
+            val realIdx = vm.playlists.indexOfFirst { it.id == p.id }
             GroupRow(
                 p.name, "${songs.size} 首", p.cover ?: songs.firstNotNullOfOrNull { it.coverUrl },
                 onClick = { vm.stack.add(Screen.PlaylistPage(p.id)) },
@@ -1274,6 +1288,19 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                         IconBtn(Icons.Outlined.MoreVert, "更多操作") { menu = true }
                         DropdownMenu(menu, { menu = false }, Modifier.background(go.surface)) {
                             DropdownMenuItem(text = { Text("重命名", color = go.on) }, onClick = { menu = false; renaming = p })
+                            if (realIdx > 0) {
+                                DropdownMenuItem(text = { Text("上移", color = go.on) }, onClick = {
+                                    menu = false; vm.movePlaylist(p.id, realIdx, realIdx - 1)
+                                })
+                            }
+                            if (realIdx >= 0 && realIdx < vm.playlists.size - 1) {
+                                DropdownMenuItem(text = { Text("下移", color = go.on) }, onClick = {
+                                    menu = false; vm.movePlaylist(p.id, realIdx, realIdx + 1)
+                                })
+                            }
+                            DropdownMenuItem(text = { Text("更换封面", color = go.on) }, onClick = {
+                                menu = false; coverPicker.launch("image/*")
+                            })
                             DropdownMenuItem(text = { Text("删除", color = go.on) }, onClick = { menu = false; deleting = p })
                         }
                     }

@@ -86,10 +86,9 @@ fun SearchPage(vm: MainViewModel) {
             // 26.11.58：单层槽，不再套 SearchField 的第二层背景和圆角
             HigSearchBar(
                 value = vm.query,
-                onChange = {
-                    vm.query = it
-                    if (it.isEmpty()) vm.searchAll("")
-                },
+                // 26.11.64：输入只更新本机即时匹配，掐断上一轮在途请求；
+                // 不写搜索记录、不发任何网络请求。回车才一次性搜三路。
+                onChange = { vm.onQueryChange(it) },
                 placeholder = "艺人、歌曲、歌词以及更多",
                 go = go,
                 onSearch = { if (vm.query.isNotBlank()) vm.searchAll(vm.query) },
@@ -171,9 +170,11 @@ private fun SearchResults(
 ) {
     when {
         vm.query.isBlank() -> RecentSearchList(vm, go)
-        agg == null -> CenteredHint(go, "正在搜索…", null)
+        // 26.11.64：打字时就有本机曲库反馈，不再显示「正在搜索…」转圈
+        vm.searchPending -> PendingResults(vm, go, vm.query, vm.localPreview)
+        agg == null -> CenteredHint(go, "正在搜索…", vm.searchHint.takeIf { it.isNotBlank() })
         songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && vm.searchBusy ->
-            CenteredHint(go, "正在搜索…", null)
+            CenteredHint(go, vm.searchHint.takeIf { it.isNotBlank() } ?: "正在搜索…", null)
         songs.isEmpty() && albums.isEmpty() && artists.isEmpty() ->
             CenteredHint(go, "没有找到「${vm.query}」", "换个关键词试试")
         else -> when (vm.searchFilter) {
@@ -193,6 +194,51 @@ private fun CenteredHint(go: GoColors, title: String, sub: String?) {
             if (sub != null) {
                 Spacer(Modifier.height(6.dp))
                 Text(sub, fontSize = 13.sp, color = go.muted, textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
+/**
+ * 26.11.64：输入态。零网络请求，打字立刻看到本机曲库匹配；
+ * 顶部一句「按回车搜索全网」明确告诉用户三路网络搜索要回车才发。
+ */
+@Composable
+private fun PendingResults(
+    vm: MainViewModel,
+    go: GoColors,
+    query: String,
+    local: List<Song>,
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 32.dp),
+    ) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "按回车搜索「$query」",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = go.muted,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (local.isNotEmpty()) {
+            item { SectionTitle(go, "本机曲库") }
+            items(local, key = { it.ssid }) { s -> SongRow(vm, go, s) }
+        } else {
+            item {
+                Text(
+                    "本机曲库暂无匹配，回车可搜索歌手、专辑、歌曲",
+                    fontSize = 13.sp,
+                    color = go.muted,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
             }
         }
     }

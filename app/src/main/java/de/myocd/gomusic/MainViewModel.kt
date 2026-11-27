@@ -2244,7 +2244,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun putRecent(item: RecentItem) {
         val next = (listOf(item) + recentItems.filter { it.key != item.key }).take(20)
         recentItems = next
-        prefs.recentItems = next
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.recentItems = next
+        }
     }
 
     /** 从搜索结果点过一首歌：记一条带封面、副标题的行，并异步补一句歌词片段 */
@@ -2318,11 +2320,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (v.isEmpty()) return
         val next = (listOf(v) + searchHistory).distinct().take(20)
         searchHistory = next
-        prefs.searchHistory = next
         // 关键词也进实体列表，旧版升级后仍看得到搜过的词
         putRecent(
             RecentItem(key = "kw|$v", kind = "keyword", title = v, subtitle = "搜索词")
         )
+        // 26.11.64：JSON 编码 + SharedPreferences 写盘挪到 IO。
+        // 回车那一刻主线程只做状态更新，界面立刻响应。
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.searchHistory = next
+        }
     }
 
     fun clearSearchHistory() {
@@ -2339,6 +2345,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var aggregate by mutableStateOf<Netease.Aggregate?>(null); private set
     /** 26.11.63：网络还在跑时给界面一个轻状态，空屏不再被当成「没搜到」 */
     var searchBusy by mutableStateOf(false); private set
+    /** 26.11.64：正在输入、还没回车。此时零网络请求，也不显示「正在搜索…」 */
+    var searchPending by mutableStateOf(false); private set
+    /** 输入时的本机曲库即时匹配，打字就有反馈 */
+    var localPreview by mutableStateOf<List<Song>>(emptyList()); private set
+    /** 超过 2.5 秒三路仍空时给一句明确提示，不让界面一直转 */
+    var searchHint by mutableStateOf(""); private set
 
     private data class SearchCacheEntry(
         val agg: Netease.Aggregate,
@@ -2389,31 +2401,73 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return al.values.toList().take(10) to ar.values.toList().take(10)
     }
 
+    /** 本机曲库匹配：直接遍历列表，不再走 derivedStateOf 的 associateBy 建全量 Map */
+    private fun localMatch(k: String): List<Song> =
+        songs.asSequence().filter {
+            it.title.contains(k, true) || it.artist.contains(k, true) || it.album.contains(k, true)
+        }.take(20).toList()
+
+    /**
+     * 26.11.64：输入过程零网络。
+     * 旧版每敲一个字都保留上一次的大结果并随输入整页重组，还让上一轮在途请求
+     * 继续跑，打字自然发涩。现在输入即掐断在途、清空旧结果，只给本机即时匹配。
+     * 回车才按约定一次性发歌曲/歌手/专辑三路。
+     */
+    fun onQueryChange(q: String) {
+        query = q
+        ++searchSeq
+        searchJob?.cancel(); searchJob = null
+        searchBusy = false
+        searchHint = ""
+        if (q.isBlank()) {
+            searchPending = false
+            localPreview = emptyList()
+            aggregate = null
+            return
+        }
+        searchPending = true
+        localPreview = localMatch(q.trim())
+        aggregate = null
+    }
+
     fun searchAll(q: String) {
         val k = q.trim()
         val seq = ++searchSeq
+        searchPending = false
         if (k.isEmpty()) {
             searchJob?.cancel(); searchJob = null
-            aggregate = null; searchBusy = false
+            aggregate = null; searchBusy = false; searchHint = ""
             return
         }
         recordSearch(k)
         searchFilter = 0
         readAggregateCache(k)?.let {
             searchJob?.cancel(); searchJob = null
-            aggregate = it; searchBusy = false; return
+            aggregate = it; searchBusy = false; searchHint = ""
+            return
         }
 
         // 本机曲库先亮，不等网络；断网或接口失败时歌曲板块仍有内容
-        val local = songMap.values.asSequence().filter {
-            it.title.contains(k, true) || it.artist.contains(k, true) || it.album.contains(k, true)
-        }.take(20).toList()
+        val local = localMatch(k)
         aggregate = Netease.Aggregate(local, emptyList(), emptyList())
         searchBusy = true
+        searchHint = ""
 
         // 新关键词直接掐掉上一轮：旧请求不再占线程，也不会晚到覆盖新结果
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
+            // 2.5 秒仍只有本地结果就给一句提示，不让人干等一个转圈
+            launch {
+                delay(2_500L)
+                if (seq == searchSeq && searchBusy) {
+                    val cur = aggregate
+                    if (cur != null && cur.albums.isEmpty() && cur.artists.isEmpty() &&
+                        cur.songs.size <= local.size
+                    ) {
+                        searchHint = "网络较慢，仍在搜索「$k」…"
+                    }
+                }
+            }
             val result = runCatching {
                 Netease.cookie = prefs.nmCookie
                 // 三路各自异步、可真取消；每路回来立刻推给界面，不等最慢那路
@@ -2433,6 +2487,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         if (newArtists.isEmpty()) newArtists = fallbackArtists
                     }
                     aggregate = Netease.Aggregate(newSongs, newAlbums, newArtists)
+                    if (songs?.isNotEmpty() == true || albums?.isNotEmpty() == true ||
+                        artists?.isNotEmpty() == true
+                    ) {
+                        searchHint = ""
+                    }
                 }
             }.getOrNull()
 
@@ -2455,6 +2514,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         }
                     }
                 }
+                searchBusy = false
+                searchHint = ""
+            } else if (seq == searchSeq) {
                 searchBusy = false
             }
         }

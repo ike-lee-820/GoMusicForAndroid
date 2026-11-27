@@ -11,25 +11,66 @@ import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.jvm.Volatile
 
 /**
  * 网易云请求日志。
  *
  * 输出到 /storage/emulated/0/Download/gomusic/log/log_<时间戳>.txt，
- * 记录每一条网易云请求的完整 URL 与完整响应，方便排查
+ * 记录每一条网易云请求的 URL 与响应摘要，方便排查
  * 「搜不到专辑 / 播不了 / 解析失败」这类问题。
  *
  * Android 10+ 不能直接 File 写公共目录，用 MediaStore.Downloads 落到同一路径。
+ *
+ * 26.11.64：改成「有界队列 + 单线程批量落盘」。
+ * 旧版 w() 在每个 OkHttp 回调线程里同步 appendText 整个响应体（一次 /search
+ * 就有几十 KB，还要打开/关闭文件、flush），而 res() 又在 done.complete() 之前
+ * 调用 —— 等于每一路搜索结果都得先写完一次大文件才交给界面。播放、预取、
+ * 取地址同时也在抢同一个文件且无锁。这是「点了要等好几秒」最隐蔽的一层。
+ * 现在调用点只做一次无阻塞 offer，网络回调立刻返回。
  */
 object NmLog {
     private const val MAX_FILE = 4L * 1024 * 1024 // 4 MB 后停止写入
     private const val REL_DIR = "gomusic/log"
+    private const val MAX_BODY = 600             // 响应体只记摘要，不再整篇落盘
+    private const val QUEUE_CAP = 256
 
     private var stream: OutputStream? = null
     private var file: File? = null
-    private var written = 0L
-    private var enabled = false
-    private var pathText = "(未初始化)"
+    private val written = AtomicLong(0L)
+    @Volatile private var enabled = false
+    @Volatile private var pathText = "(未初始化)"
+
+    private val queue = ArrayBlockingQueue<String>(QUEUE_CAP)
+
+    /** 唯一的写线程：串行、批量 drain，避免并发写同一个文件/OutputStream */
+    private val writer = Thread({
+        while (true) {
+            val first = try {
+                queue.take()
+            } catch (e: InterruptedException) {
+                continue
+            }
+            val sb = StringBuilder(first)
+            val rest = ArrayList<String>(64)
+            queue.drainTo(rest, 64)
+            rest.forEach { sb.append(it) }
+            val text = sb.toString()
+            runCatching {
+                raw(text)
+                written.addAndGet(text.toByteArray(Charsets.UTF_8).size.toLong())
+            }.onFailure {
+                enabled = false
+                // 写不进去就别再攒，避免队列一直塞满
+                queue.clear()
+            }
+        }
+    }, "gomusic-log").apply {
+        isDaemon = true
+        start()
+    }
 
     /** 在 Activity / Service 启动时调用一次 */
     fun init(ctx: Context) {
@@ -81,20 +122,23 @@ object NmLog {
 
     fun path(): String = pathText
 
+    /** 绝不阻塞：队列满了直接丢这条日志，也不能拖住网络回调 */
     private fun w(line: String) {
         if (!enabled) return
-        val data = line.toByteArray(Charsets.UTF_8)
-        if (written + data.size > MAX_FILE) {
+        if (written.get() > MAX_FILE) {
             enabled = false
-            runCatching { raw("[日志已达上限，停止写入]\n") }
             return
         }
-        try {
+        queue.offer(line)
+    }
+
+    /** 崩溃路径必须同步落盘：进程马上要死，等不到写线程 */
+    private fun wSync(line: String) {
+        if (!enabled) return
+        runCatching {
             raw(line)
-            written += data.size
-        } catch (e: Exception) {
-            enabled = false
-        }
+            written.addAndGet(line.toByteArray(Charsets.UTF_8).size.toLong())
+        }.onFailure { enabled = false }
     }
 
     private fun raw(line: String) {
@@ -117,7 +161,7 @@ object NmLog {
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             runCatching {
                 init(ctx)
-                w(buildString {
+                wSync(buildString {
                     append("\n[崩溃] ${now()}\n")
                     append("  线程：${t.name}\n")
                     append("  异常：${e.javaClass.name}: ${e.message}\n")
@@ -150,9 +194,13 @@ object NmLog {
         w("[请求] ${now()}\n  URL: ${mask(url)}\n")
     }
 
-    /** 记录响应（完整 body） */
+    /** 记录响应摘要：只留前 600 字符，避免把整篇 JSON 写进文件 */
     fun res(url: String, code: Int?, body: String?) {
-        w("[响应] ${now()}  HTTP ${code ?: "-"}  ${mask(url)}\n  ${body ?: "(空)"}\n\n")
+        val b = body ?: "(空)"
+        val brief = if (b.length > MAX_BODY) {
+            b.take(MAX_BODY) + "…（共 ${b.length} 字符，已截断）"
+        } else b
+        w("[响应] ${now()}  HTTP ${code ?: "-"}  ${mask(url)}\n  $brief\n\n")
     }
 
     /** 记录异常 */
@@ -169,7 +217,7 @@ object NmLog {
     fun crash(t: Throwable, where: String = "") {
         val sw = java.io.StringWriter()
         t.printStackTrace(java.io.PrintWriter(sw))
-        w(buildString {
+        wSync(buildString {
             append("\n[崩溃] ${now()}")
             if (where.isNotBlank()) append("  位置：$where")
             append("\n")

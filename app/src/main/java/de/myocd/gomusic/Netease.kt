@@ -1172,18 +1172,23 @@ object Netease {
                 done.complete(null)
             }
             override fun onResponse(c: Call, r: Response) {
-                val el = try {
+                var el: JsonObject? = null
+                var code = 0
+                var body = ""
+                try {
                     r.use { resp ->
-                        val t = resp.body?.string().orEmpty()
-                        NmLog.req(url)
-                        NmLog.res(url, resp.code, t)
-                        runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject
+                        body = resp.body?.string().orEmpty()
+                        code = resp.code
+                        el = runCatching { json.parseToJsonElement(body) }.getOrNull() as? JsonObject
                     }
                 } catch (e: Exception) {
                     NmLog.note("搜索响应读取失败：$path -> ${e.message}")
-                    null
                 }
+                // 26.11.64：结果先交给界面，日志放到 complete 之后。
+                // NmLog 已改为异步队列，但顺序上也要保证任何日志动作都不挡首屏。
                 done.complete(el)
+                NmLog.req(url)
+                NmLog.res(url, code, body)
             }
         })
         return try {

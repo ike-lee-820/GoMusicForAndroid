@@ -3016,13 +3016,18 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun reloadLyric() {
         val id = curSsid ?: return
-        if (lyricLoading) return
+        // 26.11.69：以前这里有一句 `if (lyricLoading) return`。加载失败或
+        // 超时后 lyricLoading 偶尔残留 true（任务被取消、回调没走到复位），
+        // 于是点重试直接被挡掉，界面一直停在「暂无歌词」。重试是用户主动
+        // 发起的，必须能打断任何残留状态：先取消旧任务，再把三个标记全清。
         lyricJob?.cancel()
         lyricSsid = null
         lyricLoadingFor = null
         lyric = emptyList()
         wordLyric = null
         lyricLoading = true
+        // 清掉预取层的歌词缓存：失败结果以前也会被缓存，不清就永远重放空结果
+        neteaseIdOf(id)?.let { Prefetcher.clearLyric(it) }
         // 26.11.35：本地歌重试要真正重读文件标签，不能只重放旧缓存
         if (LocalAudio.isDevice(id)) LocalAudio.clearLyric(app, id)
         NmLog.note("歌词重试：id=$id")

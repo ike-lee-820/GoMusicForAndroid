@@ -7,7 +7,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
-import okhttp3.Dispatcher
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -15,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * 目标：提前把后面几首的音源地址、逐字歌词、歌曲详情取好，切过去直接命中缓存，
  * 但**绝不与当前播放解析抢线程**。做法：
- * - 自己的 OkHttp dispatcher（maxRequestsPerHost = 4），连接池与播放链路分开
+ * - 音源预取走 Netease 独立预取客户端，歌词走独立歌词客户端，与播放解析物理隔开
  * - 自己的 SupervisorJob + IO 作用域，切歌时只取消旧预取，不影响播放
  * - 队列深度最多 2 首，每首 3 个并发任务，物理上有界（最多 6 个在途）
  * - 失败只记日志，不重试、不提示、不占用负缓存之外的任何资源
@@ -24,24 +23,28 @@ import java.util.concurrent.ConcurrentHashMap
  * SimpleCache 文件锁都会跨进程分裂，收益远小于代价。
  */
 object Prefetcher {
-    private val client = Api.client.newBuilder()
-        .dispatcher(
-            Dispatcher().apply {
-                maxRequests = 12
-                maxRequestsPerHost = 4
-            }
-        )
-        .build()
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<Long, Job>()
     private val wordCache = ConcurrentHashMap<Long, Netease.LyricResult>()
 
     private const val MAX_AHEAD = 2
 
-    /** 逐字歌词内存缓存：切歌回来不再请求；必须在 IO 线程调用 */
-    fun warmLyric(id: Long): Netease.LyricResult =
-        wordCache[id] ?: Netease.lyricWordWithFallback(id).also { wordCache[id] = it }
+    /**
+     * 逐字歌词内存缓存：切歌回来不再请求；必须在 IO 线程调用。
+     *
+     * 26.11.69：失败结果（新接口挂了、老接口也空）以前照样写进缓存，
+     * 于是点「重试」时 warmLyric 直接把那份空结果还回来，永远不重新发请求
+     * —— 这就是「歌词加载失败无法重试」的根因之一。空结果一律不缓存。
+     */
+    fun warmLyric(id: Long): Netease.LyricResult {
+        wordCache[id]?.let { return it }
+        val r = Netease.lyricWordWithFallback(id)
+        if (r.lrc.isNotBlank() || r.word.lines.isNotEmpty()) wordCache[id] = r
+        return r
+    }
+
+    /** 重试前清掉这首歌的歌词缓存，强制重新走完整回退链 */
+    fun clearLyric(id: Long) { wordCache.remove(id) }
 
     /**
      * 预取后面最多 2 首。同一批 id 已经在跑就不重复发；
@@ -71,8 +74,7 @@ object Prefetcher {
         jobs.clear()
     }
 
-    /** 诊断用：让日志能看到预取客户端确实独立于播放链路 */
+    /** 诊断用：预取链路已与播放解析物理隔离 */
     fun diagnostics(): String =
-        "独立预取客户端 maxRequests=${client.dispatcher.maxRequests} " +
-            "perHost=${client.dispatcher.maxRequestsPerHost} 缓存=${wordCache.size}"
+        "预取：音源走独立预取客户端，歌词走独立歌词客户端，缓存=${wordCache.size}"
 }

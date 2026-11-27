@@ -607,7 +607,10 @@ object Netease {
                 lv to async {
                     fun probe(): Boolean? {
                         val r = runCatching {
-                            getOnce("/song/url/v1", "id" to id.toString(), "level" to lv)
+                            getOnce(
+                                "/song/url/v1", "id" to id.toString(), "level" to lv,
+                                client = prefetchClient,
+                            )
                         }.getOrNull() ?: return null
                         // 非 200 是接口报错，同样算没探出来，不能当成「没有音源」
                         if (r.code() != 200) return null
@@ -666,7 +669,7 @@ object Netease {
     private const val URL_TTL_MS = 10 * 60 * 1000L
 
     /** 负缓存有效期：取不到往往只是暂时的（登录态、限流），30 秒后允许重试 */
-    private const val URL_MISS_TTL_MS = 30_000L
+    private const val URL_MISS_TTL_MS = 8_000L
 
     /** 在途请求：同一首歌同时被预取和播放解析时共用一次探测，不重复发 */
     private val urlInFlight = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock>()
@@ -689,7 +692,8 @@ object Netease {
         val k = cacheKey(id, quality, level)
         val hit = urlCache[k]
         if (hit != null && System.currentTimeMillis() - hit.third < URL_TTL_MS) return
-        runCatching { audioUrl(id, quality, level) }
+        // 26.11.69：预取走独立客户端，绝不与正在解析的播放地址抢连接
+        runCatching { audioUrl(id, quality, level, prefetchClient) }
             .onFailure { NmLog.note("预取音源失败：${it.message}") }
     }
 
@@ -700,8 +704,12 @@ object Netease {
         return System.currentTimeMillis() - hit.third < URL_TTL_MS
     }
 
-    fun audioUrl(id: Long, quality: String, level: String? = null): String? =
-        audioWithLevel(id, quality, level)?.first
+    fun audioUrl(
+        id: Long,
+        quality: String,
+        level: String? = null,
+        client: OkHttpClient = urlClient,
+    ): String? = audioWithLevel(id, quality, level, client)?.first
 
     /**
      * 严格单档取地址：只请求这一个档位，不降档、不解灰、不换游客 cookie。
@@ -728,7 +736,12 @@ object Netease {
      * 如果仍按请求的档位记录，下载记录里的音质就是假的
      * （存着「无损」，实际是 320k，离线播放与文件命名都会错）。
      */
-    fun audioWithLevel(id: Long, quality: String, level: String? = null): Pair<String, String>? {
+    fun audioWithLevel(
+        id: Long,
+        quality: String,
+        level: String? = null,
+        client: OkHttpClient = urlClient,
+    ): Pair<String, String>? {
         // 命中缓存直接返回，并把缓存里记录的「实际档位」带回去。
         // 之前缓存只存 url，命中时拿请求档位冒充实际档位，下载记录会写错。
         val k = cacheKey(id, quality, level)
@@ -758,9 +771,11 @@ object Netease {
             // 「切下一首卡半天」。改成等满整条链；若仍无结果就拿回锁自己算，
             // 绝不让正在切歌的这一次解析空手而归。
             var waited = 0
-            while (waited < 9_000 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
-                runCatching { Thread.sleep(50) }
-                waited += 50
+            // 26.11.69：整条降档链现在最多 6 秒，等满 6.5 秒就够，
+            // 不再是旧版那个 9 秒的空等上限。
+            while (waited < 6_500 && !urlCache.containsKey(k) && !urlMiss.containsKey(k)) {
+                runCatching { Thread.sleep(25) }
+                waited += 25
             }
             urlCache[k]?.let { (u, lv, t) ->
                 if (System.currentTimeMillis() - t < URL_TTL_MS) return u to lv
@@ -769,7 +784,7 @@ object Netease {
             lock.lock()
         }
         return try {
-            val hit = resolveAudioUrl(id, quality, level)
+            val hit = resolveAudioUrl(id, quality, level, client)
             if (hit != null) urlCache[k] = Triple(hit.first, hit.second, System.currentTimeMillis())
             else urlMiss[k] = System.currentTimeMillis()
             hit
@@ -805,18 +820,48 @@ object Netease {
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
     private val urlClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .callTimeout(7, TimeUnit.SECONDS)
+        // 26.11.69：一档拿不到就尽快换下一档，别让一次 HTTP 抖动拖住整首歌
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .callTimeout(4, TimeUnit.SECONDS)
         .dispatcher(
             Dispatcher().apply {
-                // OkHttp 默认每 host 只有 5 个并发，一批探测会被切成两批走。
-                // 这里放宽到 8：探测用的是「先首选档位 3 个」这种小批量，
-                // 不需要太多，但也不该被默认的 5 卡住
                 maxRequests = 16
                 maxRequestsPerHost = 8
             }
         )
+        .build()
+
+    /**
+     * 26.11.69：预取专用客户端。
+     *
+     * Prefetcher 里早就声明了一个「独立 client」，但预取实际调用的
+     * Netease.prefetchAudioUrl → getOnce 写死用 urlClient，于是预热后两首
+     * 和当前这首的播放解析抢同一个 dispatcher / 连接池：预取一跑就是
+     * 两三条降档链，正在解析的播放地址被挤到队尾 —— 这才是「点一首歌
+     * 要等半天」最实在的根因。这里真正把预取链路分到独立的调度池与连接池。
+     */
+    private val prefetchClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .callTimeout(4, TimeUnit.SECONDS)
+        .dispatcher(Dispatcher().apply {
+            maxRequests = 12
+            maxRequestsPerHost = 6
+        })
+        .connectionPool(ConnectionPool(6, 30, TimeUnit.SECONDS))
+        .build()
+
+    /** 歌词专用客户端：/lyric/new、/lyric 不再和取地址抢连接 */
+    private val lyricClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(5, TimeUnit.SECONDS)
+        .dispatcher(Dispatcher().apply {
+            maxRequests = 8
+            maxRequestsPerHost = 4
+        })
+        .connectionPool(ConnectionPool(4, 30, TimeUnit.SECONDS))
         .build()
 
     /**
@@ -829,6 +874,7 @@ object Netease {
         path: String,
         vararg params: Pair<String, String>,
         allowErrorBody: Boolean = false,
+        client: OkHttpClient = urlClient,
     ): JsonObject? {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
@@ -842,7 +888,7 @@ object Netease {
         return try {
             // 同样不带 Connection: close，保持连接复用
             val req = Request.Builder().url(url).build()
-            urlClient.newCall(req).execute().use { r ->
+            client.newCall(req).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.req(url)
                 NmLog.res(url, r.code, t)
@@ -889,14 +935,19 @@ object Netease {
      * 试一个档位：档内两个参数变体并发，档与档之间串行。
      * 只有「这一档确实失败」才返回 Miss，由调用方更换上一音质。
      */
-    private fun tryLevel(id: Long, lv: String): LevelResult {
+    private fun tryLevel(id: Long, lv: String, client: OkHttpClient = urlClient): LevelResult {
         val variants = listOf(
             listOf("id" to id.toString(), "level" to lv),
             listOf("id" to id.toString(), "level" to lv, "realIP" to FALLBACK_CN_IP),
         )
         val rs = runBlocking(Dispatchers.IO) {
             variants.map { ps ->
-                async { getOnce("/song/url/v1", *ps.toTypedArray(), allowErrorBody = true) }
+                async {
+                    getOnce(
+                        "/song/url/v1", *ps.toTypedArray(),
+                        allowErrorBody = true, client = client,
+                    )
+                }
             }.awaitAll().filterNotNull()
         }
         if (rs.any { isBlocking(it) }) {
@@ -922,44 +973,72 @@ object Netease {
     /**
      * 解析播放地址，返回「地址 + 实际档位」。
      *
-     * 从指定档位起沿 NM_LEVELS 一档一档往回退：某一档请求失败
-     * （网络异常 / 非 200 / 业务码异常 / 地址为空）就自动更换上一音质，
-     * 直到 standard 或拿到可用地址。风控、需要登录这类错误换档无意义，
-     * 直接终止，避免把 9 个档位各打一遍把服务端打爆。
+     * 从指定档位起沿 NM_LEVELS 往回退：前 3 档与 standard 并发探测，
+     * 结果仍严格按音质从高到低选取，剩下的档位才串行补探。
+     * 某一档请求失败（网络异常 / 非 200 / 业务码异常 / 地址为空）就自动
+     * 更换上一音质，直到 standard 或拿到可用地址。风控、需要登录这类错误
+     * 换档无意义，直接终止，避免把 9 个档位各打一遍把服务端打爆。
      */
-    private fun resolveAudioUrl(id: Long, quality: String, level: String?): Pair<String, String>? {
+    private fun resolveAudioUrl(
+        id: Long,
+        quality: String,
+        level: String?,
+        client: OkHttpClient,
+    ): Pair<String, String>? {
         val start = level?.takeIf { it.isNotBlank() }?.let { nmLevelKey(it) }
             ?: nmLevelOfQuality(quality)
         val chain = descendingLevels(start)
-        // 整条链（含解灰匹配与游客兜底）最多等 8 秒。服务端卡住时，以前要
-        // 把 9 个档位的超时逐个等完，点一首歌一分多钟都没反应。
-        val deadline = System.currentTimeMillis() + 8_000L
+        // 26.11.69：整条链最多等 6 秒，单次请求超时也已压到 4 秒
+        val deadline = System.currentTimeMillis() + 6_000L
         NmLog.note("开始取播放地址 id=$id 起始档位=$start 降档链=${chain.joinToString("→")}")
-        for (i in chain.indices) {
+
+        // 26.11.69：档与档之间不再严格串行。
+        //
+        // 以前选了无损但这首歌只有 320k，要一档一档等完几个 HTTP 往返才降到
+        // 底 —— 这就是「点一首歌转半天」最实在的地方。现在把最可能命中的前
+        // 3 档连同 standard 一起并发发出，一次 RTT 就能拿到结果。
+        //
+        // 关键是**按 chain 顺序取第一个命中**：不能一看到 standard 有地址就
+        // 直接用，否则请求 hires 时会跳过中间的 lossless / exhigh，下载记录
+        // 和音质显示都会错。并发只是「同时问」，选档仍然严格从高到低。
+        val probe = (chain.take(3) + "standard").distinct()
+        val probed = runBlocking(Dispatchers.IO) {
+            probe.map { lv -> lv to async { tryLevel(id, lv, client) } }
+                .map { (lv, d) -> lv to d.await() }
+        }
+        // 任一档命中风控 / 需登录，换任何档位都没意义，立即终止
+        if (probed.any { it.second is LevelResult.Blocked }) {
+            NmLog.note("取地址命中风控，停止降档 id=$id")
+            return null
+        }
+        for (lv in chain) {
+            val r = probed.firstOrNull { it.first == lv }?.second
+            if (r is LevelResult.Hit) {
+                NmLog.note("拿到地址（${r.hit.lv}）：${r.hit.url}")
+                return r.hit.url to r.hit.lv
+            }
+        }
+        NmLog.note("并发探测未命中，继续检查剩余档位 id=$id")
+
+        // 剩余档位仍按高到低串行，且整条链受 6 秒总截止约束
+        val rest = chain.filterNot { it in probe }
+        for (lv in rest) {
             if (System.currentTimeMillis() > deadline) {
-                NmLog.note("取地址超过 8 秒，停止逐档降档 id=$id")
+                NmLog.note("取地址超过 6 秒，停止逐档降档 id=$id")
                 return null
             }
-            val lv = chain[i]
-            when (val r = tryLevel(id, lv)) {
+            when (val r = tryLevel(id, lv, client)) {
                 is LevelResult.Hit -> {
-                    if (i > 0) NmLog.note("音质 ${chain[i - 1]} 请求失败，已自动更换为上一音质 ${r.hit.lv}")
                     NmLog.note("拿到地址（${r.hit.lv}）：${r.hit.url}")
                     return r.hit.url to r.hit.lv
                 }
                 LevelResult.Blocked -> return null
-                LevelResult.Miss -> {
-                    val next = chain.getOrNull(i + 1)
-                    NmLog.note(
-                        if (next == null) "音质 $lv 请求失败，已到最低档位 standard"
-                        else "音质 $lv 请求失败，自动更换为上一音质 $next"
-                    )
-                }
+                LevelResult.Miss -> NmLog.note("音质 $lv 请求失败，继续降档")
             }
         }
         // v1 全部档位都拿不到时走 /song/url/match 解灰匹配（变灰歌曲 v1 地址为空）
         runCatching {
-            val r = getOnce("/song/url/match", "id" to id.toString())
+            val r = getOnce("/song/url/match", "id" to id.toString(), client = client)
             val u = ((r?.get("data") as? JsonElement)?.jsonArray?.firstOrNull() as? JsonObject)?.str("url")
             if (!u.isNullOrBlank()) {
                 NmLog.note("match 解灰拿到地址：$u")
@@ -975,7 +1054,7 @@ object Netease {
             try {
                 for (lv in chain) {
                     if (System.currentTimeMillis() > deadline) break
-                    when (val r = tryLevel(id, lv)) {
+                    when (val r = tryLevel(id, lv, client)) {
                         is LevelResult.Hit -> {
                             NmLog.note("游客 cookie 拿到地址（${r.hit.lv}）：${r.hit.url}")
                             return r.hit.url to r.hit.lv
@@ -1031,7 +1110,8 @@ object Netease {
     fun lyric(id: Long): String {
         fun once(url: String): String = try {
             val req = Request.Builder().url(url).build()
-            urlClient.newCall(req).execute().use { r ->
+            // 26.11.69：歌词走独立客户端，不占取地址的连接池
+            lyricClient.newCall(req).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.req(url)
                 NmLog.res(url, r.code, t)
@@ -1071,7 +1151,8 @@ object Netease {
         val url = "$NM_BASE/lyric/new?id=$id"
         val body = try {
             val req = Request.Builder().url(url).build()
-            urlClient.newCall(req).execute().use { r ->
+            // 26.11.69：逐字歌词同样走独立客户端
+            lyricClient.newCall(req).execute().use { r ->
                 NmLog.req(url)
                 val b = r.body?.string().orEmpty()
                 NmLog.res(url, r.code, b)

@@ -1154,8 +1154,25 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
     // 老歌词不再掉回旧的 LyricsList 小字列表。
     val w = vm.wordLyric
     if (w == null || w.lines.isEmpty()) {
+        // 26.11.69：以前「暂无歌词」只是个静态文字，加载失败后没有任何重试入口。
+        // 现在整块可点，加载中显示状态并禁用重复点击，失败时明确给出「点击重试」。
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("暂无歌词", fontSize = 17.sp, color = go.muted)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(enabled = !vm.lyricLoading) { vm.reloadLyric() }
+                    .padding(horizontal = 28.dp, vertical = 18.dp),
+            ) {
+                Text(
+                    if (vm.lyricLoading) "正在加载歌词…" else "暂无歌词",
+                    fontSize = 17.sp, color = go.muted,
+                )
+                if (!vm.lyricLoading) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("点击重试", fontSize = 13.sp, color = go.primary)
+                }
+            }
         }
         return
     }

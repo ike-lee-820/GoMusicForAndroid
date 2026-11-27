@@ -2,6 +2,8 @@ package de.myocd.gomusic
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,7 +25,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -260,7 +261,7 @@ private fun PendingResults(
 ) {
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         item {
             Row(
@@ -332,7 +333,7 @@ private fun MixedResults(
     LazyColumn(
         Modifier.fillMaxSize(),
         state = rememberSearchListState(vm),
-        contentPadding = PaddingValues(bottom = 64.dp),
+        contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         item { SectionTitle(go, "最佳匹配") }
         item {
@@ -429,14 +430,21 @@ private fun RowScope.TopCard(
 
 @Composable
 private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
-    LazyRow(
-        // 26.11.66：嵌套在 LazyColumn 的 item 里时，横排高度不确定会把
-        // 头像下方的名字/副标题裁掉。给足整行高度并留上下内边距。
-        Modifier.height(126.dp),
+    // 26.11.67：彻底改成普通 Row + 横向滚动，行高按内容自适应。
+    // 上一版用 LazyRow 写死 126dp，文字是 sp（随系统字体缩放），字体一放大
+    // 内容就超过固定行高，底部那行字被 LazyRow 的 viewport 裁掉 ——
+    // 这才是「依旧截断」的真正原因。Row 嵌在 LazyColumn 的 item 里可以
+    // wrapContentHeight，内容多高就多高，永远不会裁。数量最多十几张卡，
+    // 用不到 LazyRow 的回收。
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(vertical = 6.dp, horizontal = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(vertical = 4.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        items(list) { g ->
+        list.forEach { g ->
             Column(
                 Modifier.width(88.dp).clickable { openGroup(vm, g) },
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -445,8 +453,9 @@ private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     g.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                    color = go.on, maxLines = 1, textAlign = TextAlign.Center,
+                    color = go.on, maxLines = 2, textAlign = TextAlign.Center,
                 )
+                Spacer(Modifier.height(2.dp))
                 Text("艺人", fontSize = 11.sp, color = go.muted)
             }
         }
@@ -455,20 +464,27 @@ private fun ArtistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
 
 @Composable
 private fun AlbumRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
-    LazyRow(
-        // 26.11.66：132dp 封面 + 两行文字，给足高度避免下半部分被截断
-        Modifier.height(188.dp),
+    // 26.11.67：同 ArtistRow，行高自适应，不再写死 188dp 导致底部被裁
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(vertical = 6.dp, horizontal = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(vertical = 4.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        items(list) { g ->
+        list.forEach { g ->
             Column(Modifier.width(132.dp).clickable { openGroup(vm, g) }) {
                 Cover(g.cover, Modifier.size(132.dp), 12.dp, hd = true)
                 Spacer(Modifier.height(6.dp))
-                Text(g.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = go.on, maxLines = 1)
+                Text(
+                    g.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = go.on, maxLines = 2,
+                )
+                Spacer(Modifier.height(2.dp))
                 Text(
                     g.artist.ifBlank { g.subtitle }, fontSize = 11.sp,
-                    color = go.muted, maxLines = 1,
+                    color = go.muted, maxLines = 2,
                 )
             }
         }
@@ -485,7 +501,7 @@ private fun ArtistResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
     LazyColumn(
         Modifier.fillMaxSize(),
         state = rememberSearchListState(vm),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         items(list.chunked(3)) { row ->
             Row(
@@ -523,7 +539,7 @@ private fun AlbumResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
     LazyColumn(
         Modifier.fillMaxSize(),
         state = rememberSearchListState(vm),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         items(list.chunked(2)) { row ->
             Row(
@@ -564,7 +580,7 @@ private fun SongResults(vm: MainViewModel, go: GoColors, list: List<Song>) {
     LazyColumn(
         Modifier.fillMaxSize(),
         state = rememberSearchListState(vm),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         items(list, key = { it.ssid }) { s -> SongRow(vm, go, s) }
         item { SearchFooter(vm, go) }
@@ -664,7 +680,7 @@ private fun RecentSearchList(vm: MainViewModel, go: GoColors) {
     val accent = go.appleAccent()
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 32.dp),
+        contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         item {
             Row(

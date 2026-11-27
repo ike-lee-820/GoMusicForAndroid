@@ -2203,15 +2203,25 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toast("已加入播放列表：${s.title}")
     }
 
-    /** 清空播放列表（保留当前正在播放的那一首） */
+    /**
+     * 26.11.68：清空播放列表，当前正在播放的那一首也一起移除。
+     *
+     * 先暂停再一次性清掉整条时间线，避免逐项删除过程中当前项被移除时
+     * 触发「自动切到下一首」，把清空误记成一次播放；随后本地队列状态立刻
+     * 置空并收起播放器（队列空了留在播放器里没有意义）。
+     */
     fun clearQueue() {
         val c = controller ?: return
         val n = c.mediaItemCount
-        if (n <= 0) return
-        val cur = c.currentMediaItemIndex
-        // 先移除当前项之后的所有项，再移除之前的，始终保留正在播放的这首
-        for (i in n - 1 downTo cur + 1) c.removeMediaItem(i)
-        for (i in 0 until cur) c.removeMediaItem(0)
+        if (n > 0) {
+            c.pause()
+            runCatching { c.clearMediaItems() }.getOrElse {
+                for (i in c.mediaItemCount - 1 downTo 0) c.removeMediaItem(i)
+            }
+        }
+        queue = emptyList()
+        queueSongs = emptyMap()
+        showPlayer = false
         toast("已清空播放列表")
     }
 

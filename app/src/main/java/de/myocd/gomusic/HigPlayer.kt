@@ -43,6 +43,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.outlined.Album
@@ -222,31 +223,30 @@ fun HigPlayerRoot(vm: MainViewModel) {
         vm.isPlaying -> 1.08f
         else -> 0.88f
     }
-    // 26.11.57：横屏默认收缩（整屏封面页），展开由用户主动选择
-    var landExpanded by remember { mutableStateOf(false) }
+    // 26.11.68：横屏改为常驻左右双栏，且不再有「封面页」这个页面状态。
+    // 左半边固定是竖屏封面页那套布局（大封面 / 信息 / 进度 / 控制 / 三键），
+    // 右半边只在「歌词」与「播放列表」之间切换。
     var lastLand by remember { mutableStateOf(false) }
-    val collapse: () -> Unit = {
-        landExpanded = false
-        vm.gotoPlayerPage(PLAYER_COVER)
-    }
-    // 横屏下底部三键 = 选择展开「歌词 / 播放列表」，再点已选中的那个就收起。
-    val request: (Int) -> Unit = { p ->
-        when {
-            !landExpanded -> {
-                landExpanded = true
-                vm.gotoPlayerPage(p)
-            }
-            p == PLAYER_COVER || p == vm.playerPage -> collapse()
-            else -> vm.gotoPlayerPage(p)
+    /** 横屏时共享封面必须一直停在大图态，不能缩成信息区小图 */
+    var forceBigCover by remember { mutableStateOf(false) }
+    /**
+     * 横屏三键 / 切换条的请求：横屏没有封面页，所以「再点一次返回主页」
+     * 这个动作落到默认歌词页，其余在歌词 / 播放列表之间切换。
+     */
+    val landRequest: (Int) -> Unit = { p ->
+        when (p) {
+            PLAYER_LYRICS, PLAYER_QUEUE -> vm.gotoPlayerPage(p)
+            else -> vm.gotoPlayerPage(PLAYER_LYRICS)
         }
     }
-    // 26.11.53：切页时背景模糊半径平滑变化 —— 封面页较清晰，歌词页更朦胧，
-    // 队列页居中。不是三张不同的背景图，只是同一张封面底图的模糊度动画。
+    /** 竖屏信息区 / 小封面点击回封面页；横屏 forceBig 时走不到这里 */
+    val collapse: () -> Unit = { vm.gotoPlayerPage(PLAYER_COVER) }
+    // 26.11.53：切页时背景模糊半径平滑变化 —— 歌词页更朦胧，队列页居中。
     val blur by animateDpAsState(
         targetValue = when (vm.playerPage) {
-            PLAYER_COVER -> 18.dp
             PLAYER_LYRICS -> 42.dp
-            else -> 30.dp
+            PLAYER_QUEUE -> 30.dp
+            else -> 18.dp
         },
         label = "playerBgBlur",
     )
@@ -262,9 +262,7 @@ fun HigPlayerRoot(vm: MainViewModel) {
                 val p = c.positionInRoot()
                 rootX = p.x; rootY = p.y
             }
-            // 背景空白区吃掉触摸：否则会穿透到下面的主页列表 / 底栏，
-            // 点一下背景就误触切歌或跳页（用户说的「点击背景会错乱」）。
-            // 子组件优先命中，这里只处理没被任何控件接住的事件。
+            // 背景空白区吃掉触摸：否则会穿透到下面的主页列表 / 底栏
             .pointerInput(Unit) { detectTapGestures { } },
     ) {
         if (bgModel != null) {
@@ -275,70 +273,56 @@ fun HigPlayerRoot(vm: MainViewModel) {
                 filterQuality = FilterQuality.High,
             )
         }
-        // 亮/暗只换叠加色，图层结构不变
         Box(Modifier.fillMaxSize().background(go.scrim))
         BoxWithConstraints(
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         ) {
-            // 26.11.54：横屏重做。左栏固定放封面 / 信息 / 播放控制（三页
-            // 位置完全不变，共享封面缩放动画照常），右栏按当前页给内容：
-            // 歌词页只在这里放一份歌词、队列页只在这里放一份队列、封面页留空。
-            // 26.11.53 那种「左栏歌词页 + 右栏常驻歌词」会造成两份歌词，
-            // 封面页也莫名显示歌词，已收敛成单份。
             val land = maxWidth > maxHeight * 1.15f
-            // 第一次进入横屏回到收缩的封面页，不再默认占着左右双栏
             LaunchedEffect(land) {
-                if (land && !lastLand) {
-                    landExpanded = false
-                    vm.gotoPlayerPage(PLAYER_COVER)
-                }
+                forceBigCover = land
+                // 第一次进入横屏默认落在歌词页，不再是封面页
+                if (land && !lastLand) vm.gotoPlayerPage(PLAYER_LYRICS)
                 lastLand = land
+            }
+            // 横屏没有主页：外部 openPlayer 或任何残留逻辑把页面设成 COVER 时立即纠正
+            LaunchedEffect(land, vm.playerPage) {
+                if (land && vm.playerPage == PLAYER_COVER) vm.gotoPlayerPage(PLAYER_LYRICS)
             }
             if (land) {
                 CompositionLocalProvider(
-                    LocalLandPanel provides LandPanelState(landExpanded, request, collapse),
-                    LocalPageRequest provides request,
+                    LocalLandPanel provides LandPanelState(true, landRequest, {}),
+                    LocalPageRequest provides landRequest,
                 ) {
-                    if (landExpanded) {
-                        Row(Modifier.fillMaxSize()) {
-                            Box(Modifier.weight(0.44f).padding(horizontal = 12.dp)) {
-                                PlayerBody(
-                                    vm, s, onBig, onSmall,
-                                    compact = true, showContent = false,
-                                    controls = lyricsControls,
-                                    onControls = { lyricsControls = it },
-                                )
-                            }
-                            Box(Modifier.weight(0.56f).padding(horizontal = 12.dp)) {
-                                Column(Modifier.fillMaxSize()) {
-                                    LandPanelSwitcher(vm, go, collapse)
-                                    Box(Modifier.weight(1f).fillMaxWidth()) {
-                                        when (vm.playerPage) {
-                                            PLAYER_LYRICS -> Box(
-                                                Modifier.fillMaxSize().lyricsControlGesture(
-                                                    onUp = { lyricsControls = true },
-                                                    onDown = { lyricsControls = false },
-                                                ),
-                                            ) { WordLyricsList(vm, go, compact = true) }
-                                            PLAYER_QUEUE -> QueueContent(vm, go)
-                                            else -> { /* 收起态不会走到这里 */ }
-                                        }
+                    Row(Modifier.fillMaxSize()) {
+                        // 左半边：与竖屏封面页同一套组件，只是紧凑尺寸
+                        Box(Modifier.weight(0.5f).padding(horizontal = 12.dp)) {
+                            CoverPane(
+                                vm, s, onBig,
+                                compact = true, controls = lyricsControls,
+                            )
+                        }
+                        // 右半边：可选歌词 / 播放列表，不再有「收起」回到封面页
+                        Box(Modifier.weight(0.5f).padding(horizontal = 12.dp)) {
+                            Column(Modifier.fillMaxSize()) {
+                                LandPanelSwitcher(vm, go)
+                                Box(Modifier.weight(1f).fillMaxWidth()) {
+                                    when (vm.playerPage) {
+                                        PLAYER_LYRICS -> Box(
+                                            Modifier.fillMaxSize().lyricsControlGesture(
+                                                onUp = { lyricsControls = true },
+                                                onDown = { lyricsControls = false },
+                                            ),
+                                        ) { WordLyricsList(vm, go, compact = true) }
+                                        PLAYER_QUEUE -> QueueContent(vm, go)
+                                        else -> { /* 横屏不存在封面页 */ }
                                     }
                                 }
                             }
                         }
-                    } else {
-                        Box(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-                            PlayerBody(
-                                vm, s, onBig, onSmall,
-                                compact = false, showContent = true,
-                                controls = lyricsControls,
-                                onControls = { lyricsControls = it },
-                            )
-                        }
                     }
                 }
             } else {
+                // 竖屏：封面 / 歌词 / 队列三页排版原样不动
                 Box(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
                     PlayerBody(
                         vm, s, onBig, onSmall,
@@ -356,6 +340,7 @@ fun HigPlayerRoot(vm: MainViewModel) {
             rootX, rootY,
             collapse,
             coverScaleTarget,
+            forceBigCover,
         )
         // 图 17 样式的更多操作表：盖在播放器最上层
         if (vm.showMoreSheet) PlayerMoreSheet(vm, s) { vm.showMoreSheet = false }
@@ -401,6 +386,11 @@ private fun SharedCover(
     onBack: () -> Unit,
     /** 26.11.60：播放 / 暂停 / 未播放三态的目标缩放，只作用在大图态 */
     playScaleTarget: Float = 1f,
+    /**
+     * 26.11.68：横屏没有封面页，左栏固定就是竖屏封面页那套布局，
+     * 所以封面要一直停在大图态，不能因为当前页是歌词/队列就缩到信息区小图。
+     */
+    forceBig: Boolean = false,
 ) {
     val density = LocalDensity.current
     // 动画值只在这一层读，播放/暂停切换时不会让整棵播放器子树每帧重组
@@ -410,9 +400,9 @@ private fun SharedCover(
         label = "coverPlayScale",
     )
     val morph = remember { Animatable(0f) }
-    LaunchedEffect(vm.playerPage) {
+    LaunchedEffect(vm.playerPage, forceBig) {
         morph.animateTo(
-            if (vm.playerPage == PLAYER_COVER) 0f else 1f,
+            if (forceBig || vm.playerPage == PLAYER_COVER) 0f else 1f,
             spring<Float>(dampingRatio = 0.92f, stiffness = 360f),
         )
     }
@@ -484,6 +474,8 @@ private fun CoverPane(
     s: Song?,
     onBigCover: (Float, Float, Float) -> Unit,
     compact: Boolean = false,
+    /** 26.11.68：横屏右栏歌词上滑/下滑时，左栏控制区跟着显隐；竖屏恒 true */
+    controls: Boolean = true,
 ) {
     val go = LocalGo.current
     Column(Modifier.fillMaxSize()) {
@@ -580,15 +572,12 @@ private fun CoverPane(
                 )
             }
         }
-        // 26.11.57：横屏收缩态给出明确的「展开歌词 / 播放列表」入口
-        val land = LocalLandPanel.current
-        if (land != null && !land.expanded) {
-            LandExpandPicker(land, go)
-            Spacer(Modifier.height(10.dp))
-        }
         // 26.11.53：封面页与歌词页 / 队列页共用同一段底栏，进度条、
         // 控制键、三键的高度与间距完全一致 —— 切页时进度条纵坐标不再跳动。
-        PlayerBottomBar(vm, go, compact)
+        // 26.11.68：横屏右栏歌词手势会隐藏/恢复这一段，竖屏恒显示。
+        AnimatedVisibility(visible = controls) {
+            PlayerBottomBar(vm, go, compact)
+        }
         Spacer(Modifier.height(12.dp))
     }
 }
@@ -1048,44 +1037,9 @@ private fun InfoHeader(
     }
 }
 
-/** 横屏收缩态：明确选择「展开歌词」还是「展开播放列表」 */
+/** 26.11.68：横屏右栏顶部只切换歌词 / 播放列表，没有「收起」——横屏没有封面页 */
 @Composable
-private fun LandExpandPicker(st: LandPanelState, go: GoColors) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("展开", fontSize = 12.sp, color = go.muted)
-        listOf("歌词" to PLAYER_LYRICS, "播放列表" to PLAYER_QUEUE).forEach { (label, p) ->
-            Row(
-                Modifier.clip(RoundedCornerShape(999.dp))
-                    .background(go.surfaceHi.copy(alpha = 0.7f))
-                    .clickable { st.onExpand(p) }
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (p == PLAYER_LYRICS) {
-                    Icon(
-                        Icons.Outlined.ChatBubbleOutline, null,
-                        tint = go.primary, modifier = Modifier.size(14.dp),
-                    )
-                } else {
-                    PlayerIcon(
-                        "queue", "播放列表",
-                        modifier = Modifier.size(14.dp), tint = go.primary,
-                    )
-                }
-                Spacer(Modifier.width(6.dp))
-                Text(label, fontSize = 12.sp, color = go.on)
-            }
-        }
-    }
-}
-
-/** 展开态右栏顶部：切换歌词 / 播放列表，或收起回到整屏封面页 */
-@Composable
-private fun LandPanelSwitcher(vm: MainViewModel, go: GoColors, onCollapse: () -> Unit) {
+private fun LandPanelSwitcher(vm: MainViewModel, go: GoColors) {
     Row(
         Modifier.fillMaxWidth().height(48.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1108,20 +1062,6 @@ private fun LandPanelSwitcher(vm: MainViewModel, go: GoColors, onCollapse: () ->
             Spacer(Modifier.width(8.dp))
         }
         Spacer(Modifier.weight(1f))
-        Row(
-            Modifier.clip(RoundedCornerShape(999.dp))
-                .background(go.surfaceHi.copy(alpha = 0.7f))
-                .clickable { onCollapse() }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Outlined.KeyboardArrowDown, "收起",
-                tint = go.on, modifier = Modifier.size(16.dp),
-            )
-            Spacer(Modifier.width(5.dp))
-            Text("收起", fontSize = 12.sp, color = go.on)
-        }
     }
 }
 
@@ -1578,7 +1518,7 @@ private fun QueueContent(vm: MainViewModel, go: GoColors, modifier: Modifier = M
             )
             if (confirmClear) {
                 HigConfirm(
-                    "清空播放列表？（保留正在播放的这一首）",
+                    "清空播放列表？当前正在播放的歌也会被移除",
                     "清空",
                     onDismiss = { confirmClear = false },
                     onOk = { confirmClear = false; vm.clearQueue() },
@@ -1609,6 +1549,18 @@ private fun QueueContent(vm: MainViewModel, go: GoColors, modifier: Modifier = M
                         Icons.Outlined.MoreVert, "拖动排序", tint = go.muted,
                         modifier = Modifier.size(20.dp),
                     )
+                    // 26.11.68：每首歌右侧新增删除按钮，直接从播放队列移除这一首
+                    Box(
+                        Modifier.size(36.dp).clip(CircleShape)
+                            .clickable { vm.removeQueue(i) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Close, "从播放列表移除",
+                            tint = go.muted.copy(alpha = 0.85f),
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
                 Box(Modifier.fillMaxWidth().height((0.5f).dp).padding(start = 60.dp).background(go.separator))
             }

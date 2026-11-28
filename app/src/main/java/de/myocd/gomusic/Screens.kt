@@ -1333,7 +1333,7 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                     exporting = true
                 }
                 Spacer(Modifier.width(8.dp))
-                GoButton("同步网易云", icon = Icons.Outlined.Refresh) { vm.syncNmPlaylists() }
+                GoButton("强制全部同步", icon = Icons.Outlined.Refresh) { vm.syncNmPlaylists(force = true) }
             }
         }
         itemsIndexed(list, key = { _, p -> p.id }, contentType = { _, _ -> "playlist" }) { _, p ->

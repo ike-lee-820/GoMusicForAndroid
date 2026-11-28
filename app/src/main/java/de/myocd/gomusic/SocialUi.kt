@@ -157,7 +157,10 @@ private fun cleanUrl(u: String): String = u.trimEnd(
 )
 
 private fun chatLinks(text: String): List<String> =
-    CHAT_URL_RE.findAll(text).map { cleanUrl(it.value) }.distinct().toList()
+    CHAT_URL_RE.findAll(text)
+        .map { cleanUrl(it.value) }
+        .filter { !NmSocial.isImageUrl(it) }
+        .distinct().toList()
 
 /**
  * 气泡里的可点文本：链接单独高亮并可点，点非链接区域时打开资源卡片。
@@ -177,11 +180,16 @@ private fun ChatText(
         CHAT_URL_RE.findAll(text).forEach { mr ->
             val url = cleanUrl(mr.value)
             append(text.substring(last, mr.range.first))
-            pushStringAnnotation("URL", url)
-            withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
-                append(mr.value)
+            if (NmSocial.isImageUrl(url)) {
+                // 26.11.91：图片 CDN 地址不画成可点链接、不整条印出来
+                append("[图片]")
+            } else {
+                pushStringAnnotation("URL", url)
+                withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                    append(mr.value)
+                }
+                pop()
             }
-            pop()
             last = mr.range.endExclusive
         }
         append(text.substring(last))
@@ -605,17 +613,22 @@ private fun ChatPage(vm: MainViewModel) {
                                     onLink = { vm.openChatLink(it) },
                                     onPlain = { if (canOpen) vm.openChatResource(m) },
                                 )
-                                // 资源卡片正文只显示名字，原文里的链接单独列出来可点
-                                val raw = m.raw.ifBlank { m.text }
-                                chatLinks(raw).filter { it !in body }.forEach { u ->
-                                    ChatText(
-                                        text = u,
-                                        color = if (m.fromSelf) go.surface else go.primary,
-                                        linkColor = if (m.fromSelf) go.surface else go.primary,
-                                        onLink = { vm.openChatLink(u) },
-                                        onPlain = { vm.openChatLink(u) },
-                                        small = true,
-                                    )
+                                // 26.11.91：资源私信的原文是一段 JSON，里面全是
+                                // picUrl / coverUrl 等封面地址。以前把「没出现在
+                                // 正文里的链接」逐条列出来，等于把专辑图片链接印在
+                                // 气泡里。现在只有纯文本消息才额外列可点网页链接。
+                                if (m.kind == "text" && !m.raw.trim().startsWith("{")) {
+                                    val raw = m.raw.ifBlank { m.text }
+                                    chatLinks(raw).filter { it !in body }.forEach { u ->
+                                        ChatText(
+                                            text = u,
+                                            color = if (m.fromSelf) go.surface else go.primary,
+                                            linkColor = if (m.fromSelf) go.surface else go.primary,
+                                            onLink = { vm.openChatLink(u) },
+                                            onPlain = { vm.openChatLink(u) },
+                                            small = true,
+                                        )
+                                    }
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     if (socialStamp(m.time).isNotBlank()) {

@@ -51,6 +51,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 private const val MODE_LIST_LOOP = 0
 private const val MODE_SHUFFLE = 1
@@ -3601,15 +3602,22 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return p
     }
 
-    /** 26.11.66：本地新建歌单 → 云端 create + 加歌 + 回填 nmId */
+    /**
+     * 26.11.91：本地新建歌单 → 云端 create + **上传所有歌曲** + 回填 nmId。
+     * 以前只传 neteaseIdOf 能解析的歌，本站曲库歌全被丢掉；现在按歌名+歌手
+     * 映射到网易云 id，能映射的尽量都传上去。
+     */
     private fun uploadLocalPlaylist(localId: String) {
         if (!canSyncCloud()) return
         val p = playlists.firstOrNull { it.id == localId } ?: return
         viewModelScope.launch(Dispatchers.IO) {
+            val index = withContext(Dispatchers.Main) {
+                songsByIds(p.songs).associateBy { it.ssid }
+            }
             val pid = runCatching { Netease.playlistCreate(cloudName(p)) }.getOrDefault(0L)
             if (pid <= 0L) return@launch
-            val nids = p.songs.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }
-            if (nids.isNotEmpty()) runCatching { Netease.playlistAdd(pid, nids) }
+            val (ids, _) = resolveUploadIds(p.songs, index)
+            if (ids.isNotEmpty()) Netease.playlistAddBatch(pid, ids)
             withContext(Dispatchers.Main) {
                 savePl(playlists.map {
                     if (it.id == localId && it.nmId <= 0L)
@@ -3633,11 +3641,41 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toast("已新建歌单「${p.name}」，共 ${p.songs.size} 首")
     }
 
+    // ================= 26.11.91：强制全量同步的上传对账辅助 =================
+
+    /** ssid -> 解析出的网易云歌曲 id（缓存，避免每次同步重复搜索） */
+    private val uploadIdCache = ConcurrentHashMap<String, Long>()
+
+    /** 把一个本地 ssid 尽量解析成网易云歌曲 id：本站歌按歌名+歌手搜索映射 */
+    private fun resolveUploadId(ssid: String, index: Map<String, Song>): Long {
+        neteaseIdOf(ssid)?.let { if (it > 0L) return it }
+        uploadIdCache[ssid]?.let { return it }
+        val s = index[ssid] ?: return 0L
+        val id = runCatching { Netease.resolveSongId(s.title, s.artist) }.getOrDefault(0L)
+        if (id > 0L) uploadIdCache[ssid] = id
+        return id
+    }
+
+    /** 并发解析一批 ssid，返回 (可上传的网易云 id 列表, 无法映射的数量) */
+    private suspend fun resolveUploadIds(
+        ssids: List<String>, index: Map<String, Song>,
+    ): Pair<List<Long>, Int> = coroutineScope {
+        val distinct = ssids.distinct()
+        val gate = Semaphore(6)
+        val resolved = distinct.map { ssid ->
+            async(Dispatchers.IO) { gate.withPermit { resolveUploadId(ssid, index) } }
+        }.awaitAll()
+        val ids = resolved.filter { it > 0L }.distinct()
+        ids to (distinct.size - ids.size)
+    }
+
     // ================= 同步网易云歌单 =================
 
     /** 同步状态：true 表示正在同步，界面上给个转圈 */
     var nmSyncing by mutableStateOf(false); private set
     private var autoSyncDone = false
+    /** 26.11.91：同步进行中又点了「强制全部同步」→ 排队再跑一次，不再直接丢弃 */
+    private var pendingForceSync = false
 
     /** 与本地歌单重名时，云端那份展示名后面加的标签 */
     private val CLOUD_TAG = " 云"
@@ -3651,7 +3689,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun autoSyncNmPlaylists() {
         if (!canSyncCloud() || autoSyncDone) return
         autoSyncDone = true
-        syncNmPlaylists(quiet = true)
+        // 26.11.91：静默同步也走强制全量，指纹不再拦住本地改动
+        syncNmPlaylists(quiet = true, force = true)
     }
 
     /**
@@ -3670,13 +3709,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 收藏 / 订阅歌单云端不允许写，标记为 cloudReadOnly：本地仍可编辑，
      * 但改动不回写云端，也不参与云端排序。
      *
-     * 自动同步用指纹跳过没变化的歌单与红心；手动同步强制全量刷新。
-     * 云端删掉的歌单本地仍保留：接口偶发漏返回时直接删用户本地歌单代价太大。
+     * 26.11.91：默认强制全量——忽略指纹、双向曲目对账（本地独有补传云端、
+     * 云端独有补回本地），本地有云端没有的歌单在云端 create 并上传所有歌曲；
+     * 云端列表拉空也照样上传本地歌单。云端删掉的歌单本地仍保留。
      */
-    fun syncNmPlaylists(quiet: Boolean = false) {
+    fun syncNmPlaylists(quiet: Boolean = false, force: Boolean = true) {
         if (!nmOn) { if (!quiet) toast("请先开启「接入网易云曲库」"); return }
         if (prefs.nmCookie.isBlank()) { if (!quiet) toast("请先登录网易云"); return }
-        if (nmSyncing) return
+        if (nmSyncing) {
+            if (force && !quiet) pendingForceSync = true
+            return
+        }
         nmSyncing = true
         Netease.cookie = prefs.nmCookie
         viewModelScope.launch(Dispatchers.IO) {
@@ -3691,20 +3734,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         nmSyncing = false
                         if (!quiet) toast("取不到网易云 uid，请重新登录后再同步")
                     }
+                    // 取不到 uid 时排队没有意义，清掉避免下次误触发
+                    if (pendingForceSync) pendingForceSync = false
                     return@launch
                 }
                 val cloudAll = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
-                if (cloudAll.isEmpty()) {
+                // 26.11.91：云端列表拉空时不能直接退出——本地歌单仍要全部上传，
+                // 否则「本地有、云端没有」的那部分永远不会同步上去。
+                if (cloudAll.isEmpty() && !quiet) {
                     withContext(Dispatchers.Main) {
-                        nmSyncing = false
-                        if (!quiet) toast("没有取到云端歌单，请检查登录态")
+                        toast("云端歌单列表为空，仍会把本地歌单强制上传")
                     }
-                    return@launch
                 }
                 // 26.11.73：云端已不再返回的 id 说明删除 / 取消收藏已生效，
                 // 黑名单清掉；仍返回的继续屏蔽，避免「删了又回来」。
                 val cloudIds = cloudAll.map { it.nmId.toString() }.toSet()
-                prefs.nmDeletedPids = prefs.nmDeletedPids.intersect(cloudIds)
+                // 云端列表拉空时保留黑名单，否则「本地删过、云端还没删成功」的
+                // 歌单会被当成重新出现，下次同步又下载回来。
+                if (cloudAll.isNotEmpty()) {
+                    prefs.nmDeletedPids = prefs.nmDeletedPids.intersect(cloudIds)
+                }
                 val deleted = prefs.nmDeletedPids
                 // 26.11.71：「我喜欢的音乐」不与本地歌单并列，单独合并进「我的喜欢」
                 val likeGroup = cloudAll.firstOrNull { it.cloudLike }
@@ -3736,7 +3785,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         batch.map { g -> async<Pair<Group, List<Song>?>> {
                             val old = existing[g.nmId]
                             // null = 云端内容没变，沿用本地曲目（仅自动同步走这条）
-                            val unchanged = old != null && quiet &&
+                            val unchanged = !force && old != null && quiet &&
                                 old.cloudStamp == g.cloudStamp && old.songs.isNotEmpty()
                             if (unchanged) g to null
                             else g to runCatching { Netease.playlistSongs(g.nmId) }
@@ -3766,7 +3815,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 var likedLocalOnly = 0
                 var mergedFav: Set<String> = favBefore
                 var favChanged = false
-                if (likeGroup != null && (!quiet || prefs.nmLikeStamp != likeKey)) {
+                if (likeGroup != null && (force || !quiet || prefs.nmLikeStamp != likeKey)) {
                     val likeSongs = runCatching { Netease.playlistSongs(likeGroup.nmId) }
                         .getOrDefault(emptyList<Song>())
                     all.addAll(likeSongs)
@@ -3795,21 +3844,65 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     NmLog.note("红心歌单指纹未变，跳过合并 pid=${likeGroup.nmId}")
                 }
 
+                // 26.11.91：把本地曲库 / 本站歌也映射到网易云 id，才能「上传所有歌曲」。
+                // 索引覆盖所有本地歌单曲目 + 本轮拉到的云端曲目，避免拿不到歌名。
+                val songIndex = withContext(Dispatchers.Main) {
+                    val localSsids = local.flatMap { it.songs }.distinct()
+                    val known = songsByIds(localSsids).associateBy { it.ssid }
+                    known + fetched.flatMap { it.second.orEmpty() }.associateBy { it.ssid }
+                }
+
+                var pushed = 0        // 实际补传到云端的歌曲数
+                var pushedPl = 0      // 发生补传的歌单数
+                var pulled = 0        // 从云端补回本地的歌曲数
+                var created = 0       // 新建的云端歌单数
+                var recreated = 0     // 云端已删、本地仍在 → 重新建回来的歌单数
+                var unmapped = 0      // 找不到网易云 id 的本地歌
+
                 for ((g, songs) in fetched) {
                     if (songs != null) all.addAll(songs)
-                    val ids = songs?.map { it.ssid }
+                    val cloudSongs = songs.orEmpty()
+                    val cloudSsids = cloudSongs.map { it.ssid }
+                    val cloudIds = cloudSongs.map { it.nmId }.filter { it > 0L }.toSet()
                     val at = local.indexOfFirst { it.nmId == g.nmId && g.nmId > 0L }
                     if (at >= 0) {
                         val old = local[at]
                         val name = if (old.cloudBase != null && old.name.endsWith(CLOUD_TAG))
                             g.title + CLOUD_TAG else g.title
+                        // 26.11.91：双向曲目对账。以前直接拿云端曲目覆盖本地，
+                        // 本地后加的歌一同步就被抹掉；现在两边取并集：
+                        // 本地独有的补传云端，云端独有的补回本地，两边最终都有全部歌。
+                        val (localIds, miss) = resolveUploadIds(old.songs, songIndex)
+                        unmapped += miss
+                        val localIdSet = localIds.toSet()
+                        val cloudOnly = if (songs == null) emptyList() else
+                            cloudSongs.filter { it.nmId > 0L && it.nmId !in localIdSet }
+                                .map { it.ssid }
+                        val merged = (old.songs + cloudOnly).distinct()
+                        pulled += (merged.size - old.songs.size).coerceAtLeast(0)
                         local[at] = old.copy(
                             name = name, cloudBase = g.title,
-                            songs = ids ?: old.songs,
+                            songs = merged,
                             cover = g.cover ?: old.cover,
                             cloudReadOnly = g.readOnly,
                             cloudStamp = g.cloudStamp,
                         )
+                        // 本地有、云端没有的歌强制补传（收藏歌单云端不允许写）
+                        val missing = localIds.filter { it !in cloudIds }
+                        if (!g.readOnly && songs != null && missing.isNotEmpty()) {
+                            val ok = runCatching { Netease.playlistAddBatch(g.nmId, missing) }
+                                .getOrDefault(0)
+                            if (ok > 0) { pushed += ok; pushedPl++ }
+                        }
+                        // 曲目集合变了就顺带把顺序对齐：/song/order/update 要的是
+                        // 整张歌单的目标顺序，只有全部曲目都能映射到网易云 id 时才发，
+                        // 否则传半份会把云端其它歌挤掉。
+                        if (force && !g.readOnly && songs != null) {
+                            val (ordered, missed) = resolveUploadIds(merged, songIndex)
+                            if (missed == 0 && ordered.size >= 2) {
+                                runCatching { Netease.songOrder(g.nmId, ordered) }
+                            }
+                        }
                         if (songs == null) skipped++ else updated++
                     } else {
                         val clash = local.any {
@@ -3821,7 +3914,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                             Playlist(
                                 id = UUID.randomUUID().toString(),
                                 name = name,
-                                songs = ids ?: emptyList(),
+                                songs = cloudSsids,
                                 cover = g.cover,
                                 nmId = g.nmId,
                                 cloudBase = g.title,
@@ -3832,18 +3925,37 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         added++
                     }
                 }
-                // 本地上传：本地自建（nmId=0）的歌单在云端建一份并回填 id
-                var uploaded = 0
+
+                // 26.11.91：本地有、云端没有的歌单 → 在云端创建并上传**所有**歌曲。
+                // 以前只传 neteaseIdOf 能解析的歌，本站曲库的歌全被丢掉；现在按
+                // 歌名+歌手映射成网易云 id，分批上传，失败还能拆半重投。
+                // 云端这次返回的自建歌单 id 集合：本地仍带着某个 nmId、但云端
+                // 已经没有这张歌单时，说明它是在别处被删掉的。以前这种歌单
+                // nmId>0 直接跳过，永远同步不回来；现在重新 create 并回填新 id。
+                val returnedIds = mine.map { it.nmId }.toHashSet()
                 for (i in local.indices) {
                     val pl = local[i]
-                    if (pl.nmId > 0L || pl.cloudReadOnly) continue
+                    if (pl.cloudReadOnly) continue
+                    // 云端列表整体拉空时不能判「云端已删」——那多半是接口
+                    // 偶发失败，全部重建会在云端刷出一堆重复歌单。
+                    val orphan = cloudAll.isNotEmpty() && pl.nmId > 0L &&
+                        pl.nmId !in returnedIds && pl.nmId.toString() !in deleted
+                    if (pl.nmId > 0L && !orphan) continue
+                    if (orphan) {
+                        prefs.nmDeletedPids = prefs.nmDeletedPids - pl.nmId.toString()
+                    }
                     val pid = runCatching { Netease.playlistCreate(cloudName(pl)) }
                         .getOrDefault(0L)
                     if (pid <= 0L) continue
-                    val nids = pl.songs.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }
-                    if (nids.isNotEmpty()) runCatching { Netease.playlistAdd(pid, nids) }
+                    val (ids, miss) = resolveUploadIds(pl.songs, songIndex)
+                    unmapped += miss
+                    if (ids.isNotEmpty()) {
+                        pushed += runCatching { Netease.playlistAddBatch(pid, ids) }
+                            .getOrDefault(0)
+                    }
                     local[i] = pl.copy(nmId = pid, cloudBase = cloudName(pl))
-                    uploaded++
+                    created++
+                    if (orphan) recreated++
                 }
                 val readOnlyCount = mine.count { it.readOnly }
                 withContext(Dispatchers.Main) {
@@ -3855,9 +3967,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     savePl(local)
                     nmSyncing = false
                     if (!quiet) toast(
-                        "同步完成：云端 ${mine.size} 张（收藏 $readOnlyCount），" +
-                            "新增 $added / 更新 $updated / 未变 $skipped，上传 $uploaded 个；" +
-                            "红心合并 +$likedFromCloud / 上传 $likedToCloud" +
+                        "强制全部同步完成：云端 ${mine.size} 张（收藏 $readOnlyCount），" +
+                            "新增 $added / 更新 $updated / 未变 $skipped；" +
+                            "新建云端歌单 $created 个（重建 $recreated），" +
+                            "补传 $pushed 首（$pushedPl 张），" +
+                            "补回本地 $pulled 首" +
+                            (if (unmapped > 0) "，未匹配 $unmapped 首" else "") +
+                            "；红心合并 +$likedFromCloud / 上传 $likedToCloud" +
                             (if (likedLocalOnly > 0) " / 本地专属 $likedLocalOnly 首不上传" else "")
                     )
                 }
@@ -3865,10 +3981,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val orderIds = local.filter { !it.cloudReadOnly }
                     .mapNotNull { it.nmId.takeIf { v -> v > 0L } }
                 if (orderIds.size >= 2) runCatching { Netease.playlistOrder(orderIds) }
+                // 26.11.91：排队的那次强制同步在本轮全部写完之后再跑，
+                // 不会和刚结束的这一轮抢 cookie / 连接 / 本地歌单状态。
+                val again = pendingForceSync
+                pendingForceSync = false
+                if (again) syncNmPlaylists(quiet = true, force = true)
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     nmSyncing = false
                     if (!quiet) toast("同步失败：${e.message ?: "未知错误"}")
+                }
+                if (pendingForceSync) {
+                    pendingForceSync = false
+                    syncNmPlaylists(quiet = true, force = true)
                 }
             }
         }

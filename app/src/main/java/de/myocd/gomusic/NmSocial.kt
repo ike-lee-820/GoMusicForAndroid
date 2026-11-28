@@ -191,8 +191,34 @@ object NmSocial {
             val name = str(res, "name", "title", "songName", "albumName", "playlistName")
                 .ifBlank { str(o, "msg", "text", "content") }
             val id = lng(res, "id", "songId", "albumId", "playlistId", "voiceId")
-            Triple(name.ifBlank { raw }, id, kind)
-        }.getOrDefault(Triple(raw, 0L, "text"))
+            // 26.11.91：资源私信的 msg 是一段 JSON，里面塞满了 picUrl / coverUrl
+            // 等封面图地址。解析不出名字时绝不能把整段 JSON 回退成显示文本，
+            // 否则气泡里会印出一大串图片链接（用户看到的就是「分享专辑显示图片链接」）。
+            val clean = name.takeIf { it.isNotBlank() && !it.trim().startsWith("{") }
+                ?: "分享的资源"
+            Triple(clean, id, kind)
+        }.getOrDefault(Triple("分享的资源", 0L, "text"))
+    }
+
+    /** 26.11.91：气泡里给人看的文本，绝不能带 JSON 或图片 CDN 链接 */
+    fun cleanDisplayText(raw: String): String {
+        val t = raw.trim()
+        if (t.startsWith("{")) return parseResource(t).first
+        // 纯文本里若只混进了图片地址，也不原样展示
+        if (t.startsWith("http", true) && isImageUrl(t)) return "[图片]"
+        return t
+    }
+
+    /** 图片 CDN 链接：不能当可点链接展示，也不能印在气泡正文里 */
+    fun isImageUrl(u: String): Boolean {
+        val low = u.lowercase()
+        val path = low.substringBefore('?')
+        return path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+            path.endsWith(".png") || path.endsWith(".webp") ||
+            path.endsWith(".gif") || path.endsWith(".bmp") ||
+            low.contains("music.126.net") || low.contains("nosdn.127.net") ||
+            low.contains("/obj/") ||
+            (low.contains("param=") && low.contains("image"))
     }
 
     private fun userOf(e: JsonElement?): UserBrief = UserBrief(
@@ -228,7 +254,8 @@ object NmSocial {
         array(r, "msgs", "list").map { m ->
             val from = userOf(m["fromUser"] ?: m["user"] ?: m["friend"])
             val lastRaw = str(m, "lastMsg", "msg", "lastMessage", "content")
-            val (last, _, _) = parseResource(lastRaw)
+            val (last0, _, _) = parseResource(lastRaw)
+            val last = cleanDisplayText(last0)
             Conversation(
                 uid = from.id.takeIf { it > 0 } ?: lng(m, "fromUserId", "uid", "userId"),
                 name = from.name.ifBlank { str(m, "nickname", "name") },
@@ -254,7 +281,8 @@ object NmSocial {
                 m["fromUser"] ?: m["user"], "userId", "uid", "id",
             ).takeIf { it > 0 } ?: lng(m, "fromUserId", "uid")
             val raw = str(m, "msg", "content", "text", "lastMsg")
-            val (text, resId, parsedKind) = parseResource(raw)
+            val (parsedText, resId, parsedKind) = parseResource(raw)
+            val text = cleanDisplayText(parsedText)
             val resObj = listOf(m["song"], m["album"], m["playlist"], m["resource"])
                 .firstOrNull { it != null }
             // 26.11.86：资源 id 可能散落在 JSON 内、附件对象、消息顶层，
@@ -280,7 +308,7 @@ object NmSocial {
                 kind = kind,
                 resId = id,
                 resName = str(resObj, "name", "title").ifBlank {
-                    if (kind != "text") text else ""
+                    if (kind != "text") cleanDisplayText(text) else ""
                 },
                 resCover = cover(resObj) ?: cover(m),
                 raw = raw,

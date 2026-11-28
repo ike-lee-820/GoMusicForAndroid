@@ -2078,6 +2078,69 @@ object Netease {
     }
 
     /**
+     * 26.11.91：把一批歌曲**分批**加进云端歌单，返回真正成功写入的数量。
+     *
+     * 以前同步时一次把整张歌单的 id 全拼进 tracks=，歌单一多 URL 超长、
+     * 或中间某个 id 不被接受就整批失败，而且失败没有任何重试与计数，
+     * 表面显示「同步完成」，云端其实一首都没加。这里按 100 个一批、
+     * 走同步专用客户端（不抢播放链路）、失败再退半批重投。
+     */
+    fun playlistAddBatch(pid: Long, trackIds: List<Long>): Int {
+        if (pid <= 0L) return 0
+        val ids = trackIds.distinct().filter { it > 0L }
+        if (ids.isEmpty()) return 0
+        var ok = 0
+        ids.chunked(100).forEach { batch ->
+            val r = runCatching {
+                get(
+                    "/playlist/tracks",
+                    "op" to "add", "pid" to pid.toString(),
+                    "tracks" to batch.joinToString(","),
+                    http = syncClient, tries = 1,
+                )
+            }.getOrNull()
+            if (r != null && r.code() == 200) ok += batch.size
+            else if (batch.size > 1) {
+                // 整批失败时拆半再试，尽量把能加的都加进去
+                batch.chunked((batch.size + 1) / 2).forEach { half ->
+                    val r2 = runCatching {
+                        get(
+                            "/playlist/tracks",
+                            "op" to "add", "pid" to pid.toString(),
+                            "tracks" to half.joinToString(","),
+                            http = syncClient, tries = 1,
+                        )
+                    }.getOrNull()
+                    if (r2 != null && r2.code() == 200) ok += half.size
+                }
+            }
+        }
+        NmLog.note("歌单分批加歌 pid=$pid 成功 $ok/${ids.size}")
+        return ok
+    }
+
+    /**
+     * 26.11.91：把「歌名 + 歌手」映射到网易云歌曲 id。
+     *
+     * 本站曲库 / 本地音频没有 nmId，直接丢给 /playlist/tracks 会被忽略，
+     * 于是本地歌单上传后云端永远少歌。这里用轻量搜索（不 enrich）找同名同
+     * 歌手的第一首，尽量把「所有歌曲」都传上去；找不到就由调用方计入未上传。
+     */
+    fun resolveSongId(title: String, artist: String): Long {
+        if (title.isBlank()) return 0L
+        val kw = (title + " " + artist).trim()
+        val list = runCatching {
+            searchSongs(kw, limit = 10, enrichResult = false)
+        }.getOrDefault(emptyList())
+        val exact = list.firstOrNull {
+            it.nmId > 0L && it.title.equals(title, ignoreCase = true) &&
+                (artist.isBlank() || it.artist.contains(artist, ignoreCase = true) ||
+                    artist.contains(it.artist, ignoreCase = true))
+        }
+        return (exact ?: list.firstOrNull { it.nmId > 0L })?.nmId ?: 0L
+    }
+
+    /**
      * 26.11.71：把一批歌曲加进「我喜欢的音乐」歌单。
      *
      * 这个歌单虽然 specialType=5，但 /playlist/tracks?op=add 对它是可用的；

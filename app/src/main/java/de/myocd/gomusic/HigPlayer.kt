@@ -1189,9 +1189,20 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
     val lyricLineHeight = (lyricSizeSp * LYRIC_LINE_HEIGHT_RATIO).sp
     // 26.11.54：切进歌词页时列表初始就在当前行，不要从 index 0 一路动画
     // 滚到目标行。用 key(w) 让换歌时状态重建，并把初始行设成 activeIndex。
-    val initialIndex = w.activeIndex(vm.positionMs).takeIf { it >= 0 }
-        ?: w.lastBodyIndex().coerceAtLeast(0)
-    val state = key(w) { rememberLazyListState(initialFirstVisibleItemIndex = initialIndex) }
+    /**
+     * 26.11.93：切到下一首歌必须回到第一句。
+     *
+     * 旧版拿 w.activeIndex(vm.positionMs) 算初始行：切歌瞬间 vm.positionMs
+     * 仍是上一首的末尾（播放器收起时轮询 1s 才更新，甚至不更新），对新歌词
+     * 就会算出「最后一句」，列表从末尾开始 —— 正是「切歌不出现在第一句」。
+     * 现在按歌曲 id 重建 state，并固定从歌词第一行落位。同一首歌在封面页 /
+     * 歌词页之间切换时 state 不重建，仍停在正在唱的那句，不受影响。
+     */
+    val firstIndex = w.lines.indexOfFirst { !it.meta }.coerceAtLeast(0)
+    val initialIndex = firstIndex
+    val state = key(vm.wordLyricSsid) {
+        rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    }
     /**
      * 26.11.92：老式（行级 LRC）歌词的高亮行。
      * 逐字歌词必须严格按时间轴即时高亮，但行级歌词整句同时点亮时，
@@ -1199,20 +1210,23 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
      * 现在行级歌词等滚动动画结束才把高亮切到新句 —— 滚动完成时
      * 刚好跳转到该句。制作信息 / 前奏间奏行不受这个延迟影响。
      */
-    val displayActive = remember(w) { mutableIntStateOf(initialIndex) }
+    val displayActive = remember(vm.wordLyricSsid) { mutableIntStateOf(initialIndex) }
     // 26.11.48：两种歌词都要自动跟随当前行滚动，区别只在刷新频率与是否逐字渲染。
     // 26.11.46 把「无高级歌词不要滚动」误解成列表完全静止，老歌词播到后面几行
     // 还停在顶部；实际要的是「行级跟随滚动」，不要的是逐字扫光那种逐帧滚。
     val wordTiming = w.hasWordTiming
     // 逐帧位置：ViewModel 的 250ms 轮询只够进度条，逐字卡拉 OK 必须每帧一个位置，
     // 否则一次跳 250ms，几个字一起变色，看起来就是「生硬跳动」。
-    val framePos = remember { mutableLongStateOf(vm.positionMs) }
+    val framePos = remember(w) { mutableLongStateOf(0L) }
     val userScrollUntil = remember { mutableLongStateOf(0L) }
     // 26.11.79：切句翻动的即时进度 0..1，只驱动当前行的轻微扭动，
     // 不碰逐字时间轴，字亮起的时刻仍与演唱时间一一对应。
     val wobble = remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(w) {
+    LaunchedEffect(w, vm.wordLyricSsid) {
         var lastActive = -1
+        // 26.11.93：新歌词的第一次迭代直接落位第一句，不用任何可能仍是
+        // 上一首末尾的位置去算 activeIndex，否则又会被滚到最后一。
+        var fresh = true
         // 26.11.51：只保留一个滚动协程。以前每切一行就 launch 一个新
         // animateScrollToItem，几个动画并发会互相打断，看起来也会漏行。
         var scrollJob: Job? = null
@@ -1224,13 +1238,25 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
         while (true) {
             if (wordTiming) {
                 if (vm.isPlaying) withFrameNanos { it } else delay(100)
-                framePos.longValue = vm.controller?.currentPosition?.coerceAtLeast(0) ?: vm.positionMs
             } else {
                 // 26.11.92：行级歌词从 250ms 收紧到 60ms。旧版最多晚
                 // 250ms 才发现切句，再叠 520ms 滚动，整句要 770ms 才到位，
                 // 看起来就是「卡顿 / 慢半拍」。
                 delay(60)
-                framePos.longValue = vm.positionMs
+            }
+            // 26.11.93：两种歌词都直接读播放器真实位置，不再用 250ms 轮询的
+            // vm.positionMs。切歌后它立刻就是新歌的 0，不会残留上一首末尾。
+            framePos.longValue = vm.controller?.currentPosition?.coerceAtLeast(0L)
+                ?: vm.positionMs
+            if (fresh) {
+                fresh = false
+                positioned = true
+                lastActive = firstIndex
+                suppressed = false
+                scrollJob?.cancel()
+                state.scrollToItem(firstIndex)
+                displayActive.intValue = firstIndex
+                continue
             }
             // 26.11.51：这里**不再**读 state.isScrollInProgress。
             // 它对 animateScrollToItem 自己发起的滚动也返回 true，于是每自动
@@ -1375,12 +1401,13 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
 }
 
 /**
- * 26.11.92：前奏 / 间奏的三点动画。
+ * 26.11.93：前奏 / 间奏的三点动画（按反馈重做）。
  *
- * 触发条件：当前行是单句 "Music"（M 大写）且后面还有歌词。播放位置进入
- * 这一行时，行间间距先增大、三点浮现，随后沿横向由亮变暗逐个扫过；
- * 段尾三点全部回到亮色并淡出、间距缩回，接着自然接上下一句。
- * 逐帧直接读播放器位置，所以逐字歌词和行级 LRC 都不会 250ms 一跳。
+ * - 左对齐，和歌词正文同一个起始内边距
+ * - 固定小高度（14~22dp），不再用上下各 46dp 的 padding 把列表撑开
+ * - 颜色由灰到黑：三点从左到右逐个从 muted 灰变成文字色（亮色主题即纯黑），
+ *   段尾三点全部到黑再一起淡出，间距同步收拢，接上下一句
+ * - 逐帧读播放器真实位置，逐字歌词和行级 LRC 都不会 250ms 一跳
  */
 @Composable
 private fun InterludeDots(
@@ -1400,27 +1427,30 @@ private fun InterludeDots(
         }
     }
     val t = p.floatValue
-    // 0..0.14 浮现并撑开间距，0.86..1 淡出并收回间距
+    // 0..0.14 浮现并撑开一点间距，0.86..1 淡出并收回间距
     val envelope = smoothstep((t / 0.14f).coerceIn(0f, 1f)) *
         (1f - smoothstep(((t - 0.86f) / 0.14f).coerceIn(0f, 1f)))
-    val spread = 46f * envelope
-    // 三点从左到右由亮变暗；0.72 之后全部回到亮色
+    val spread = 8f * envelope
+    // 三点从左到右由灰变黑；0.72 之后全部到黑
     val scan = smoothstep(((t - 0.14f) / 0.58f).coerceIn(0f, 1f))
-    val allBright = smoothstep(((t - 0.72f) / 0.16f).coerceIn(0f, 1f))
+    val allBlack = smoothstep(((t - 0.72f) / 0.16f).coerceIn(0f, 1f))
+    val gray = go.muted.copy(alpha = 0.55f)
     Row(
         Modifier.fillMaxWidth()
-            .padding(vertical = spread.dp)
+            .height((14f + spread).dp)
+            .padding(start = 8.dp)
             .graphicsLayer { alpha = envelope },
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         repeat(3) { i ->
-            val dark = ((scan * 3f - i).coerceIn(0f, 1f)) * (1f - allBright)
+            val toBlack = smoothstep(((scan * 3f - i).coerceIn(0f, 1f)))
+                .coerceAtLeast(allBlack)
             Box(
-                Modifier.size(9.dp).clip(CircleShape)
-                    .background(mixColor(go.primary, go.muted.copy(alpha = 0.5f), dark)),
+                Modifier.size(7.dp).clip(CircleShape)
+                    .background(mixColor(gray, go.on, toBlack)),
             )
-            if (i < 2) Spacer(Modifier.width(12.dp))
+            if (i < 2) Spacer(Modifier.width(10.dp))
         }
     }
 }

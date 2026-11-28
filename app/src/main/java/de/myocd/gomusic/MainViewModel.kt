@@ -875,6 +875,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 解析的，必须把缓存译文重新贴一次，否则「翻译完下次又不显示」。
      */
     private fun installWordLyric(w: WordLyric?, id: String, lrc: String) {
+        wordLyricSsid = id
         wordLyric = w ?: WordLyricParser.parse(lrc = lrc)
         val cached = transCache[id]
         if (!cached.isNullOrEmpty() && cached.any { it.isNotBlank() }) {
@@ -2691,6 +2692,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 逐字歌词（第 1 期只落数据层；播放器老歌词列表仍用行级 lyric） */
     var wordLyric by mutableStateOf<WordLyric?>(null); private set
+    /**
+     * 26.11.93：这份歌词属于哪首歌。播放器歌词列表用它做 state 的 key，
+     * 切到下一首时强制重建滚动状态并回到第一句；不能用 WordLyric 对象本身
+     * 当 key（data class 相等时不会触发重建），也不能拿 positionMs 算初始行
+     * （切歌瞬间它还是上一首的末尾，会把新歌词定位到最后一句）。
+     */
+    var wordLyricSsid by mutableStateOf(""); private set
 
     /** 聚合搜索结果：一次回车拿全三类，切板块只切筛选不重发 */
     var aggregate by mutableStateOf<Netease.Aggregate?>(null); private set

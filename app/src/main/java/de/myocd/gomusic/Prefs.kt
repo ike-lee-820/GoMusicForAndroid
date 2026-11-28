@@ -52,10 +52,22 @@ data class CachedChat(
     val resId: Long = 0,
     val resName: String = "",
     val resCover: String? = null,
+    val raw: String = "",
 )
 
 /** 每个会话最多缓存的消息数（超出丢最老的，最新的永远保留） */
 const val MAX_CHAT_CACHE = 400
+
+/** 26.11.86：会话列表缓存（与 NmSocial.Conversation 对应） */
+@Serializable
+data class CachedConversation(
+    val uid: Long = 0,
+    val name: String = "",
+    val avatar: String? = null,
+    val last: String = "",
+    val time: Long = 0,
+    val unread: Int = 0,
+)
 
 @Serializable
 data class Playlist(
@@ -401,5 +413,22 @@ class Prefs(ctx: Context) {
         set(v) {
             sp.edit().putString("chat_read_stamps", json.encodeToString(v)).apply()
         }
+
+
+    // ---------- 26.11.86：会话列表缓存 ----------
+
+    /** 进入社交页先读缓存，网络回来只合并新增/更新，不整体清空 */
+    fun chatListCache(): List<CachedConversation> = runCatching {
+        json.decodeFromString<List<CachedConversation>>(
+            sp.getString("chat_list_cache", "[]")!!,
+        )
+    }.getOrDefault(emptyList())
+
+    fun putChatListCache(list: List<CachedConversation>) {
+        sp.edit().putString(
+            "chat_list_cache",
+            json.encodeToString(list.distinctBy { it.uid }.take(200)),
+        ).apply()
+    }
 
 }

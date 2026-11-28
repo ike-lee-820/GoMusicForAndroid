@@ -53,6 +53,15 @@ data class ListenPlaylist(
     val tracks: List<ListenTrack> = emptyList(),
 )
 
+/** 26.11.86：一起听里可选/可搜的歌单摘要 */
+data class PlaylistBrief(
+    val id: Long = 0,
+    val name: String = "",
+    val cover: String? = null,
+    val trackCount: Int = 0,
+    val creator: String = "",
+)
+
 /** 房间状态：是否还在房间里 + 在线用户 */
 data class RoomStatus(
     val inRoom: Boolean = false,
@@ -294,6 +303,47 @@ object ListenTogetherApi {
     }.getOrDefault(false)
 
     // ---------------------------------------------------------------- 歌单 / 歌曲详情
+
+    /** 26.11.86：搜索歌单（type=1000），结果进「一起听」的候选列表 */
+    fun searchPlaylists(keyword: String, limit: Int = 20, offset: Int = 0): List<PlaylistBrief> =
+        runCatching {
+            val k = keyword.trim()
+            if (k.isBlank()) return@runCatching emptyList()
+            val r = call(
+                "/search", false,
+                "keywords" to k, "type" to "1000",
+                "limit" to limit.toString(), "offset" to offset.toString(),
+            )
+            val d = obj(r["data"]) ?: obj(r["result"]) ?: r
+            val plArr = arr(child(d, "playlists")) +
+                arr(child(obj(r["result"]), "playlists")) +
+                arr(child(obj(r["data"]), "playlists"))
+            plArr.distinctBy { num(it, "id") }
+                .map(::toPlaylistBrief)
+                .filter { it.id > 0L }
+        }.getOrDefault(emptyList())
+
+    /** 26.11.86：我的歌单（自建 + 收藏），直接选来同步进房间 */
+    fun myPlaylists(uid: Long): List<PlaylistBrief> = runCatching {
+        if (uid <= 0L) return@runCatching emptyList()
+        val r = call(
+            "/user/playlist", false,
+            "uid" to uid.toString(), "limit" to "1000", "offset" to "0",
+        )
+        val plArr = arr(child(r, "playlist")) + arr(child(obj(r["data"]), "playlist"))
+        plArr.distinctBy { num(it, "id") }.map(::toPlaylistBrief).filter { it.id > 0L }
+    }.getOrDefault(emptyList())
+
+    private fun toPlaylistBrief(o: JsonObject): PlaylistBrief = PlaylistBrief(
+        id = num(o, "id"),
+        name = text(o, "name", "title"),
+        cover = text(o, "coverImgUrl", "picUrl", "cover", "imgUrl")
+            .takeIf { it.startsWith("http") },
+        trackCount = num(o, "trackCount", "trackCnt", "count").toInt(),
+        creator = obj(child(o, "creator"))?.let {
+            text(it, "nickname", "name", "userName")
+        }.orEmpty(),
+    )
 
     /** /playlist/detail + /song/detail，返回歌单名与可点的曲目 */
     fun playlistDetail(id: Long): ListenPlaylist = runCatching {

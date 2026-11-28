@@ -46,6 +46,8 @@ object NmSocial {
         val resId: Long = 0,
         val resName: String = "",
         val resCover: String? = null,
+        /** 26.11.86：服务端原始 msg，用于识别其中的链接（JSON 资源消息里也不丢） */
+        val raw: String = "",
     )
 
     data class Podcast(
@@ -155,6 +157,21 @@ object NmSocial {
     }
 
     /** 资源私信在 msg 里是一段 JSON 字符串，尽量解出标题 / id / 类型 */
+    /** 26.11.86：从网易云网页链接里认出资源类型与 id，供气泡点击 */
+    private fun idFromNeteaseLink(raw: String): Pair<String, Long> {
+        if (!raw.contains("music.163.com", true)) return "" to 0L
+        val kind = when {
+            Regex("""/(song|#/song)""", RegexOption.IGNORE_CASE).containsMatchIn(raw) -> "song"
+            Regex("""/(album|#/album)""", RegexOption.IGNORE_CASE).containsMatchIn(raw) -> "album"
+            Regex("""/(playlist|discover/toplist|#/playlist)""", RegexOption.IGNORE_CASE).containsMatchIn(raw) -> "playlist"
+            else -> ""
+        }
+        val id = Regex("""[?&]id=(\d+)""").find(raw)?.groupValues?.get(1)?.toLongOrNull()
+            ?: Regex("""/(?:song|album|playlist)/(\d+)""").find(raw)?.groupValues?.get(1)?.toLongOrNull()
+            ?: 0L
+        return kind to id
+    }
+
     private fun parseResource(raw: String): Triple<String, Long, String> {
         if (!raw.trim().startsWith("{")) return Triple(raw, 0L, "text")
         return runCatching {
@@ -237,20 +254,36 @@ object NmSocial {
                 m["fromUser"] ?: m["user"], "userId", "uid", "id",
             ).takeIf { it > 0 } ?: lng(m, "fromUserId", "uid")
             val raw = str(m, "msg", "content", "text", "lastMsg")
-            val (text, resId, kind) = parseResource(raw)
+            val (text, resId, parsedKind) = parseResource(raw)
             val resObj = listOf(m["song"], m["album"], m["playlist"], m["resource"])
                 .firstOrNull { it != null }
+            // 26.11.86：资源 id 可能散落在 JSON 内、附件对象、消息顶层，
+            // 或干脆只写在 music.163.com 链接里 —— 全都找一遍，气泡才能点开。
+            val (linkKind, linkId) = idFromNeteaseLink(raw)
+            val inferredKind = when {
+                parsedKind != "text" -> parsedKind
+                m.containsKey("song") -> "song"
+                m.containsKey("album") -> "album"
+                m.containsKey("playlist") -> "playlist"
+                else -> linkKind
+            }
+            val id = resId.takeIf { it > 0 }
+                ?: lng(resObj, "id", "songId", "albumId", "playlistId").takeIf { it > 0 }
+                ?: lng(m, "songId", "albumId", "playlistId", "resourceId").takeIf { it > 0 }
+                ?: linkId
+            val kind = if (inferredKind != "text" && id > 0L) inferredKind else "text"
             ChatMessage(
                 id = lng(m, "msgId", "id", "messageId"),
                 time = lng(m, "time", "createTime", "msgTime"),
                 fromSelf = me > 0 && fromId == me,
                 text = text,
                 kind = kind,
-                resId = if (resId > 0) resId else lng(resObj, "id", "songId", "albumId", "playlistId"),
+                resId = id,
                 resName = str(resObj, "name", "title").ifBlank {
                     if (kind != "text") text else ""
                 },
                 resCover = cover(resObj) ?: cover(m),
+                raw = raw,
             )
         }
     }.getOrDefault(emptyList())

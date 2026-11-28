@@ -4705,6 +4705,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** /pl/count：私信未读 to 通知未读 */
     var socialCounts by mutableStateOf(0 to 0); private set
+    /** 26.11.86：社交页当前子页（0 私信 / 1 找朋友 / 2 一起听），由 VM 持有以便链接跳转 */
+    var socialTab by mutableIntStateOf(0); private set
     var conversations by mutableStateOf<List<NmSocial.Conversation>>(emptyList()); private set
     var socialBusy by mutableStateOf(false); private set
     var socialError by mutableStateOf(""); private set
@@ -4734,6 +4736,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private var ltClientSeq = 1
     private var ltLastHeartbeat = 0L
     private var ltAutoLoginDone = false
+    /** 26.11.86：一起听的歌单候选（搜索结果 / 我的歌单） */
+    var ltPlaylistQuery by mutableStateOf(""); private set
+    var ltPlaylistResults by mutableStateOf<List<PlaylistBrief>>(emptyList()); private set
+    var ltMyPlaylists by mutableStateOf<List<PlaylistBrief>>(emptyList()); private set
+    var ltPlaylistBusy by mutableStateOf(false); private set
 
     // ---------- 播客 ----------
     var podcastQuery by mutableStateOf(""); private set
@@ -4895,30 +4902,65 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ---------- 私信 ----------
 
     /** 会话列表 + 私信 / 通知未读数 */
+    private fun toCachedConv(c: NmSocial.Conversation) = CachedConversation(
+        uid = c.uid, name = c.name, avatar = c.avatar,
+        last = c.last, time = c.time, unread = c.unread,
+    )
+
+    private fun fromCachedConv(c: CachedConversation) = NmSocial.Conversation(
+        uid = c.uid, name = c.name, avatar = c.avatar,
+        last = c.last, time = c.time, unread = c.unread,
+    )
+
+    /** 已读基线：把「已经看过的那批未读」从会话与总计数里扣掉 */
+    private fun applyReadBaseline(list: List<NmSocial.Conversation>): Pair<List<NmSocial.Conversation>, Int> {
+        val stamps = prefs.chatReadStamps
+        var cleared = 0
+        val out = list.map { c ->
+            val st = stamps[c.uid.toString()] ?: 0L
+            if (st > 0L && chatTimeMs(c.time) <= st) {
+                cleared += c.unread.coerceAtLeast(0)
+                c.copy(unread = 0)
+            } else c
+        }
+        return out to cleared
+    }
+
+    /**
+     * 26.11.86：会话列表也走「缓存优先 + 增量新增」。
+     * 进页面先铺本地缓存（0 秒可见），网络回来按 uid 合并：服务端本次
+     * 返回的会话用最新数据，缓存里服务端没返回的旧会话保留在后面，
+     * 不再像以前那样 conversations 非空就直接不发请求。
+     */
     fun loadSocial(force: Boolean = false) {
         if (socialBusy) return
-        if (!force && conversations.isNotEmpty()) return
+        if (conversations.isEmpty()) {
+            val cached = prefs.chatListCache().map(::fromCachedConv)
+            if (cached.isNotEmpty()) {
+                conversations = applyReadBaseline(cached).first
+            }
+        }
         socialBusy = true
         socialError = ""
         viewModelScope.launch {
             val (counts, list) = withContext(Dispatchers.IO) {
                 NmSocial.plCount() to NmSocial.conversations()
             }
-            // 26.11.85：服务端未读数常常滞后（/pl/count 不会因打开会话立刻归零）。
-            // 用本地「已读基线」把已经看过的那批未读扣掉，红点不会又冒出来；
-            // 有新消息时会话 time 超过基线，提醒自动恢复。
-            val stamps = prefs.chatReadStamps
-            val cleared = list.sumOf { c ->
-                val st = stamps[c.uid.toString()] ?: 0L
-                if (st > 0L && chatTimeMs(c.time) <= st) c.unread.coerceAtLeast(0) else 0
-            }
-            conversations = list.map { c ->
-                val st = stamps[c.uid.toString()] ?: 0L
-                if (st > 0L && chatTimeMs(c.time) <= st) c.copy(unread = 0) else c
-            }
+            val byUid = HashMap<Long, NmSocial.Conversation>()
+            // 缓存先入 map，服务端结果覆盖同名 uid（拿到最新 last / time / unread）
+            conversations.forEach { byUid[it.uid] = it }
+            list.forEach { byUid[it.uid] = it }
+            // 服务端顺序优先（最新在前），其余按 time 降序补在后面
+            val freshIds = list.map { it.uid }.toHashSet()
+            val merged = list.mapNotNull { byUid[it.uid] } +
+                byUid.values.filter { it.uid !in freshIds }.sortedByDescending { it.time }
+            // 计数只按服务端本次返回的未读扣，避免缓存里的旧未读重复扣
+            val (shown, cleared) = applyReadBaseline(merged)
+            conversations = shown
             socialCounts = (counts.first - cleared).coerceAtLeast(0) to counts.second
+            prefs.putChatListCache(shown.map(::toCachedConv))
             socialBusy = false
-            if (list.isEmpty()) socialError = "登录后才能查看私信"
+            if (shown.isEmpty()) socialError = "登录后才能查看私信"
         }
     }
 
@@ -4927,11 +4969,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun toCached(m: NmSocial.ChatMessage) = CachedChat(
         id = m.id, time = m.time, fromSelf = m.fromSelf, text = m.text,
         kind = m.kind, resId = m.resId, resName = m.resName, resCover = m.resCover,
+        raw = m.raw,
     )
 
     private fun fromCached(c: CachedChat) = NmSocial.ChatMessage(
         id = c.id, time = c.time, fromSelf = c.fromSelf, text = c.text,
         kind = c.kind, resId = c.resId, resName = c.resName, resCover = c.resCover,
+        raw = c.raw,
     )
 
     /** 同一条消息在缓存 / 首页 / 翻页里都会出现，按稳定 key 去重 */
@@ -5050,6 +5094,74 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             toast(if (ok) "已分享到私信" else "分享失败，请检查登录与网络")
             if (ok && uid == chatUid) loadChat()
         }
+    }
+
+    fun chooseSocialTab(i: Int) { socialTab = i }
+
+    /** 26.11.86：点击私信里的歌曲 / 专辑 / 歌单卡片，直接进对应内容 */
+    fun openChatResource(m: NmSocial.ChatMessage) {
+        val id = m.resId
+        if (m.kind == "text" || id <= 0L) {
+            toast("这条消息没有可用的资源 id，无法打开")
+            return
+        }
+        val name = m.resName.ifBlank { m.text }
+        when (m.kind) {
+            "song" -> {
+                val so = Song(
+                    ssid = "$NM_PREFIX$id",
+                    title = name.ifBlank { "网易云歌曲 $id" },
+                    artist = "",
+                    coverUrl = m.resCover,
+                    source = SRC_NETEASE,
+                    nmId = id,
+                )
+                playSongs(listOf(so), 0)
+                openPlayer()
+            }
+            "album", "playlist" -> openNmGroup(
+                Group(
+                    title = name.ifBlank { if (m.kind == "album") "专辑 $id" else "歌单 $id" },
+                    subtitle = "", cover = m.resCover, songs = emptyList(),
+                    source = SRC_NETEASE, nmId = id, nmKind = m.kind,
+                ),
+            )
+            else -> toast("暂不支持打开这类消息")
+        }
+    }
+
+    /**
+     * 26.11.86：聊天文本里的链接可点。
+     * 一起听分享链接在应用内解析并直接加入房间；其余用浏览器打开。
+     */
+    fun openChatLink(raw: String) {
+        val u = raw.trim().trimEnd('。', '，', ',', '.', '）', ')', '"', '\'', '!', '！')
+        if (u.isBlank()) return
+        val uri = runCatching { Uri.parse(u) }.getOrNull() ?: return
+        val room = uri.getQueryParameter("roomId")
+        if (!room.isNullOrBlank() &&
+            (u.contains("listen-together", true) || u.contains("listentogether", true))
+        ) {
+            val inviter = uri.getQueryParameter("inviterId")?.toLongOrNull() ?: 0L
+            val song = uri.getQueryParameter("songId")?.toLongOrNull() ?: 0L
+            if (song > 0L) ltSongId = song
+            // 关掉聊天页才能看到「一起听」子页；进入子页时会自动补登录态，
+            // 这里不再并发调 ltAutoLogin，避免两个协程抢 ltBusy 状态
+            if (chatUid > 0L) closeChat()
+            chooseSocialTab(2)
+            ltJoin(room, inviter)
+            toast("正在加入一起听房间 $room")
+            return
+        }
+        // 普通网页链接：交给系统浏览器（带 NEW_TASK，ViewModel 没有 Activity）
+        val ok = runCatching {
+            app.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(u))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        }.getOrDefault(false)
+        if (!ok) toast("没有应用能打开这个链接")
     }
 
     /** 找朋友：数字 uid 直接查资料，其余按昵称搜 */
@@ -5225,6 +5337,44 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             ltTracks = emptyList()
             ltPlaylistName = "未获取"
         }
+    }
+
+    /** 26.11.86：一起听里搜索歌单（type=1000） */
+    fun ltSearchPlaylist(q: String) {
+        val k = q.trim()
+        ltPlaylistQuery = k
+        if (k.isBlank()) { ltPlaylistResults = emptyList(); return }
+        ltPlaylistBusy = true
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) { ListenTogetherApi.searchPlaylists(k) }
+            ltPlaylistResults = list
+            ltPlaylistBusy = false
+            if (list.isEmpty()) toast("没搜到歌单，可点「我的歌单」")
+        }
+    }
+
+    /** 26.11.86：载入我的歌单（自建 + 收藏），直接点选同步进房间 */
+    fun ltLoadMyPlaylists() {
+        ltPlaylistBusy = true
+        viewModelScope.launch {
+            val uid = withContext(Dispatchers.IO) {
+                ltAccount.userId.takeIf { it > 0L } ?: Netease.uid()
+            }
+            val list = withContext(Dispatchers.IO) { ListenTogetherApi.myPlaylists(uid) }
+            ltMyPlaylists = list
+            ltPlaylistResults = list
+            ltPlaylistQuery = "我的歌单"
+            ltPlaylistBusy = false
+            if (list.isEmpty()) toast("没有拿到你的歌单，检查登录态或点「获取登录状态」")
+        }
+    }
+
+    /** 选中一张歌单：加载曲目并 REPLACE 同步到房间 */
+    fun ltSelectPlaylist(pl: PlaylistBrief) {
+        if (pl.id <= 0L) return
+        ltPlaylistName = pl.name
+        toast("已选「${pl.name}」，正在加载")
+        ltLoadPlaylist(pl.id.toString())
     }
 
     /** 加载歌单并 REPLACE 同步到房间 */

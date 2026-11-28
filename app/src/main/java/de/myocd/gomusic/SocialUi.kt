@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -35,15 +36,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -69,7 +74,8 @@ fun SocialPage(vm: MainViewModel) {
         ChatPage(vm)
         return
     }
-    var sub by remember { mutableIntStateOf(0) }
+    // 26.11.86：由 VM 持有，点私信里的一起听链接能直接跳到该子页
+    val sub = vm.socialTab
     Column(
         Modifier.fillMaxSize().statusBarsPadding()
             .padding(horizontal = 20.dp),
@@ -91,7 +97,7 @@ fun SocialPage(vm: MainViewModel) {
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("私信", "找朋友", "一起听").forEachIndexed { i, t ->
-                GoButton(t, primary = sub == i) { sub = i }
+                GoButton(t, primary = sub == i) { vm.chooseSocialTab(i) }
             }
         }
         Spacer(Modifier.height(14.dp))
@@ -140,6 +146,57 @@ fun SocialInput(
             },
         )
     }
+}
+
+/** 26.11.86：聊天文本里的 URL（含一起听分享链接） */
+private val CHAT_URL_RE = Regex("""https?://[^\s<>"'，。；！？）)\]]+""")
+
+private fun cleanUrl(u: String): String = u.trimEnd(
+    '。', '，', ',', '.', '）', ')', '"', '\'', '!', '！', '；', ';',
+)
+
+private fun chatLinks(text: String): List<String> =
+    CHAT_URL_RE.findAll(text).map { cleanUrl(it.value) }.distinct().toList()
+
+/**
+ * 气泡里的可点文本：链接单独高亮并可点，点非链接区域时打开资源卡片。
+ * 用 ClickableText 而不是给整个 Box 加 clickable，链接和卡片点击不会互相抢事件。
+ */
+@Composable
+private fun ChatText(
+    text: String,
+    color: Color,
+    linkColor: Color,
+    onLink: (String) -> Unit,
+    onPlain: () -> Unit,
+    small: Boolean = false,
+) {
+    val annotated = buildAnnotatedString {
+        var last = 0
+        CHAT_URL_RE.findAll(text).forEach { mr ->
+            val url = cleanUrl(mr.value)
+            append(text.substring(last, mr.range.first))
+            pushStringAnnotation("URL", url)
+            withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                append(mr.value)
+            }
+            pop()
+            last = mr.range.endExclusive
+        }
+        append(text.substring(last))
+    }
+    ClickableText(
+        text = annotated,
+        style = TextStyle(
+            color = color,
+            fontSize = if (small) 12.sp else 14.sp,
+            fontFamily = LocalAppFont.current,
+        ),
+        onClick = { off ->
+            val url = annotated.getStringAnnotations("URL", off, off).firstOrNull()?.item
+            if (url != null) onLink(url) else onPlain()
+        },
+    )
 }
 
 private fun socialStamp(t: Long): String {
@@ -248,6 +305,7 @@ private fun ListenTogetherPane(vm: MainViewModel) {
     var roomIdInput by remember { mutableStateOf("") }
     var inviterInput by remember { mutableStateOf("") }
     var playlistInput by remember { mutableStateOf("") }
+    var plQuery by remember { mutableStateOf("") }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
     ) {
@@ -362,6 +420,57 @@ private fun ListenTogetherPane(vm: MainViewModel) {
         }
         Spacer(Modifier.height(16.dp))
         HigSectionTitle("播放列表", go)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "搜索歌单或直接选自己的歌单，选中后自动把曲目 REPLACE 同步到房间",
+            fontSize = 12.sp, color = go.muted,
+        )
+        Spacer(Modifier.height(8.dp))
+        SocialInput(plQuery, { plQuery = it }, "搜索歌单名称 / 关键词", go)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GoButton(
+                "搜索歌单", primary = true,
+                enabled = plQuery.isNotBlank() && !vm.ltPlaylistBusy,
+            ) { vm.ltSearchPlaylist(plQuery) }
+            GoButton("我的歌单", enabled = !vm.ltPlaylistBusy) { vm.ltLoadMyPlaylists() }
+        }
+        if (vm.ltPlaylistBusy) {
+            Spacer(Modifier.height(10.dp))
+            CircularProgressIndicator(color = go.primary)
+        }
+        if (vm.ltPlaylistResults.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "${vm.ltPlaylistQuery.ifBlank { "候选" }} · ${vm.ltPlaylistResults.size} 张（点选加载）",
+                fontSize = 12.sp, color = go.muted,
+            )
+            Spacer(Modifier.height(6.dp))
+            vm.ltPlaylistResults.take(30).forEach { pl ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        .clickable { vm.ltSelectPlaylist(pl) },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Cover(pl.cover, Modifier.size(40.dp), 6.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(pl.name, fontSize = 14.sp, color = go.on, maxLines = 1)
+                        Text(
+                            buildString {
+                                if (pl.creator.isNotBlank()) append(pl.creator)
+                                if (pl.trackCount > 0) append(" · ${pl.trackCount} 首")
+                            },
+                            fontSize = 11.sp, color = go.muted, maxLines = 1,
+                        )
+                    }
+                    Text("选它", fontSize = 12.sp, color = go.primary)
+                }
+                Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        HigSectionTitle("或按歌单 ID 直接加载", go)
         Spacer(Modifier.height(8.dp))
         SocialInput(playlistInput, { playlistInput = it }, "歌单 ID", go,
             keyboardType = KeyboardType.Number)
@@ -487,12 +596,40 @@ private fun ChatPage(vm: MainViewModel) {
                                 .padding(horizontal = 12.dp, vertical = 9.dp),
                         ) {
                             Column {
-                                Text(body, fontSize = 14.sp, color = if (m.fromSelf) go.surface else go.on)
-                                if (socialStamp(m.time).isNotBlank()) {
-                                    Text(
-                                        socialStamp(m.time), fontSize = 10.sp,
-                                        color = if (m.fromSelf) go.surface.copy(alpha = 0.7f) else go.muted,
+                                val canOpen = m.kind != "text" && m.resId > 0L
+                                ChatText(
+                                    text = body,
+                                    color = if (m.fromSelf) go.surface else go.on,
+                                    linkColor = if (m.fromSelf) go.surface else go.primary,
+                                    onLink = { vm.openChatLink(it) },
+                                    onPlain = { if (canOpen) vm.openChatResource(m) },
+                                )
+                                // 资源卡片正文只显示名字，原文里的链接单独列出来可点
+                                val raw = m.raw.ifBlank { m.text }
+                                chatLinks(raw).filter { it !in body }.forEach { u ->
+                                    ChatText(
+                                        text = u,
+                                        color = if (m.fromSelf) go.surface else go.primary,
+                                        linkColor = if (m.fromSelf) go.surface else go.primary,
+                                        onLink = { vm.openChatLink(u) },
+                                        onPlain = { vm.openChatLink(u) },
+                                        small = true,
                                     )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (socialStamp(m.time).isNotBlank()) {
+                                        Text(
+                                            socialStamp(m.time), fontSize = 10.sp,
+                                            color = if (m.fromSelf) go.surface.copy(alpha = 0.7f) else go.muted,
+                                        )
+                                    }
+                                    if (canOpen) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "· 点击打开", fontSize = 10.sp,
+                                            color = if (m.fromSelf) go.surface.copy(alpha = 0.75f) else go.primary,
+                                        )
+                                    }
                                 }
                             }
                         }

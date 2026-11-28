@@ -95,6 +95,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1247,8 +1248,27 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                 derivedStateOf { w.activeIndex(framePos.longValue) == i }
             }
             val alpha = if (isActive) 1f else 0.32f
+            // 26.11.76：当前行滚入时轻轻 Q 弹一下。
+            // 非激活时目标停在 0.985，激活瞬间只有 1.5% 的行程，欠阻尼
+            // spring 让它回弹过冲再收住；非激活行 over 恒为 0，整列不会
+            // 被统一压扁或下移。animateScrollToItem / 抑制窗口 / 点击跳转
+            // 这些已修好的滚动逻辑一行都没动。
+            val jelly by animateFloatAsState(
+                targetValue = if (isActive) 1f else 0.985f,
+                animationSpec = spring<Float>(dampingRatio = 0.5f, stiffness = 380f),
+                label = "lyricJelly",
+            )
+            val over = if (isActive) jelly - 1f else 0f
+            val jellyScale = 1f + over
+            val jellyYPx = with(LocalDensity.current) { (-400f * over).dp.toPx() }
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                Modifier.fillMaxWidth()
+                    .graphicsLayer {
+                        scaleX = jellyScale
+                        scaleY = jellyScale
+                        translationY = jellyYPx
+                    }
+                    .padding(horizontal = 8.dp)
                     // 点击歌词跳到这一行；制作信息行不跳。
                     // 清掉手动滑动抑制窗口：用户主动选行，就该立刻跟到那一行
                     .clickable(enabled = !line.meta) {
@@ -1296,6 +1316,20 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
 private fun smoothstep(t: Float): Float {
     val x = t.coerceIn(0f, 1f)
     return x * x * (3f - 2f * x)
+}
+
+/**
+ * 26.11.76：给「时间 → 明暗边界位置」的映射加一点果冻感。
+ *
+ * 严格单调（导数恒正），已唱过的字不会又变暗回去，否则会变成闪烁。
+ * 只是在匀速推进上叠一个 6% 的轻推：前段略微超前、中段稍缓、末段收住，
+ * 边界像被轻轻弹了一下再滑过去，不再是 smoothstep 那种机械匀速。
+ * 仍然只有字形明暗两档，没有任何渐变条 / 光晕 / 叠加层。
+ */
+private fun jellyEase(p: Float): Float {
+    val x = p.coerceIn(0f, 1f)
+    val q = x + 0.06f * sin(2f * kotlin.math.PI.toFloat() * x) * (1f - x)
+    return q.coerceIn(0f, 1f)
 }
 
 private fun mixColor(a: Color, b: Color, t: Float): Color {
@@ -1387,7 +1421,9 @@ private fun WordLineText(
     val active = frames.indexOfFirst { it.phase == CharPhase.ACTIVE }
     val lastSung = frames.indexOfLast { it.phase == CharPhase.SUNG }
     val edge = when {
-        active >= 0 -> starts[active] + (ends[active] - starts[active]) * frames[active].progress
+        // 26.11.76：推进速度带一点轻推回弹，边界位置仍单调不倒退
+        active >= 0 -> starts[active] + (ends[active] - starts[active]) *
+            jellyEase(frames[active].progress)
         // 整行唱完：把边界推到行尾之外，保证最后一个字也是全亮
         lastSung == frames.lastIndex -> 1f + feather
         lastSung >= 0 -> ends[lastSung]

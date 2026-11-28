@@ -414,7 +414,7 @@ fun parseLrc(t: String): List<LrcLine> {
 /** 有时间戳按 LRC 解析，否则当作纯文本逐行显示（timeMs = -1） */
 fun lyricLines(t: String): List<LrcLine> {
     // 26.11.92：单句 "Music"（M 大写）是前奏/间奏/尾奏标记，不进歌词列表
-    val p = parseLrc(t).filterNot { it.second.trim() == "Music" }
+    val p = parseLrc(t).filterNot { it.text.trim() == "Music" }
     if (p.isNotEmpty()) return p
     return t.lines().map { it.trim() }
         .filter { it.isNotEmpty() && it != "Music" }

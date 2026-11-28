@@ -301,22 +301,20 @@ fun HigPlayerRoot(vm: MainViewModel) {
                                 compact = true, controls = lyricsControls,
                             )
                         }
-                        // 右半边：可选歌词 / 播放列表，不再有「收起」回到封面页
+                        // 右半边：可选歌词 / 播放列表。
+                        // 26.11.75：删掉顶部「歌词 / 播放列表」文字切换条，
+                        // 切换只交给左栏控制栏底部那排图标按钮；右栏整块
+                        // 留给内容，歌词区多出原来那 48dp。
                         Box(Modifier.weight(0.5f).padding(horizontal = 12.dp)) {
-                            Column(Modifier.fillMaxSize()) {
-                                LandPanelSwitcher(vm, go)
-                                Box(Modifier.weight(1f).fillMaxWidth()) {
-                                    when (vm.playerPage) {
-                                        PLAYER_LYRICS -> Box(
-                                            Modifier.fillMaxSize().lyricsControlGesture(
-                                                onUp = { lyricsControls = true },
-                                                onDown = { lyricsControls = false },
-                                            ),
-                                        ) { WordLyricsList(vm, go, compact = true) }
-                                        PLAYER_QUEUE -> QueueContent(vm, go)
-                                        else -> { /* 横屏不存在封面页 */ }
-                                    }
-                                }
+                            when (vm.playerPage) {
+                                PLAYER_LYRICS -> Box(
+                                    Modifier.fillMaxSize().lyricsControlGesture(
+                                        onUp = { lyricsControls = true },
+                                        onDown = { lyricsControls = false },
+                                    ),
+                                ) { WordLyricsList(vm, go, compact = true) }
+                                PLAYER_QUEUE -> QueueContent(vm, go)
+                                else -> { /* 横屏不存在封面页 */ }
                             }
                         }
                     }
@@ -1034,34 +1032,6 @@ private fun InfoHeader(
             Icons.Outlined.MoreVert, "更多", tint = go.on,
             modifier = Modifier.size(22.dp).clickable { vm.showMoreSheet = true },
         )
-    }
-}
-
-/** 26.11.68：横屏右栏顶部只切换歌词 / 播放列表，没有「收起」——横屏没有封面页 */
-@Composable
-private fun LandPanelSwitcher(vm: MainViewModel, go: GoColors) {
-    Row(
-        Modifier.fillMaxWidth().height(48.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        listOf("歌词" to PLAYER_LYRICS, "播放列表" to PLAYER_QUEUE).forEach { (l, p) ->
-            val sel = vm.playerPage == p
-            Box(
-                Modifier.clip(RoundedCornerShape(999.dp))
-                    .background(if (sel) go.primary.copy(alpha = 0.22f) else Color.Transparent)
-                    .clickable { vm.gotoPlayerPage(p) }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    l, fontSize = 13.sp,
-                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (sel) go.primary else go.muted,
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-        }
-        Spacer(Modifier.weight(1f))
     }
 }
 

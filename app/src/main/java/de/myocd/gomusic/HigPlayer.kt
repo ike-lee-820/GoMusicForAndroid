@@ -3,7 +3,6 @@ package de.myocd.gomusic
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -106,8 +105,6 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -115,6 +112,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.drawText
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import coil.compose.AsyncImage
 import kotlin.math.abs
 import kotlin.math.cos
@@ -1297,15 +1298,30 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
 }
 
 /**
- * 26.11.77：行与行之间的跟随滚动换成定时长、缓入缓出的连续推进。
+ * 26.11.78：纵向跟随滚动的果冻回弹。
+ *
+ * 轻微 easeOutBack：推进到位前多走约 6% 再收回，起止速度仍为 0，
+ * 落位时轻轻弹一下。只作用在列表位移上，**不碰逐字时间轴** ——
+ * 字亮起的时刻依旧与真实演唱时间一一对应，不会像 26.11.76 那样错位。
+ */
+private fun jellyScroll(t: Float): Float {
+    val x = t.coerceIn(0f, 1f)
+    val c1 = 1.25f
+    val c3 = c1 + 1f
+    val u = x - 1f
+    return 1f + c3 * u * u * u + c1 * u * u
+}
+
+/**
+ * 26.11.77：行与行之间的跟随滚动换成定时长连续推进；26.11.78 加果冻回弹。
  *
  * 系统 animateScrollToItem 用固定 spring：每切一句先 cancel 上一个动画，
  * 速度归零再弹出去，落到下一句时一顿 —— 这就是「不同句滚动很生硬」。
  * 逐字歌词和行级歌词共用这段循环，所以两种歌词都生硬。
  *
  * 这里只在目标行已经出现在可视区时接管（自动切句几乎总是相邻行）：
- * 按目标行相对视口顶部的真实像素距离，用 FastOutSlowIn 逐帧推进 520ms，
- * 起止速度都为 0，不回弹、不倒退。目标不可见时退回系统动画，行为不变。
+ * 按目标行相对视口顶部的真实像素距离逐帧推进 520ms，末端轻微回弹。
+ * 目标不可见时退回系统动画，行为不变。
  * 首次直接落位、抑制窗口、点击跳转、补滚回当前行这些状态机一行没动。
  */
 private suspend fun LazyListState.easeScrollToItem(index: Int) {
@@ -1325,7 +1341,7 @@ private suspend fun LazyListState.easeScrollToItem(index: Int) {
             val t = withFrameNanos {
                 ((it - t0).toFloat() / durationNs).coerceIn(0f, 1f)
             }
-            val want = total * FastOutSlowInEasing.transform(t)
+            val want = total * jellyScroll(t)
             this.scrollBy(want - applied)
             applied = want
             if (t >= 1f) break
@@ -1378,9 +1394,12 @@ private fun charWidth(c: Char): Float = when {
  * 位置逐帧读取，字号固定 26sp。
  *
  * 26.11.77：撤掉 26.11.76 那层「时间→位置」的果冻缓动。它把 progress
- * 非线性化，字亮起的时刻与真实演唱时间对不上（时间不准确），而且只在
- * 纵向切句上做回弹，横向渐亮反而被削弱。现在边界回到严格线性，
- * 渐亮带略微加宽，横向沿字流推进的明暗波保持连续。
+ * 非线性化，字亮起的时刻与真实演唱时间对不上（时间不准确）。边界回到严格线性。
+ *
+ * 26.11.78：横向不再是「整字从暗渐变到亮」的渐亮，改成字内从左到右的
+ * 滚动式擦亮 —— 底层整字暗色，上层整字亮色按该字被扫过的比例裁掉右半。
+ * 「顺」字先只亮左边的丿、再亮川、最后全字亮。仍然只有字形两档明暗，
+ * 没有矩形、渐变条、光晕或任何叠加层；时间轴依旧严格线性。
  */
 @Composable
 private fun WordLineText(
@@ -1412,68 +1431,86 @@ private fun WordLineText(
     val frames = WordLyricParser.frameAt(line, posMs)
     if (frames.isEmpty()) return
 
-    // 每个字在行内的连续区间
+    // 每个字在字流里的连续区间：边界 edge 严格按逐字时间轴线性推进，
+    // 不做任何缓动，字亮起的时刻与真实演唱时间一一对应。
     val weights = frames.map { wordWidth(it.char.text).coerceAtLeast(0.05f) }
     val total = weights.sum().coerceAtLeast(1e-6f)
     val starts = FloatArray(frames.size)
     val ends = FloatArray(frames.size)
-    val centers = FloatArray(frames.size)
     var acc = 0f
     for (i in frames.indices) {
         starts[i] = acc / total
         acc += weights[i]
         ends[i] = acc / total
-        centers[i] = (starts[i] + ends[i]) / 2f
     }
-    // 羽化带 ≈ 3.6 个平均字宽：只用 1 个字宽时边界会卡在字缝上，
-    // 相邻字依旧 1.0 → 0.0 硬切。26.11.77 从 3 个略微放宽到 3.6 个，
-    // 让「暗 → 亮」沿字流横向铺得更开、渐亮更连续。
-    // 时间 → 边界仍是严格线性（直接用 frames[active].progress 原值），
-    // 不做任何缓动：字亮起的时刻与真实演唱时间一一对应，不会错位。
-    val feather = (weights.average().toFloat() / total * 3.6f).coerceAtLeast(0.02f)
-
     val active = frames.indexOfFirst { it.phase == CharPhase.ACTIVE }
     val lastSung = frames.indexOfLast { it.phase == CharPhase.SUNG }
     val edge = when {
         active >= 0 -> starts[active] + (ends[active] - starts[active]) * frames[active].progress
-        // 整行唱完：把边界推到行尾之外，保证最后一个字也是全亮
-        lastSung == frames.lastIndex -> 1f + feather
+        // 整行唱完：边界推到行尾之外，保证最后一个字也是全亮
+        lastSung == frames.lastIndex -> 1.02f
         lastSung >= 0 -> ends[lastSung]
-        else -> -feather // 整行还没开始，全部保持暗
+        else -> -0.02f // 整行还没开始，全部保持暗
     }
 
-    // 只有两档明暗，不用主色：主色会在字流里形成彩色带，又被看成「棍子」
+    // 只有两档明暗，不用主色，也没有矩形 / 渐变条 / 光晕 / 叠加层。
+    // 底层整字画暗，上层整字画亮但按「该字被边界扫过的比例」裁掉右半：
+    // 字内从左到右滚动式擦亮，而不是整字亮度从暗插值到亮的渐亮。
     val dark = go.on.copy(alpha = alpha * 0.28f)
     val bright = go.on.copy(alpha = alpha)
-    // 0.20 的右偏让「已唱」一侧饱和、未唱一侧渐亮，两侧都留出过渡带
-    val bias = 0.20f
-    val text: AnnotatedString = buildAnnotatedString {
-        frames.forEachIndexed { i, f ->
-            // edge 左侧（已唱）→ 亮，右侧（未唱）→ 暗，中间跨四五个字连续渐亮
-            val b = smoothstep(((edge - centers[i]) / feather) + 0.5f + bias)
-            pushStyle(
-                SpanStyle(
-                    color = mixColor(dark, bright, b),
-                    fontFamily = family,
-                    fontWeight = weight,
-                    fontSize = sizeSp.sp,
-                )
-            )
-            append(f.char.text)
-            pop()
-        }
-    }
-
-    Text(
-        text,
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val linePx = with(density) { lineHeight.toPx() }
+    val baseStyle = TextStyle(
         fontSize = sizeSp.sp,
         fontFamily = family,
         fontWeight = weight,
         lineHeight = lineHeight,
-        color = go.on.copy(alpha = alpha),
-        textAlign = TextAlign.Start,
-        modifier = Modifier.fillMaxWidth(),
     )
+    // 逐字测量结果只随内容 / 字号 / 字体变；逐帧只改裁切比例，不重新排版
+    val layouts = remember(line, sizeSp, family, weight, lineHeight) {
+        frames.map { measurer.measure(AnnotatedString(it.char.text), baseStyle) }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val maxPx = with(density) { maxWidth.toPx() }
+        val places = remember(layouts, maxPx) {
+            val out = ArrayList<Triple<Int, Float, Float>>(layouts.size)
+            var row = 0
+            var x = 0f
+            layouts.forEach { r ->
+                val w = r.size.width.toFloat()
+                if (x > 0f && x + w > maxPx) {
+                    row++
+                    x = 0f
+                }
+                out.add(Triple(row, x, w))
+                x += w
+            }
+            out
+        }
+        val rows = (places.maxOfOrNull { it.first } ?: 0) + 1
+        Canvas(
+            Modifier.fillMaxWidth().height(with(density) { (rows * linePx).toDp() })
+        ) {
+            places.forEachIndexed { i, pl ->
+                val (row, x, w) = pl
+                val y = row * linePx
+                val r = layouts[i]
+                val h = r.size.height.toFloat()
+                // 底层：整字暗
+                drawText(r, color = dark, topLeft = Offset(x, y))
+                // 该字被边界扫过的比例：0=全暗，1=全亮
+                val span = (ends[i] - starts[i]).coerceAtLeast(1e-6f)
+                val p = ((edge - starts[i]) / span).coerceIn(0f, 1f)
+                if (p > 0f) {
+                    drawContext.canvas.save()
+                    drawContext.canvas.clipRect(x, y - 2f, x + w * p, y + h + 2f)
+                    drawText(r, color = bright, topLeft = Offset(x, y))
+                    drawContext.canvas.restore()
+                }
+            }
+        }
+    }
 }
 
 // =====================================================================

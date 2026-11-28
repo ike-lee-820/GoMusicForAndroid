@@ -80,9 +80,9 @@ import androidx.compose.ui.unit.sp
 
 private data class Tab3Item(val id: Int, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val filled: androidx.compose.ui.graphics.vector.ImageVector)
 
-/** 用户指定的顺序：播客 / 搜索 / 主页 / 社交 / 我的（主页仍在正中） */
+/** 用户指定的顺序：电台 / 搜索 / 主页 / 社交 / 我的（主页仍在正中） */
 private val TAB3_ITEMS = listOf(
-    Tab3Item(TAB3_PODCAST, "播客", Icons.Outlined.LibraryMusic, Icons.Filled.LibraryMusic),
+    Tab3Item(TAB3_PODCAST, "电台", Icons.Outlined.LibraryMusic, Icons.Filled.LibraryMusic),
     Tab3Item(TAB3_SEARCH, "搜索", Icons.Outlined.Search, Icons.Filled.Search),
     Tab3Item(TAB3_HOME, "主页", Icons.Outlined.Home, Icons.Filled.Home),
     Tab3Item(TAB3_SOCIAL, "社交", Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble),

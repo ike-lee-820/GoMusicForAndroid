@@ -1962,6 +1962,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val homeDownloaded: List<Song> get() = LocalLib.songs(downloads)
     /** 热搜词 */
     var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
+    /** 26.11.87：首页新增六个推荐位 */
+    var homePersonalized by mutableStateOf<List<Group>>(emptyList()); private set
+    var homeRecommendPlaylists by mutableStateOf<List<Group>>(emptyList()); private set
+    var homeTopPlaylists by mutableStateOf<List<Group>>(emptyList()); private set
+    var homeHqPlaylists by mutableStateOf<List<Group>>(emptyList()); private set
+    var homeRecommendMv by mutableStateOf<List<Group>>(emptyList()); private set
+    var homeFirstMv by mutableStateOf<List<Group>>(emptyList()); private set
     var homeLoading by mutableStateOf(false); private set
     /** 新歌速递固定「全部」（type = 0），不提供地区切换 */
     val newSongType: Int get() = 0
@@ -1989,6 +1996,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             homeTopArtists = emptyList()
             homeNewAlbums = emptyList()
             homeTops = emptyList()
+            homePersonalized = emptyList()
+            homeRecommendPlaylists = emptyList()
+            homeTopPlaylists = emptyList()
+            homeHqPlaylists = emptyList()
+            homeRecommendMv = emptyList()
+            homeFirstMv = emptyList()
             homeLoading = false
             return
         }
@@ -2004,6 +2017,33 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val dT = async(Dispatchers.IO) {
                     runCatching { Netease.topList() }.getOrDefault(emptyList<Group>())
                 }
+                // 26.11.87：六个新推荐位各自独立，一路失败不影响其余
+                val dP = async(Dispatchers.IO) {
+                    runCatching { Netease.homeGroups("/personalized", "limit" to "10") }
+                        .getOrDefault(emptyList<Group>())
+                }
+                val dRp = async(Dispatchers.IO) {
+                    runCatching { Netease.homeGroups("/recommend/resource") }
+                        .getOrDefault(emptyList<Group>())
+                }
+                val dTp = async(Dispatchers.IO) {
+                    runCatching {
+                        Netease.homeGroups("/top/playlist", "order" to "hot", "limit" to "10")
+                    }.getOrDefault(emptyList<Group>())
+                }
+                val dHq = async(Dispatchers.IO) {
+                    runCatching {
+                        Netease.homeGroups("/top/playlist/highquality", "limit" to "10")
+                    }.getOrDefault(emptyList<Group>())
+                }
+                val dRm = async(Dispatchers.IO) {
+                    runCatching { Netease.homeGroups("/personalized/mv") }
+                        .getOrDefault(emptyList<Group>())
+                }
+                val dFm = async(Dispatchers.IO) {
+                    runCatching { Netease.homeGroups("/mv/first", "limit" to "10") }
+                        .getOrDefault(emptyList<Group>())
+                }
                 val r = dR.await()
                 val n = dN.await()
                 val h = dH.await()
@@ -2017,6 +2057,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 homeTopArtists = artists
                 homeNewAlbums = albums
                 homeTops = tops
+                homePersonalized = dP.await()
+                homeRecommendPlaylists = dRp.await()
+                homeTopPlaylists = dTp.await()
+                homeHqPlaylists = dHq.await()
+                homeRecommendMv = dRm.await()
+                homeFirstMv = dFm.await()
                 homeLoaded = true
                 NmLog.note(
                     "首页加载完成：推荐 ${r.size} / 新歌 ${n.size} / 热搜 ${h.size}" +
@@ -2667,6 +2713,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var searchHasMoreSongs by mutableStateOf(true); private set
     var searchHasMoreAlbums by mutableStateOf(true); private set
     var searchHasMoreArtists by mutableStateOf(true); private set
+    /** 26.11.87：歌单板块是否还有下一页 */
+    var searchHasMorePlaylists by mutableStateOf(true); private set
     var searchMoreLoading by mutableStateOf(false); private set
     /** 本机曲库混入歌曲结果的数量，算服务端 offset 时要扣掉 */
     private var searchLocalCount = 0
@@ -2674,6 +2722,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun searchCanLoadMore(filter: Int = searchFilter): Boolean = when (filter) {
         1 -> searchHasMoreArtists
         2 -> searchHasMoreAlbums
+        4 -> searchHasMorePlaylists
         else -> searchHasMoreSongs
     }
 
@@ -2711,6 +2760,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         searchHasMoreSongs = true
         searchHasMoreAlbums = true
         searchHasMoreArtists = true
+        searchHasMorePlaylists = true
         searchMoreLoading = false
         searchLocalCount = 0
     }
@@ -2808,6 +2858,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     ) {
                         searchHint = "网络较慢，仍在搜索「$k」…"
                     }
+                }
+            }
+            // 26.11.87：歌单作为第四路独立并发，谁先回谁先显示，不等三路主链
+            launch(Dispatchers.IO) {
+                val pl = runCatching {
+                    Netease.cookie = prefs.nmCookie
+                    Netease.searchPlaylistGroups(k, 20, 0)
+                }.getOrDefault(emptyList())
+                withContext(Dispatchers.Main) {
+                    if (seq != searchSeq) return@withContext
+                    val cur = aggregate ?: return@withContext
+                    aggregate = cur.copy(playlists = pl)
+                    searchHasMorePlaylists = pl.size >= 20
+                    putAggregateCache(k, aggregate!!)
                 }
             }
             val result = runCatching {
@@ -2932,11 +2996,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val type = when (filter) {
             1 -> 100
             2 -> 10
+            4 -> 1000
             else -> 1
         }
         val off = when (type) {
             10 -> cur.albums.size
             100 -> cur.artists.size
+            1000 -> cur.playlists.size
             else -> (cur.songs.size - searchLocalCount).coerceAtLeast(0)
         }
         val seq = searchSeq
@@ -2944,6 +3010,23 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 // 异步可取消的搜索专用通道；不做详情补全、不做二次兜底
+                if (type == 1000) {
+                    val add = withContext(Dispatchers.IO) {
+                        runCatching {
+                            Netease.cookie = prefs.nmCookie
+                            Netease.searchPlaylistGroups(k, NM_PAGE_SIZE, off)
+                        }.getOrDefault(emptyList())
+                    }
+                    if (seq == searchSeq) {
+                        val now = aggregate ?: cur
+                        val seen = now.playlists.map { groupKey(it) }.toHashSet()
+                        val real = add.filter { groupKey(it) !in seen }
+                        aggregate = now.copy(playlists = now.playlists + real)
+                        searchHasMorePlaylists = real.isNotEmpty()
+                        aggregate?.let { putAggregateCache(k, it) }
+                    }
+                    return@launch
+                }
                 val page = withContext(Dispatchers.IO) {
                     try {
                         Netease.searchPage(k, type, NM_PAGE_SIZE, off)
@@ -2997,6 +3080,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         when (type) {
             10 -> searchHasMoreAlbums = false
             100 -> searchHasMoreArtists = false
+            1000 -> searchHasMorePlaylists = false
             else -> searchHasMoreSongs = false
         }
     }
@@ -3812,14 +3896,66 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         syncPlaylistOrder()
     }
 
-    /** 更换歌单封面：本地先显示，再 multipart 上传云端 */
+    /** 26.11.87：原始封面字节备份，放在应用私有目录，卸载才清掉 */
+    private fun originalCoverFile(id: String) =
+        java.io.File(app.filesDir, "pcolorig_${id.hashCode()}.bin")
+
+    private fun downloadImageBytes(url: String): ByteArray? = runCatching {
+        val u = if (url.startsWith("http://")) "https://" + url.removePrefix("http://") else url
+        val req = okhttp3.Request.Builder().url(u)
+            .header("User-Agent", "Mozilla/5.0")
+            .header("Referer", "https://music.163.com/")
+            .build()
+        Api.client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) null
+            else r.body?.bytes()?.takeIf { it.size > 64 && it.size < 8 * 1024 * 1024 }
+        }
+    }.getOrNull()
+
+    /** 更换歌单封面：先备份原图（含字节），本地立即显示，再 multipart 上传云端 */
     fun setPlaylistCover(id: String, localUri: String, bytes: ByteArray?) {
         val p = playlists.firstOrNull { it.id == id } ?: return
+        // 只在第一次更换前记原始封面；之后连续换图不会把"上一张自定义图"当成原图
+        if (prefs.playlistOriginalCovers[id].isNullOrBlank() && !p.cover.isNullOrBlank()) {
+            val orig = p.cover!!
+            prefs.playlistOriginalCovers = prefs.playlistOriginalCovers + (id to orig)
+            if (orig.startsWith("http")) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    downloadImageBytes(orig)?.let {
+                        runCatching { originalCoverFile(id).writeBytes(it) }
+                    }
+                }
+            }
+        }
         savePl(playlists.map { if (it.id == id) it.copy(cover = localUri) else it })
         if (bytes == null || p.nmId <= 0L || p.cloudReadOnly || !canSyncCloud()) return
         viewModelScope.launch(Dispatchers.IO) {
             val ok = runCatching { Netease.playlistCover(p.nmId, bytes) }.getOrDefault(false)
             withContext(Dispatchers.Main) { if (!ok) toast("云端封面上传未成功（本地已显示）") }
+        }
+    }
+
+    fun hasPlaylistCoverBackup(id: String): Boolean =
+        prefs.playlistOriginalCovers[id] != null
+
+    /** 复原封面：本地改回原 URL，并把备份的原图字节重新上传，云端也回到原样 */
+    fun restorePlaylistCover(id: String) {
+        val p = playlists.firstOrNull { it.id == id } ?: return
+        val orig = prefs.playlistOriginalCovers[id]
+        if (orig == null) { toast("没有可复原的原始封面"); return }
+        savePl(playlists.map { if (it.id == id) it.copy(cover = orig) else it })
+        val backup = originalCoverFile(id)
+        if (backup.exists() && p.nmId > 0L && !p.cloudReadOnly && canSyncCloud()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val ok = runCatching {
+                    Netease.playlistCover(p.nmId, backup.readBytes())
+                }.getOrDefault(false)
+                withContext(Dispatchers.Main) {
+                    toast(if (ok) "封面已复原（含云端）" else "本地已复原，云端上传未成功")
+                }
+            }
+        } else {
+            toast("本地封面已复原（云端不可写或没有原图备份）")
         }
     }
 
@@ -4054,6 +4190,23 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 mvLoading = false
                 if (url.isNullOrBlank()) toast("没有取到 MV 地址")
                 else stack.add(Screen.Video(s.title, url))
+            }
+        }
+    }
+
+    /** 26.11.87：首页推荐 / 最新 MV 卡片点击：取直链后进整屏视频页 */
+    fun openHomeMv(g: Group) {
+        val id = g.nmId
+        if (id <= 0L) { toast("这个 MV 没有可用 id"); return }
+        if (mvLoading) return
+        mvLoading = true
+        runCatching { controller?.pause() }
+        viewModelScope.launch(Dispatchers.IO) {
+            val url = runCatching { Netease.mvUrl(id) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                mvLoading = false
+                if (url.isNullOrBlank()) toast("没有取到 MV 地址")
+                else stack.add(Screen.Video(g.title, url))
             }
         }
     }
@@ -5457,6 +5610,185 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val progress = positionMs
         viewModelScope.launch(Dispatchers.IO) {
             ListenTogetherApi.heartbeat(room, song, status, progress)
+        }
+    }
+
+
+    // ================= 26.11.87：电台（原播客页） =================
+
+    var radioTab by mutableIntStateOf(0); private set
+    /** feed.key -> 该接口返回的条目 */
+    var radioResults by mutableStateOf<Map<String, List<RadioItem>>>(emptyMap()); private set
+    var radioBusyKeys by mutableStateOf<Set<String>>(emptySet()); private set
+    var radioError by mutableStateOf(""); private set
+    /** feed.key -> 用户填的参数（动态占位符） */
+    var radioParams by mutableStateOf<Map<String, String>>(emptyMap()); private set
+    var radioDetail by mutableStateOf<RadioItem?>(null); private set
+    var radioDetailText by mutableStateOf(""); private set
+    var radioDetailPrograms by mutableStateOf<List<RadioItem>>(emptyList()); private set
+    var radioDetailBusy by mutableStateOf(false); private set
+    var radioSearchQuery by mutableStateOf(""); private set
+    var radioSearchResults by mutableStateOf<List<RadioItem>>(emptyList()); private set
+    var radioSearchBusy by mutableStateOf(false); private set
+
+    fun chooseRadioTab(i: Int) { radioTab = i }
+    fun setRadioParam(feedKey: String, v: String) {
+        radioParams = radioParams + (feedKey to v)
+    }
+
+    /** 把 {uid} / {xxx} 占位符换成真实值；未解析的一律丢掉，不发字面量花括号 */
+    private fun resolveRadio(feed: RadioFeed): List<Pair<String, String>> {
+        val uid = runCatching { Netease.uid() }.getOrDefault(0L).toString()
+        val custom = radioParams[feed.key]?.trim().orEmpty()
+        val parts = custom.split(',', '，')
+        val blank = Regex("""\{[^}]*\}""")
+        fun sub(x: String): String {
+            var v = x.replace("{uid}", uid)
+            if (feed.paramName.isNotBlank()) {
+                val first = parts.getOrNull(0)?.trim().takeUnless { it.isNullOrEmpty() }
+                    ?: feed.paramDefault
+                v = v.replace("{${feed.paramName}}", first)
+            }
+            if (feed.key == "voicetrans") {
+                v = v.replace("{programId}", parts.getOrNull(1)?.trim().orEmpty())
+            }
+            return blank.replace(v, "")
+        }
+        return feed.params.map { (k, v) -> sub(k) to sub(v) }
+            .filter { it.first.isNotBlank() && it.second.isNotBlank() }
+    }
+
+    fun radioFeeds(): List<RadioFeed> =
+        RadioFeeds.groups().getOrNull(radioTab)?.second.orEmpty()
+
+    /** 按需加载单个 feed，不一次并发十几个接口拖慢页面 */
+    fun loadRadioFeed(feed: RadioFeed) {
+        if (feed.key in radioBusyKeys) return
+        radioBusyKeys = radioBusyKeys + feed.key
+        radioError = ""
+        viewModelScope.launch {
+            val args = resolveRadio(feed)
+            val list = withContext(Dispatchers.IO) { RadioApi.fetch(feed, args) }
+            radioResults = radioResults + (feed.key to list)
+            radioBusyKeys = radioBusyKeys - feed.key
+            if (list.isEmpty()) {
+                radioError = "「${feed.title}」没有返回内容：检查登录态 / 参数，可改参数后重试"
+            }
+        }
+    }
+
+    fun searchRadio(q: String) {
+        val k = q.trim()
+        radioSearchQuery = k
+        if (k.isBlank()) { radioSearchResults = emptyList(); return }
+        radioSearchBusy = true
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { RadioApi.search(k) }
+            radioSearchResults = r
+            radioSearchBusy = false
+            if (r.isEmpty()) radioError = "没搜到电台（type=1009 这一路可能没有返回结果）"
+        }
+    }
+
+    /** 点电台卡片：详情 + 节目列表 + 订阅者 */
+    fun openRadioDetail(item: RadioItem) {
+        radioDetail = item
+        radioDetailText = ""
+        radioDetailPrograms = emptyList()
+        radioDetailBusy = true
+        viewModelScope.launch {
+            val args = listOf("rid" to item.id.toString())
+            val info = withContext(Dispatchers.IO) {
+                RadioApi.detailText("/dj/detail", args)
+            }
+            val progs = withContext(Dispatchers.IO) {
+                RadioApi.fetch(
+                    RadioFeed(
+                        "djprogram", "节目", "/dj/program",
+                        listOf("rid" to item.id.toString(), "limit" to "50", "asc" to "false"),
+                        "program",
+                    ),
+                    listOf("rid" to item.id.toString(), "limit" to "50", "asc" to "false"),
+                )
+            }
+            radioDetailText = info
+            radioDetailPrograms = progs
+            radioDetailBusy = false
+        }
+    }
+
+    fun closeRadioDetail() {
+        radioDetail = null
+        radioDetailText = ""
+        radioDetailPrograms = emptyList()
+    }
+
+    /** 节目播放：用 mainTrackId 走已有网易云音源链，不在本页另写一套解析 */
+    fun playRadioProgram(item: RadioItem) {
+        val trackId = item.extra.substringBefore("|").toLongOrNull() ?: item.id
+        if (trackId <= 0L) { toast("这条没有可播放的音频 id"); return }
+        val so = Song(
+            ssid = "$NM_PREFIX$trackId",
+            title = item.title,
+            artist = item.subtitle,
+            coverUrl = item.cover,
+            source = SRC_NETEASE,
+            nmId = trackId,
+        )
+        playSongs(listOf(so), 0)
+        openPlayer()
+    }
+
+    /** 订阅 / 取消订阅电台 */
+    fun radioSubscribe(item: RadioItem, sub: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = RadioApi.act(
+                "/dj/sub",
+                listOf("rid" to item.id.toString(), "t" to if (sub) "1" else "0"),
+            )
+            withContext(Dispatchers.Main) {
+                toast(if (ok) (if (sub) "已订阅" else "已取消订阅") else "订阅指令未确认（检查登录态）")
+            }
+        }
+    }
+
+    /** 广播电台收藏 / 取消收藏 */
+    fun radioBroadcastSub(item: RadioItem, sub: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = RadioApi.act(
+                "/broadcast/sub",
+                listOf("id" to item.id.toString(), "t" to if (sub) "1" else "0"),
+            )
+            withContext(Dispatchers.Main) {
+                toast(if (ok) (if (sub) "已收藏" else "已取消收藏") else "收藏指令未确认")
+            }
+        }
+    }
+
+    /** DIFM 频道收藏 / 取消收藏 */
+    fun radioDifmSub(item: RadioItem, sub: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = RadioApi.act(
+                if (sub) "/dj/difm/channel/subscribe" else "/dj/difm/channel/unsubscribe",
+                listOf("id" to item.id.toString()),
+            )
+            withContext(Dispatchers.Main) {
+                toast(if (ok) (if (sub) "已收藏频道" else "已取消收藏") else "指令未确认")
+            }
+        }
+    }
+
+    /** 广播电台信息 / 节目详情：直接把文本塞进详情区 */
+    fun radioShowInfo(path: String, id: Long) {
+        if (id <= 0L) return
+        viewModelScope.launch {
+            val t = withContext(Dispatchers.IO) {
+                RadioApi.detailText(path, listOf("id" to id.toString()))
+            }
+            radioDetail = RadioItem(id = id, title = "电台信息")
+            radioDetailText = t
+            radioDetailPrograms = emptyList()
+            radioDetailBusy = false
         }
     }
 

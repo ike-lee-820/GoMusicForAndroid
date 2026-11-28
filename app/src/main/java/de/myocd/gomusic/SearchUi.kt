@@ -70,7 +70,8 @@ fun SearchPage(vm: MainViewModel) {
     val songs = agg?.songs.orEmpty()
     val albums = agg?.albums.orEmpty()
     val artists = agg?.artists.orEmpty()
-    val labels = listOf("综合", "歌手", "专辑", "歌曲")
+    val playlists = agg?.playlists.orEmpty()
+    val labels = listOf("综合", "歌手", "专辑", "歌曲", "歌单")
 
     BoxWithConstraints(
         Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp),
@@ -109,7 +110,7 @@ fun SearchPage(vm: MainViewModel) {
         }
 
         val results: @Composable () -> Unit = {
-            SearchResults(vm, go, agg, songs, albums, artists)
+            SearchResults(vm, go, agg, songs, albums, artists, playlists)
         }
 
         if (land) {
@@ -172,20 +173,22 @@ private fun SearchResults(
     songs: List<Song>,
     albums: List<Group>,
     artists: List<Group>,
+    playlists: List<Group>,
 ) {
     when {
         vm.query.isBlank() -> RecentSearchList(vm, go)
         // 26.11.64：打字时就有本机曲库反馈，不再显示「正在搜索…」转圈
         vm.searchPending -> PendingResults(vm, go, vm.query, vm.localPreview)
         agg == null -> CenteredHint(go, "正在搜索…", vm.searchHint.takeIf { it.isNotBlank() })
-        songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && vm.searchBusy ->
+        songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && playlists.isEmpty() && vm.searchBusy ->
             CenteredHint(go, vm.searchHint.takeIf { it.isNotBlank() } ?: "正在搜索…", null)
-        songs.isEmpty() && albums.isEmpty() && artists.isEmpty() ->
+        songs.isEmpty() && albums.isEmpty() && artists.isEmpty() && playlists.isEmpty() ->
             CenteredHint(go, "没有找到「${vm.query}」", "换个关键词试试")
         else -> when (vm.searchFilter) {
-            0 -> MixedResults(vm, go, songs, albums, artists)
+            0 -> MixedResults(vm, go, songs, albums, artists, playlists)
             1 -> ArtistResults(vm, go, artists)
             2 -> AlbumResults(vm, go, albums)
+            4 -> PlaylistResults(vm, go, playlists)
             else -> SongResults(vm, go, songs)
         }
     }
@@ -329,6 +332,7 @@ private fun MixedResults(
     songs: List<Song>,
     albums: List<Group>,
     artists: List<Group>,
+    playlists: List<Group>,
 ) {
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -375,6 +379,10 @@ private fun MixedResults(
         if (albums.isNotEmpty()) {
             item { SectionTitle(go, "专辑") }
             item { AlbumRow(vm, go, albums) }
+        }
+        if (playlists.isNotEmpty()) {
+            item { SectionTitle(go, "歌单", "查看全部") { vm.chooseSearchFilter(4) } }
+            item { PlaylistRow(vm, go, playlists) }
         }
         item { SearchFooter(vm, go) }
     }
@@ -531,6 +539,64 @@ private fun ArtistTile(vm: MainViewModel, go: GoColors, g: Group, modifier: Modi
         )
         Text("艺人", fontSize = 11.sp, color = go.muted)
     }
+}
+
+/** 26.11.87：歌单分类页，展示该板块全量结果 + 触底翻页 */
+@Composable
+private fun PlaylistResults(vm: MainViewModel, go: GoColors, list: List<Group>) {
+    if (list.isEmpty()) { CategoryEmpty(go, "没有找到相关歌单"); return }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        state = rememberSearchListState(vm),
+        contentPadding = PaddingValues(bottom = 96.dp),
+    ) {
+        items(list.chunked(2)) { row ->
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                row.forEach { g ->
+                    Column(Modifier.weight(1f).clickable { openGroup(vm, g) }) {
+                        Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, hd = true)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            g.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                            color = go.on, maxLines = 1,
+                        )
+                        Text(
+                            buildString {
+                                if (g.subtitle.isNotBlank()) append(g.subtitle)
+                                if (g.trackCount > 0) append(if (isEmpty()) "${g.trackCount} 首" else " · ${g.trackCount} 首")
+                            }.ifBlank { "歌单" },
+                            fontSize = 11.sp, color = go.muted, maxLines = 1,
+                        )
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(14.dp))
+        }
+        item { SearchFooter(vm, go) }
+    }
+}
+
+/** 综合页里的歌单横排 */
+@Composable
+private fun PlaylistRow(vm: MainViewModel, go: GoColors, list: List<Group>) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(list.take(12), key = { "pl${it.nmId}" }) { g ->
+            Column(Modifier.width(110.dp).clickable { openGroup(vm, g) }) {
+                Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, hd = true)
+                Spacer(Modifier.height(6.dp))
+                Text(g.title, fontSize = 12.sp, color = go.on, maxLines = 1)
+                Text(g.subtitle.ifBlank { "歌单" }, fontSize = 11.sp, color = go.muted, maxLines = 1)
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
 }
 
 @Composable

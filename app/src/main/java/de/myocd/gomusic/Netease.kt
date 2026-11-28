@@ -488,6 +488,91 @@ object Netease {
      * type=10 经常返回空（或需要登录），这时用单曲结果里的专辑兜底，
      * 保证「专辑」标签在网易云曲库下也能出内容。
      */
+    /**
+     * 26.11.87：首页推荐位通用解析。
+     *
+     * /personalized、/recommend/resource、/top/playlist、/top/playlist/highquality
+     * 把列表放在 result / recommend / playlists / data 里，/personalized/mv 与
+     * /mv/first 则是 result / data 里的 MV 对象。统一收成 Group：
+     * 歌单 nmKind=playlist（点开走已有歌单详情页），MV nmKind=mv（点开取地址播放）。
+     */
+    fun homeGroups(path: String, vararg params: Pair<String, String>): List<Group> = runCatching {
+        val root = get(path, *params)
+        val all = LinkedHashMap<Long, JsonObject>()
+        fun collect(o: JsonObject?) {
+            if (o == null) return
+            listOf("playlists", "recommend", "result", "data", "list", "mvList", "mvs")
+                .forEach { k ->
+                    val arr = runCatching { (o[k] as? JsonElement)?.jsonArray }.getOrNull()
+                    arr?.forEach { e -> (e as? JsonObject)?.let { x ->
+                        val id = x.num("id") ?: 0L
+                        if (id > 0L) all.putIfAbsent(id, x)
+                    } }
+                }
+        }
+        collect(root)
+        collect(root.obj("data"))
+        collect(root.obj("result"))
+        val isMv = path.contains("mv", ignoreCase = true)
+        all.values.mapNotNull { o ->
+            val id = o.num("id") ?: return@mapNotNull null
+            val name = o.str("name", "title").orEmpty()
+            if (name.isBlank()) return@mapNotNull null
+            val cnt = (o.num("trackCount", "trackCnt") ?: 0L).toInt()
+            val creator = o.obj("creator")?.str("nickname", "name")
+                ?: o.obj("dj")?.str("nickname")
+            val artist = o.str("artistName", "artistsName", "author").orEmpty()
+            Group(
+                title = name,
+                subtitle = when {
+                    artist.isNotBlank() -> artist
+                    !creator.isNullOrBlank() -> creator
+                    cnt > 0 -> "$cnt 首"
+                    else -> o.str("copywriter", "desc").orEmpty()
+                },
+                cover = pic(o.str("coverImgUrl", "picUrl", "imgurl", "cover", "imgurl1")),
+                songs = emptyList(),
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = if (isMv || artist.isNotBlank()) "mv" else "playlist",
+                trackCount = cnt,
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    /**
+     * 26.11.87：搜索歌单（type=1000）。
+     * 走独立请求，不塞进 searchAllStream 的三路主链，避免拖慢首屏；
+     * 返回统一 Group（nmKind=playlist），点开后复用已有歌单详情页。
+     */
+    fun searchPlaylistGroups(keywords: String, limit: Int = 20, offset: Int = 0): List<Group> =
+        runCatching {
+            val root = get(
+                "/search",
+                "keywords" to keywords,
+                "type" to "1000",
+                "limit" to limit.toString(),
+                "offset" to offset.toString(),
+            )
+            resultArray(root, "playlists").mapNotNull { o ->
+                val id = o.num("id") ?: return@mapNotNull null
+                val name = o.str("name", "title").orEmpty()
+                if (id <= 0L || name.isBlank()) return@mapNotNull null
+                val cnt = (o.num("trackCount", "trackCnt") ?: 0L).toInt()
+                Group(
+                    title = name,
+                    subtitle = o.obj("creator")?.str("nickname", "name").orEmpty()
+                        .ifBlank { if (cnt > 0) "$cnt 首" else "歌单" },
+                    cover = pic(o.str("coverImgUrl", "picUrl", "imgurl", "cover")),
+                    songs = emptyList(),
+                    source = SRC_NETEASE,
+                    nmId = id,
+                    nmKind = "playlist",
+                    trackCount = cnt,
+                )
+            }
+        }.getOrDefault(emptyList())
+
     fun searchAlbums(
         keywords: String,
         limit: Int = 10,
@@ -1261,6 +1346,8 @@ object Netease {
         val songs: List<Song>,
         val albums: List<Group>,
         val artists: List<Group>,
+        /** 26.11.87：搜索分类新增「歌单」(type=1000)，默认空不影响三路主链 */
+        val playlists: List<Group> = emptyList(),
     ) {
         /** Apple Music「Top Results」式混合结果：不同实体类型在同一条列表里 */
         sealed class Hit {

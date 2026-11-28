@@ -323,7 +323,7 @@ fun MainScreen(vm: MainViewModel) {
                     if (top == null) when (vm.tab3) {
                         TAB3_MINE -> MinePage(vm)
                         TAB3_SEARCH -> SearchPage(vm)
-                        TAB3_PODCAST -> PodcastPage(vm)
+                        TAB3_PODCAST -> RadioPage(vm)
                         TAB3_SOCIAL -> SocialPage(vm)
                         else -> HomeContent(vm, listStates)
                     }
@@ -721,6 +721,13 @@ fun HomeTab(vm: MainViewModel) {
     val albums = vm.homeNewAlbums
     val tops = vm.homeTops
     val his = vm.historySongs
+    // 26.11.87：首页六个新增推荐位
+    val personalized = vm.homePersonalized
+    val dailyPlaylists = vm.homeRecommendPlaylists
+    val topPlaylists = vm.homeTopPlaylists
+    val hqPlaylists = vm.homeHqPlaylists
+    val recMv = vm.homeRecommendMv
+    val firstMv = vm.homeFirstMv
     // 离线：没有推荐位，直接列出已下载
     if (vm.offline) {
         val dl = vm.homeDownloaded
@@ -820,6 +827,24 @@ fun HomeTab(vm: MainViewModel) {
                 }
             }
         }
+        if (personalized.isNotEmpty()) {
+            item { HomeFeedSection(vm, "推荐歌单", personalized) }
+        }
+        if (dailyPlaylists.isNotEmpty()) {
+            item { HomeFeedSection(vm, "每日推荐歌单", dailyPlaylists) }
+        }
+        if (topPlaylists.isNotEmpty()) {
+            item { HomeFeedSection(vm, "网友精选碟", topPlaylists) }
+        }
+        if (hqPlaylists.isNotEmpty()) {
+            item { HomeFeedSection(vm, "精品歌单", hqPlaylists) }
+        }
+        if (recMv.isNotEmpty()) {
+            item { HomeFeedSection(vm, "推荐 MV", recMv) }
+        }
+        if (firstMv.isNotEmpty()) {
+            item { HomeFeedSection(vm, "最新 MV", firstMv) }
+        }
         if (hots.isNotEmpty()) {
             item { HotSection(vm, hots) }
         }
@@ -844,6 +869,33 @@ private fun HomeArtistRow(vm: MainViewModel, list: List<Group>) {
         }
     }
     VS(14)
+}
+
+/** 26.11.87：首页推荐位统一行；歌单点开详情页，MV 点开取地址播放 */
+@Composable
+private fun HomeFeedSection(vm: MainViewModel, title: String, list: List<Group>) {
+    val go = LocalGo.current
+    Column(Modifier.fillMaxWidth()) {
+        HomeHeader(title)
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(list.take(20), key = { "feed${title}${it.nmId}" }) { g ->
+                Column(
+                    Modifier.width(108.dp).clickable {
+                        if (g.nmKind == "mv") vm.openHomeMv(g) else vm.openNmGroup(g)
+                    },
+                ) {
+                    Cover(g.cover, Modifier.fillMaxWidth().aspectRatio(1f), 12.dp, hd = true)
+                    VS(6)
+                    Txt(g.title, 12, maxLines = 1)
+                    Txt(g.subtitle.ifBlank { if (g.nmKind == "mv") "MV" else "歌单" }, 11, color = go.muted, maxLines = 1)
+                }
+            }
+        }
+        VS(14)
+    }
 }
 
 /** 横向专辑卡片行 */
@@ -1319,6 +1371,11 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
                             DropdownMenuItem(text = { Text("更换封面", color = go.on) }, onClick = {
                                 menu = false; coverPicker.launch("image/*")
                             })
+                            if (vm.hasPlaylistCoverBackup(p.id)) {
+                                DropdownMenuItem(text = { Text("复原封面", color = go.on) }, onClick = {
+                                    menu = false; vm.restorePlaylistCover(p.id)
+                                })
+                            }
                             DropdownMenuItem(text = { Text("删除", color = go.on) }, onClick = { menu = false; deleting = p })
                         }
                     }
@@ -3390,8 +3447,6 @@ const val TAB_HOME = 2
 const val TAB_ARTISTS = 3
 const val TAB_PLAYLISTS = 4
 
-/** 网易云请求日志的存放路径，设置里显示，方便用户取日志 */
-fun nmLogPath(): String = NmLog.path()
 
 @Composable
 fun SettingsSheet(vm: MainViewModel) {
@@ -3547,8 +3602,6 @@ fun SettingsSheet(vm: MainViewModel) {
                     "开启并登录后，搜索会同时展示两套曲库的结果（不合并），网易云结果在名字前带「(网)」",
                     12, color = go.muted,
                 )
-                VS(6)
-                Txt("请求日志：${nmLogPath()}", 11, color = go.muted)
             }
             VS(16)
 

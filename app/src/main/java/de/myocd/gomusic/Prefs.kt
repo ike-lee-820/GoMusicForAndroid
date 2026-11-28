@@ -431,4 +431,18 @@ class Prefs(ctx: Context) {
         ).apply()
     }
 
+
+    // ---------- 26.11.87：歌单原始封面（用于「复原封面」） ----------
+
+    /** 歌单 id -> 更换封面之前的原始封面 URL / 本地 uri */
+    var playlistOriginalCovers: Map<String, String>
+        get() = runCatching {
+            json.decodeFromString<Map<String, String>>(
+                sp.getString("playlist_original_covers", "{}")!!,
+            )
+        }.getOrDefault(emptyMap())
+        set(v) {
+            sp.edit().putString("playlist_original_covers", json.encodeToString(v)).apply()
+        }
+
 }

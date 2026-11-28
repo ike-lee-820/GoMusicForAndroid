@@ -38,6 +38,25 @@ data class RecentItem(
     val nmKind: String = "",
 )
 
+/**
+ * 26.11.85：私聊缓存消息。与 NmSocial.ChatMessage 一一对应，
+ * 单独定义是为了可序列化（网络模型里带 JsonElement 之类的运行时字段）。
+ */
+@Serializable
+data class CachedChat(
+    val id: Long = 0,
+    val time: Long = 0,
+    val fromSelf: Boolean = false,
+    val text: String = "",
+    val kind: String = "text",
+    val resId: Long = 0,
+    val resName: String = "",
+    val resCover: String? = null,
+)
+
+/** 每个会话最多缓存的消息数（超出丢最老的，最新的永远保留） */
+const val MAX_CHAT_CACHE = 400
+
 @Serializable
 data class Playlist(
     val id: String,
@@ -346,4 +365,41 @@ class Prefs(ctx: Context) {
                 json.encodeToString(v.distinctBy { it.key }.take(20)),
             ).apply()
         }
+
+    // ---------- 26.11.85：私聊缓存与已读基线 ----------
+
+    /** 按会话 uid 存的聊天记录；进入会话先读它，不白屏等网络 */
+    fun chatCache(uid: Long): List<CachedChat> = runCatching {
+        json.decodeFromString<List<CachedChat>>(
+            sp.getString("chat_cache_$uid", "[]")!!,
+        )
+    }.getOrDefault(emptyList())
+
+    fun putChatCache(uid: Long, list: List<CachedChat>) {
+        sp.edit().putString(
+            "chat_cache_$uid",
+            json.encodeToString(list.takeLast(MAX_CHAT_CACHE)),
+        ).apply()
+    }
+
+    fun clearChatCache(uid: Long) {
+        sp.edit().remove("chat_cache_$uid").apply()
+    }
+
+    /**
+     * 已读基线：打开会话时记下当时最新一条消息的时间。
+     * 服务端 /pl/count 与会话 unread 常常不会立刻归零，下次刷新时
+     * 用它把「已经看过的那批未读」扣掉，红点不会又冒出来。
+     * 有新消息（c.time > 基线）时该会话自动恢复提醒。
+     */
+    var chatReadStamps: Map<String, Long>
+        get() = runCatching {
+            json.decodeFromString<Map<String, Long>>(
+                sp.getString("chat_read_stamps", "{}")!!,
+            )
+        }.getOrDefault(emptyMap())
+        set(v) {
+            sp.edit().putString("chat_read_stamps", json.encodeToString(v)).apply()
+        }
+
 }

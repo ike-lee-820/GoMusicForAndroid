@@ -404,7 +404,10 @@ private fun ChatPage(vm: MainViewModel) {
     val go = LocalGo.current
     var text by remember { mutableStateOf("") }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(vm.chatMessages.size) {
+    // 26.11.85：最老在上、最新在下；按「最新一条」而不是列表长度跟随，
+    // 缓存先铺出来、网络再补新消息时都能滚到底，翻更早的页不会跳回顶部。
+    val newestKey = vm.chatMessages.lastOrNull()?.let { "${it.time}-${it.id}-${it.text}" }
+    LaunchedEffect(vm.chatUid, newestKey) {
         if (vm.chatMessages.isNotEmpty()) {
             listState.animateScrollToItem(vm.chatMessages.lastIndex)
         }
@@ -447,7 +450,24 @@ private fun ChatPage(vm: MainViewModel) {
                 Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center,
             ) { Text("还没有消息，发一句打个招呼吧", fontSize = 14.sp, color = go.muted) }
             else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
-                items(vm.chatMessages) { m ->
+                // 升序排列后「加载更早」属于顶部，不再挂在新消息后面
+                if (vm.chatBefore > 0) {
+                    item(key = "load_older") {
+                        Text(
+                            "加载更早的消息", fontSize = 13.sp, color = go.primary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(10.dp)
+                                .clickable { vm.loadChat(more = true) },
+                        )
+                    }
+                }
+                items(
+                    vm.chatMessages,
+                    key = { m ->
+                        if (m.id > 0L) "i${m.id}"
+                        else "t${m.time}|${m.fromSelf}|${m.text}|${m.resId}"
+                    },
+                ) { m ->
                     val label = when (m.kind) {
                         "song" -> "🎵 歌曲："
                         "album" -> "💿 专辑："
@@ -476,16 +496,6 @@ private fun ChatPage(vm: MainViewModel) {
                                 }
                             }
                         }
-                    }
-                }
-                item {
-                    if (vm.chatBefore > 0) {
-                        Text(
-                            "加载更早的消息", fontSize = 13.sp, color = go.primary,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(10.dp)
-                                .clickable { vm.loadChat(more = true) },
-                        )
                     }
                 }
             }

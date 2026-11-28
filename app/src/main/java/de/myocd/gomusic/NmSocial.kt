@@ -255,6 +255,21 @@ object NmSocial {
         }
     }.getOrDefault(emptyList())
 
+    /**
+     * 26.11.85：尽力让服务端把该会话标记成已读。
+     * 标准模块里没有这个路由（/msg/private/history 通常会顺带清未读），
+     * 所以只是 best-effort：接口不存在 / 返回错误都静默忽略，
+     * 真正的「清除提醒」由本地已读基线保证，红点不会复活。
+     */
+    fun markPrivateRead(uid: Long): Boolean = runCatching {
+        if (uid <= 0) return@runCatching false
+        val r = Netease.socialCall(
+            "/msg/private/read", true,
+            "uid" to uid.toString(), "userId" to uid.toString(),
+        )
+        isOk(r)
+    }.getOrDefault(false)
+
     private fun send(path: String, vararg params: Pair<String, String>): Boolean = runCatching {
         val r = Netease.socialCall(path, true, *params)
         isOk(r)

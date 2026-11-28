@@ -4904,23 +4904,96 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             val (counts, list) = withContext(Dispatchers.IO) {
                 NmSocial.plCount() to NmSocial.conversations()
             }
-            socialCounts = counts
-            conversations = list
+            // 26.11.85：服务端未读数常常滞后（/pl/count 不会因打开会话立刻归零）。
+            // 用本地「已读基线」把已经看过的那批未读扣掉，红点不会又冒出来；
+            // 有新消息时会话 time 超过基线，提醒自动恢复。
+            val stamps = prefs.chatReadStamps
+            val cleared = list.sumOf { c ->
+                val st = stamps[c.uid.toString()] ?: 0L
+                if (st > 0L && chatTimeMs(c.time) <= st) c.unread.coerceAtLeast(0) else 0
+            }
+            conversations = list.map { c ->
+                val st = stamps[c.uid.toString()] ?: 0L
+                if (st > 0L && chatTimeMs(c.time) <= st) c.copy(unread = 0) else c
+            }
+            socialCounts = (counts.first - cleared).coerceAtLeast(0) to counts.second
             socialBusy = false
             if (list.isEmpty()) socialError = "登录后才能查看私信"
         }
     }
 
+    // ---------- 26.11.85：私聊缓存 ----------
+
+    private fun toCached(m: NmSocial.ChatMessage) = CachedChat(
+        id = m.id, time = m.time, fromSelf = m.fromSelf, text = m.text,
+        kind = m.kind, resId = m.resId, resName = m.resName, resCover = m.resCover,
+    )
+
+    private fun fromCached(c: CachedChat) = NmSocial.ChatMessage(
+        id = c.id, time = c.time, fromSelf = c.fromSelf, text = c.text,
+        kind = c.kind, resId = c.resId, resName = c.resName, resCover = c.resCover,
+    )
+
+    /** 同一条消息在缓存 / 首页 / 翻页里都会出现，按稳定 key 去重 */
+    private fun chatKey(m: NmSocial.ChatMessage): String =
+        if (m.id > 0L) "i${m.id}"
+        else "t${m.time}|${m.fromSelf}|${m.text}|${m.resId}|${m.resName}"
+
+    /** 只做「合并新增」，绝不整体替换；最后统一按时间升序：最老在上、最新在下 */
+    private fun mergeChat(vararg parts: List<NmSocial.ChatMessage>): List<NmSocial.ChatMessage> =
+        parts.asSequence().flatten()
+            .distinctBy(::chatKey)
+            .sortedWith(compareBy<NmSocial.ChatMessage> { it.time }.thenBy { it.id })
+            .takeLast(MAX_CHAT_CACHE)
+            .toList()
+
+    private fun saveChatCache(uid: Long, list: List<NmSocial.ChatMessage>) {
+        if (uid <= 0) return
+        prefs.putChatCache(uid, list.map(::toCached))
+    }
+
+    /** 服务端偶尔给秒级时间戳，统一换算成毫秒再和本地已读基线比较 */
+    private fun chatTimeMs(t: Long): Long =
+        if (t > 0L && t < 1_000_000_000_000L) t * 1000L else t
+
+    /** 打开会话时清未读：本地立即归零 + 记已读基线 + 尝试让服务端标记已读 */
+    private fun clearChatUnread(uid: Long) {
+        val conv = conversations.firstOrNull { it.uid == uid }
+        val lastSeen = maxOf(
+            chatTimeMs(conv?.time ?: 0L),
+            chatMessages.maxOfOrNull { it.time } ?: 0L,
+            System.currentTimeMillis(),
+        )
+        conversations = conversations.map {
+            if (it.uid == uid) it.copy(unread = 0) else it
+        }
+        val (msg, notice) = socialCounts
+        socialCounts = (msg - (conv?.unread ?: 0)).coerceAtLeast(0) to notice
+        prefs.chatReadStamps = prefs.chatReadStamps + (uid.toString() to lastSeen)
+        // 有些部署有标记已读接口；没有就静默失败，本地基线仍能挡住重复提醒
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { NmSocial.markPrivateRead(uid) }
+        }
+    }
+
+    /** 进入会话：先把本地缓存铺出来（0 秒可见），再拉网络只补新消息 */
     fun openChat(uid: Long, name: String, avatar: String?) {
         chatUid = uid
         chatName = name
         chatAvatar = avatar
-        chatMessages = emptyList()
-        chatBefore = 0L
+        val cached = prefs.chatCache(uid).map(::fromCached)
+        chatMessages = mergeChat(cached)
+        chatBefore = chatMessages.minOfOrNull { it.time } ?: 0L
+        clearChatUnread(uid)
         loadChat()
     }
 
-    fun closeChat() { chatUid = 0L; chatMessages = emptyList() }
+    fun closeChat() {
+        // 关闭前把当前顺序（最老→最新）落盘，下次进来直接是这个顺序
+        saveChatCache(chatUid, chatMessages)
+        chatUid = 0L
+        chatMessages = emptyList()
+    }
 
     fun loadChat(more: Boolean = false) {
         val uid = chatUid
@@ -4928,9 +5001,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         chatBusy = true
         viewModelScope.launch {
             val before = if (more) chatBefore else 0L
-            val list = withContext(Dispatchers.IO) { NmSocial.history(uid, 30, before) }
-            chatMessages = if (more) (list + chatMessages).distinctBy { it.id to it.time } else list
-            list.minOfOrNull { it.time }?.takeIf { it > 0 }?.let { chatBefore = it }
+            val fetched = withContext(Dispatchers.IO) {
+                NmSocial.history(uid, 30, before)
+            }
+            // 只合并新增：缓存里的老消息不会因为首页只返回最近 30 条而丢掉
+            val merged = mergeChat(chatMessages, fetched)
+            chatMessages = merged
+            chatBefore = merged.minOfOrNull { it.time }?.takeIf { it > 0 } ?: chatBefore
+            saveChatCache(uid, merged)
+            // 每次刷新都把已读基线推到最新一条，避免未读红点复活
+            if (!more) {
+                val newest = merged.maxOfOrNull { it.time } ?: 0L
+                if (newest > 0L) {
+                    prefs.chatReadStamps = prefs.chatReadStamps +
+                        (uid.toString() to maxOf(
+                            prefs.chatReadStamps[uid.toString()] ?: 0L, newest,
+                        ))
+                }
+            }
             chatBusy = false
         }
     }

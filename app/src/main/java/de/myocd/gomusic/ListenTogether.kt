@@ -309,18 +309,24 @@ object ListenTogetherApi {
         runCatching {
             val k = keyword.trim()
             if (k.isBlank()) return@runCatching emptyList()
-            val r = call(
-                "/search", false,
+            val p = arrayOf(
                 "keywords" to k, "type" to "1000",
                 "limit" to limit.toString(), "offset" to offset.toString(),
             )
-            val d = obj(r["data"]) ?: obj(r["result"]) ?: r
-            val plArr = arr(child(d, "playlists")) +
-                arr(child(obj(r["result"]), "playlists")) +
-                arr(child(obj(r["data"]), "playlists"))
-            plArr.distinctBy { num(it, "id") }
-                .map(::toPlaylistBrief)
-                .filter { it.id > 0L }
+            fun parse(r: JsonObject): List<PlaylistBrief> {
+                val d = obj(r["data"]) ?: obj(r["result"]) ?: r
+                val plArr = arr(child(d, "playlists")) +
+                    arr(child(obj(r["result"]), "playlists")) +
+                    arr(child(obj(r["data"]), "playlists"))
+                return plArr.distinctBy { num(it, "id") }
+                    .map(::toPlaylistBrief)
+                    .filter { it.id > 0L }
+            }
+            // 26.11.94：cloudsearch 更全，/search 对 type=1000 常返回空；
+            // 先打 cloudsearch，空结果再退回老接口，行为不退化。
+            val cloud = parse(call("/cloudsearch", false, *p))
+            if (cloud.isNotEmpty()) return@runCatching cloud
+            parse(call("/search", false, *p))
         }.getOrDefault(emptyList())
 
     /** 26.11.86：我的歌单（自建 + 收藏），直接选来同步进房间 */

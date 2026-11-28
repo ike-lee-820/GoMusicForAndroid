@@ -2744,16 +2744,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 每次回车递增：旧请求即便晚到也不许覆盖新关键词的结果 */
     private var searchSeq = 0L
 
+    /**
+     * 26.11.94：缓存键加版本。旧缓存是「只打 /search」时代写的，歌单板块
+     * 恒为空，命中后直接 return 会把 cloudsearch 歌单请求整个挡掉。
+     */
+    private fun searchCacheKey(k: String) = "v2_$k"
+
     private fun readAggregateCache(k: String): SearchCacheEntry? = synchronized(aggregateCache) {
-        val e = aggregateCache[k] ?: return null
+        val key = searchCacheKey(k)
+        val e = aggregateCache[key] ?: return null
         if (!e.complete || System.currentTimeMillis() - e.at > searchCacheTtl) {
-            aggregateCache.remove(k)
+            aggregateCache.remove(key)
             null
         } else e
     }
     private fun putAggregateCache(k: String, v: Netease.Aggregate) = synchronized(aggregateCache) {
-        val ok = v.songs.isNotEmpty() || v.albums.isNotEmpty() || v.artists.isNotEmpty()
-        aggregateCache[k] = SearchCacheEntry(
+        val ok = v.songs.isNotEmpty() || v.albums.isNotEmpty() ||
+            v.artists.isNotEmpty() || v.playlists.isNotEmpty()
+        aggregateCache[searchCacheKey(k)] = SearchCacheEntry(
             v, System.currentTimeMillis(), ok, searchLocalCount,
         )
         while (aggregateCache.size > 20) aggregateCache.remove(aggregateCache.keys.first())
@@ -2838,6 +2846,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             aggregate = e.agg
             searchLocalCount = e.localCount
             searchBusy = false; searchHint = ""
+            // 26.11.94：即便命中缓存，歌单为空时仍单独补一次 cloudsearch 歌单，
+            // 不让旧结果挡住新接口（缓存本身已换 v2 键，这里是双保险）。
+            if (e.agg.playlists.isEmpty()) {
+                searchJob = viewModelScope.launch {
+                    val pl = runCatching {
+                        Netease.searchPlaylistGroupsAsync(k, 20, 0)
+                    }.getOrDefault(emptyList())
+                    if (seq != searchSeq) return@launch
+                    val cur = aggregate ?: return@launch
+                    aggregate = cur.copy(playlists = pl)
+                    searchHasMorePlaylists = pl.size >= 20
+                    putAggregateCache(k, aggregate!!)
+                }
+            }
             return
         }
 
@@ -2863,19 +2885,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-            // 26.11.87：歌单作为第四路独立并发，谁先回谁先显示，不等三路主链
-            launch(Dispatchers.IO) {
+            // 26.11.87 / 26.11.94：歌单作为第四路独立并发，走 cloudsearch
+            // 异步通道（可真取消、不拼 4KB cookie），谁先回谁先显示
+            launch {
                 val pl = runCatching {
-                    Netease.cookie = prefs.nmCookie
-                    Netease.searchPlaylistGroups(k, 20, 0)
+                    Netease.searchPlaylistGroupsAsync(k, 20, 0)
                 }.getOrDefault(emptyList())
-                withContext(Dispatchers.Main) {
-                    if (seq != searchSeq) return@withContext
-                    val cur = aggregate ?: return@withContext
-                    aggregate = cur.copy(playlists = pl)
-                    searchHasMorePlaylists = pl.size >= 20
-                    putAggregateCache(k, aggregate!!)
-                }
+                if (seq != searchSeq) return@launch
+                val cur = aggregate ?: return@launch
+                aggregate = cur.copy(playlists = pl)
+                searchHasMorePlaylists = pl.size >= 20
+                putAggregateCache(k, aggregate!!)
             }
             val result = runCatching {
                 Netease.cookie = prefs.nmCookie
@@ -3014,12 +3034,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             try {
                 // 异步可取消的搜索专用通道；不做详情补全、不做二次兜底
                 if (type == 1000) {
-                    val add = withContext(Dispatchers.IO) {
-                        runCatching {
-                            Netease.cookie = prefs.nmCookie
-                            Netease.searchPlaylistGroups(k, NM_PAGE_SIZE, off)
-                        }.getOrDefault(emptyList())
-                    }
+                    // 26.11.94：分类翻页同样走 cloudsearch 异步通道
+                    val add = runCatching {
+                        Netease.searchPlaylistGroupsAsync(k, NM_PAGE_SIZE, off)
+                    }.getOrDefault(emptyList())
                     if (seq == searchSeq) {
                         val now = aggregate ?: cur
                         val seen = now.playlists.map { groupKey(it) }.toHashSet()

@@ -379,17 +379,78 @@ object Netease {
 
     // ================= 搜索 =================
 
-    /** type: 1 单曲 10 专辑 100 歌手；offset 用于翻页 */
+    /**
+     * 26.11.94：搜索统一走 /cloudsearch（接口文档标注「更全」），
+     * 失败 / 返回空结果时再退回 /search。
+     *
+     * 旧版「歌单」分类只打 /search?type=1000，这个部署的 /search 对歌单
+     * 经常返回空 result.playlists，于是歌单板块永远没结果 —— 用户看到的
+     * 就是「搜索无法调用 cloudsearch 歌单搜索」。cloudsearch 与 /search
+     * 参数、返回结构一致（result.songs / albums / artists / playlists），
+     * 所以同一份解析两边都能吃。
+     */
+    private const val SEARCH_PATH = "/cloudsearch"
+    private const val SEARCH_FALLBACK_PATH = "/search"
+
+    private fun searchParams(
+        keywords: String, type: Int, limit: Int, offset: Int,
+    ): Array<Pair<String, String>> = arrayOf(
+        "keywords" to keywords,
+        "type" to type.toString(),
+        "limit" to limit.toString(),
+        "offset" to offset.toString(),
+    )
+
+    /** 该 type 对应的结果数组名；空串表示不判断（综合等类型） */
+    private fun searchResultKey(type: Int): String = when (type) {
+        1 -> "songs"
+        10 -> "albums"
+        100 -> "artists"
+        1000 -> "playlists"
+        1004 -> "mvs"
+        1002 -> "userprofiles"
+        else -> ""
+    }
+
+    /** 搜索结果数组：兼容 result.xxx / data.xxx / 顶层 xxx 三种结构并去重 */
+    private fun searchArray(root: JsonObject, key: String): List<JsonObject> {
+        val out = ArrayList<JsonObject>()
+        listOf(root.obj("result"), root.obj("data"), root).forEach { holder ->
+            val a = (holder?.get(key) as? JsonElement)?.jsonArray ?: return@forEach
+            a.mapNotNullTo(out) { it as? JsonObject }
+        }
+        return out.distinctBy { o ->
+            (o["id"] as? JsonPrimitive)?.content
+                ?: (o["name"] as? JsonPrimitive)?.content
+                ?: o.toString().hashCode().toString()
+        }
+    }
+
+    /** cloudsearch 是否真的给了这一路的结果（不是 200 或数组为空都算失败） */
+    private fun searchRootHasData(root: JsonObject, type: Int): Boolean {
+        val code = root.num("code") ?: 200L
+        if (code != 200L) return false
+        val key = searchResultKey(type)
+        return key.isEmpty() || searchArray(root, key).isNotEmpty()
+    }
+
+    /** 同步：cloudsearch 优先，空 / 失败回退 /search */
+    private fun searchRoot(keywords: String, type: Int, limit: Int, offset: Int): JsonObject {
+        val p = searchParams(keywords, type, limit, offset)
+        // cloudsearch 不需要登录态：不带整串 cookie，避免 4KB URL 拖慢代理
+        val cloud = runCatching {
+            get(SEARCH_PATH, *p, http = searchClient, tries = 1, cookieOverride = "")
+        }.getOrNull()
+        if (cloud != null && searchRootHasData(cloud, type)) return cloud
+        val fallback = runCatching {
+            get(SEARCH_FALLBACK_PATH, *p, http = searchClient, tries = 1)
+        }.getOrNull()
+        return fallback ?: cloud ?: JsonObject(emptyMap<String, JsonElement>())
+    }
+
+    /** type: 1 单曲 10 专辑 100 歌手 1000 歌单；offset 用于翻页 */
     private fun rawSearch(keywords: String, type: Int, limit: Int, offset: Int = 0): JsonObject =
-        get(
-            "/search",
-            "keywords" to keywords,
-            "type" to type.toString(),
-            "limit" to limit.toString(),
-            "offset" to offset.toString(),
-            http = searchClient,
-            tries = 1,
-        )
+        searchRoot(keywords, type, limit, offset)
 
     /** 搜索结果的数组：兼容 result.xxx 与顶层 xxx 两种结构 */
     private fun resultArray(root: JsonObject, key: String): List<JsonObject> {
@@ -540,38 +601,51 @@ object Netease {
         }
     }.getOrDefault(emptyList())
 
+    /** 26.11.94：cloudsearch / search 的 result.playlists 统一解析 */
+    private fun parsePlaylistGroups(root: JsonObject): List<Group> =
+        searchArray(root, "playlists").mapNotNull { o ->
+            val id = o.num("id") ?: return@mapNotNull null
+            val name = o.str("name", "title").orEmpty()
+            if (id <= 0L || name.isBlank()) return@mapNotNull null
+            val cnt = (o.num("trackCount", "trackCnt", "count") ?: 0L).toInt()
+            val creator = o.obj("creator")?.str("nickname", "name").orEmpty()
+            val plays = o.num("playCount", "playcount") ?: 0L
+            Group(
+                title = name,
+                subtitle = creator.ifBlank {
+                    when {
+                        cnt > 0 -> "$cnt 首"
+                        plays > 0 -> "${plays}次播放"
+                        else -> "歌单"
+                    }
+                },
+                cover = pic(o.str("coverImgUrl", "picUrl", "imgurl", "imgUrl", "cover")),
+                songs = emptyList(),
+                source = SRC_NETEASE,
+                nmId = id,
+                nmKind = "playlist",
+                trackCount = cnt,
+            )
+        }
+
     /**
-     * 26.11.87：搜索歌单（type=1000）。
+     * 26.11.87 / 26.11.94：搜索歌单（type=1000）。
      * 走独立请求，不塞进 searchAllStream 的三路主链，避免拖慢首屏；
-     * 返回统一 Group（nmKind=playlist），点开后复用已有歌单详情页。
+     * 现在优先 /cloudsearch（更全），空结果自动回退 /search。
      */
     fun searchPlaylistGroups(keywords: String, limit: Int = 20, offset: Int = 0): List<Group> =
         runCatching {
-            val root = get(
-                "/search",
-                "keywords" to keywords,
-                "type" to "1000",
-                "limit" to limit.toString(),
-                "offset" to offset.toString(),
-            )
-            resultArray(root, "playlists").mapNotNull { o ->
-                val id = o.num("id") ?: return@mapNotNull null
-                val name = o.str("name", "title").orEmpty()
-                if (id <= 0L || name.isBlank()) return@mapNotNull null
-                val cnt = (o.num("trackCount", "trackCnt") ?: 0L).toInt()
-                Group(
-                    title = name,
-                    subtitle = o.obj("creator")?.str("nickname", "name").orEmpty()
-                        .ifBlank { if (cnt > 0) "$cnt 首" else "歌单" },
-                    cover = pic(o.str("coverImgUrl", "picUrl", "imgurl", "cover")),
-                    songs = emptyList(),
-                    source = SRC_NETEASE,
-                    nmId = id,
-                    nmKind = "playlist",
-                    trackCount = cnt,
-                )
-            }
+            parsePlaylistGroups(searchRoot(keywords, 1000, limit, offset))
         }.getOrDefault(emptyList())
+
+    /** 26.11.94：歌单搜索的异步可取消版本，聚合首屏与分类翻页都走它 */
+    suspend fun searchPlaylistGroupsAsync(
+        keywords: String, limit: Int = 20, offset: Int = 0,
+    ): List<Group> = runCatching {
+        val root = searchRootAsync(keywords, 1000, limit, offset)
+            ?: return@runCatching emptyList()
+        parsePlaylistGroups(root)
+    }.getOrDefault(emptyList())
 
     fun searchAlbums(
         keywords: String,
@@ -1415,19 +1489,23 @@ object Netease {
         }
     }
 
+    /** 26.11.94：异步搜索同样 cloudsearch 优先、/search 兜底；可真取消 */
+    private suspend fun searchRootAsync(
+        keywords: String, type: Int, limit: Int, offset: Int,
+    ): JsonObject? {
+        val p = searchParams(keywords, type, limit, offset)
+        val cloud = getSearch(SEARCH_PATH, *p)
+        if (cloud != null && searchRootHasData(cloud, type)) return cloud
+        // cloudsearch 超时 / 报错 / 这一路没给结果时再打老接口，行为不退化
+        return getSearch(SEARCH_FALLBACK_PATH, *p) ?: cloud
+    }
+
     private suspend fun rawSearchAsync(
         keywords: String,
         type: Int,
         limit: Int,
         offset: Int = 0,
-    ): JsonObject? =
-        getSearch(
-            "/search",
-            "keywords" to keywords,
-            "type" to type.toString(),
-            "limit" to limit.toString(),
-            "offset" to offset.toString(),
-        )
+    ): JsonObject? = searchRootAsync(keywords, type, limit, offset)
 
     /** 单个分类的一页结果：滑到底时按当前分类继续取，不重发另外两类 */
     data class SearchPage(

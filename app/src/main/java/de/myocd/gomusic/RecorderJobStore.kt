@@ -38,7 +38,7 @@ data class RecJobSpec(
 
 object RecorderJobStore {
     private const val NAME = "rec_resume.json"
-    private val json = Api.json
+    private val json = Http.json
 
     fun save(ctx: Context, job: RecJob) {
         runCatching {

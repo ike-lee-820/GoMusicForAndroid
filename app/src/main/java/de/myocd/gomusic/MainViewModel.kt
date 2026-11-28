@@ -111,7 +111,7 @@ data class Group(
     val songs: List<Song>,
     val artist: String = "",
     val album: String = "",
-    /** 曲库来源：[SRC_LOCAL] / [SRC_NETEASE] */
+    /** 曲库来源：[SRC_LOCAL] 本地 / [SRC_NETEASE] 网易云 */
     val source: String = SRC_LOCAL,
     val nmId: Long = 0,
     /** 网易云专辑 / 歌手，用于取歌曲列表 */
@@ -996,7 +996,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             lrc = withContext(Dispatchers.IO) {
                 val nid = neteaseIdOf(id)
                 if (nid != null) runCatching { Netease.lyric(nid) }.getOrDefault("")
-                else runCatching { Api.lyrics(id) }.getOrDefault("")
+                else runCatching { localLyrics(id) }.getOrDefault("")
             }
         }
         if (lrc.isBlank()) return
@@ -1046,11 +1046,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 m.contains("ECONNABORTED", true) ||
                 m.contains("Connection reset", true) ||
                 m.contains("Connection timed out", true) ||
-                m.contains("timeout", true) -> "连接服务器超时（网络不稳定），已进入离线模式"
-            m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true) -> "无法解析服务器地址，已进入离线模式"
-            m.contains("Failed to connect", true) || m.contains("ECONNREFUSED", true) -> "无法连接服务器，已进入离线模式"
-            m.contains("SocketTimeout", true) || m.contains("timed out", true) -> "连接服务器超时，已进入离线模式"
-            m.startsWith("HTTP ") -> "服务器返回 $m"
+                m.contains("timeout", true) -> "网络超时，已切到本地曲库"
+            m.contains("Unable to resolve host", true) || m.contains("UnknownHost", true) -> "无法解析地址，已切到本地曲库"
+            m.contains("Failed to connect", true) || m.contains("ECONNREFUSED", true) -> "网络不可用，已切到本地曲库"
+            m.contains("SocketTimeout", true) || m.contains("timed out", true) -> "网络超时，已切到本地曲库"
+            m.startsWith("HTTP ") -> "接口返回 $m"
             else -> "加载失败：$m"
         }
     }
@@ -1059,9 +1059,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loading = true
             error = null
-            // 26.11.61：旧曲库源站已停用，启动时不再发任何请求等超时。
-            // 曲库完全由本地数据组装：已下载、播放过的快照、歌单里的歌、
-            // 以及搜索过的网易云歌曲。网易云搜索 / 榜单仍走独立接口，
+            // 26.11.95：旧曲库源站已彻底移除，启动时不存在任何源站请求。
+            // 曲库完全由网易云歌曲与本地数据组装：设备音频、已下载、
+            // 还原字符导入的歌单、搜索过的网易云歌曲。网易云接口仍独立可用，
             // 所以这里不置 offline，下载与音质探测照常可用。
             songs = withContext(Dispatchers.IO) { buildLocalLibrary() }
             offline = false
@@ -1072,13 +1072,27 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 26.11.61：不再依赖源站 /api/songs，从本地持久化数据组装曲库 */
+    /**
+     * 26.11.95：彻底断绝与旧曲库源站的联系。
+     *
+     * 曲库只由「网易云歌曲 + 设备本地音频 + 已下载文件 + 还原字符导入的歌单」组成。
+     * 历史快照里那些既不是 nm_ / dev:、也没有下载记录、又没被任何歌单引用的
+     * 条目，都是旧曲库源站 /api/songs 灌进来的，一律不再进曲库；播放历史仍保留，
+     * 但点进去不会再拿一个没有音源的旧曲库源站条目假装成歌曲。
+     */
     private fun buildLocalLibrary(): List<Song> {
         val out = LinkedHashMap<String, Song>()
-        runCatching { LocalLib.songs(prefs.downloads) }
-            .getOrDefault(emptyList()).forEach { out[it.ssid] = it }
+        val downloaded = runCatching { LocalLib.songs(prefs.downloads) }
+            .getOrDefault(emptyList())
+        downloaded.forEach { out[it.ssid] = it }
+        // 歌单引用的 ssid（还原字符导入 / 自建歌单）必须保留
+        val referenced = HashSet<String>(out.keys)
+        playlists.forEach { pl -> referenced.addAll(pl.songs) }
         snapshots.values.forEach { s ->
-            if (s.title.isNotBlank()) out.putIfAbsent(s.ssid, s)
+            if (s.title.isBlank()) return@forEach
+            val isLocal = isNetease(s.ssid) || LocalAudio.isDevice(s.ssid) ||
+                s.audioUri != null || s.ssid in referenced
+            if (isLocal) out.putIfAbsent(s.ssid, s)
         }
         nmKnown.values.forEach { s -> out.putIfAbsent(s.ssid, s) }
         playlists.forEach { pl ->
@@ -1089,7 +1103,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return out.values.toList()
     }
 
-    /** 设置里手动重连 */
+    /** 设置里手动重新载入本地曲库（不连任何源站） */
     fun reconnect() = load()
 
 
@@ -1264,7 +1278,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 关键词或代号变了说明已经切走，丢弃这批结果
                 if (gen != nmGen || kw != nmKeyword || !nmReady) return@launch
                 keepNetease(s)
-                // 与本站共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
+                // 与本地共用播放次数进入默认排序；次数相同时保持网易云自己的相关度顺序
                 val c = counts
                 when (kind) {
                     1 -> {
@@ -2151,7 +2165,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * ssid -> Song。
      *
-     * 歌单里可能混着本站与网易云的歌，只查本地 songs 的话
+     * 歌单里可能混着本地与网易云的歌，只查本地 songs 的话
      * 网易云歌曲会查不到 —— 表现就是「加了歌单却看不见」。
      */
     fun songsByIds(ids: List<String>): List<Song> {
@@ -2199,7 +2213,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         return when {
             u.startsWith("content://") || u.startsWith("file://") || u.startsWith("/") ->
                 runCatching { Uri.parse(u) }.getOrNull()
-            else -> Api.abs(u)?.takeIf { it.startsWith("http") }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            else -> Http.abs(u)?.takeIf { it.startsWith("http") }?.let { runCatching { Uri.parse(it) }.getOrNull() }
         }
     }
 
@@ -3182,13 +3196,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 26.11.81：播放器进度条下方显示当前音质的中文名，随切歌 / 切档位实时变化。
      * 旧版直接把 quality 键（normal / high / …）当文字画出来，只有 lossless
      * 特判成「无损」，所以用户看到的是一个英文 normal。
-     * 网易云歌曲走网易云档位（curLevel），本站曲库走 quality，两套都转中文。
+     * 网易云歌曲走网易云档位（curLevel），本地曲库走 quality，两套都转中文。
      */
     val qualityDisplay: String get() =
         if (nmQualityMode) nmLevelLabel(curLevel) else qualityLabel(quality)
 
     fun updateQuality(k: String) {
-        // 网易云歌曲：档位存到 nmLevel，不动本站的 quality
+        // 网易云歌曲：档位存到 nmLevel，不动本地的 quality
         if (k in NM_LEVELS) {
             if (k == curLevel) return
             prefs.nmLevel = k
@@ -3399,7 +3413,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             m[id] = (m[id] ?: 0) + 1
             counts = m
             prefs.playCounts = m
-            pushHistory(id) // 本站与网易云统一记录
+            pushHistory(id) // 本地与网易云统一记录
             rememberSongs(listOfNotNull(songMap[id] ?: nmKnown[id] ?: snapshots[id]))
         }
         // 26.11.34：设备本地音频 —— 信息全在文件里，绝不发网络请求
@@ -3417,7 +3431,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } catch (e: Exception) { "" }
                 if (curSsid == id) {
                     lyric = lyricLines(t)
-                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
+                    // 老 /lyric、本地、本地、离线歌词也统一进逐字模型：
                     // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
                     installWordLyric(null, id, t)
                     lyricLoading = false
@@ -3430,10 +3444,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         updateCover((songMap[id] ?: nmKnown[id])?.coverUrl ?: item?.mediaMetadata?.artworkUri?.toString())
         // 缓存里没有译文时，从随下载保存的文件里调回来（离线播放尤其需要）
         loadLocalTransIfNeeded(id)
-        // 网易云歌曲：歌词走网易云接口，优先级高于本站
+        // 网易云歌曲：歌词走网易云接口，优先级高于本地
         if (isNetease(id)) {
             if (count) pushHistory(id)
-            // 网易云歌曲：音质档位与本站分开，菜单里列网易云自己的档位。
+            // 网易云歌曲：音质档位与本地分开，菜单里列网易云自己的档位。
             // 离线时只列已经下载过的音质（没下载的播不了，不显示）
             qualities = if (offline) downloadedQualities(id).ifEmpty { NM_LEVELS } else NM_LEVELS
             val nid = neteaseIdOf(id)
@@ -3499,7 +3513,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } ?: ""
                 if (curSsid == id) {
                     lyric = lyricLines(t)
-                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型；
+                    // 老 /lyric、本地、本地、离线歌词也统一进逐字模型；
                     // 同时把持久化的接口译文重新贴回，切歌回来不会丢。
                     installWordLyric(w, id, t)
                     lyricLoading = false
@@ -3520,7 +3534,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } ?: ""
                 if (curSsid == id) {
                     lyric = lyricLines(t)
-                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
+                    // 老 /lyric、本地、本地、离线歌词也统一进逐字模型：
                     // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
                     installWordLyric(null, id, t)
                     lyricLoading = false
@@ -3530,52 +3544,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        // 26.11.95：旧曲库源站已彻底移除。非网易云、非设备本地的歌没有任何
+        // 在线详情 / 在线音质 / 在线歌词，只认已下载文件与本地歌词。
+        qualities = downloadedQualities(id)
         lyricJob = viewModelScope.launch {
-            try {
-                val d = withContext(Dispatchers.IO) { Api.detail(id) }
-                if (curSsid != id) return@launch
-                // 离线只显示已下载的音质
-                qualities = if (offline) {
-                    downloadedQualities(id)
-                } else {
-                    d.audio.keys.sortedBy { Api.rank(it) }
-                }
-                var t = d.lyrics
-                val more = withTimeoutOrNull(lyricTimeoutMs) {
-                    var x = if (t.isBlank()) {
-                        withContext(Dispatchers.IO) { runCatching { Api.lyrics(id) }.getOrDefault("") }
-                    } else t
-                    if (x.isBlank()) x = withContext(Dispatchers.IO) { localLyrics(id) }
-                    x
-                }
-                if (more != null) t = more
-                if (curSsid == id) {
-                    lyric = lyricLines(t)
-                    // 老 /lyric、本站、本地、离线歌词也统一进逐字模型：
-                    // 没有 yrc 时退化成「整行一个字组」，仍用新版大字样式渲染。
-                    installWordLyric(null, id, t)
-                    lyricLoading = false
-                    lyricSsid = id
-                }
-                if (lyricLoadingFor == id) lyricLoadingFor = null
-            } catch (ignored: Exception) {
-                val t = withContext(Dispatchers.IO) { localLyrics(id) }
-                if (curSsid == id && t.isNotBlank()) {
-                    lyric = lyricLines(t)
-                    installWordLyric(null, id, t)
-                }
-                if (curSsid == id) {
-                    lyricLoading = false
-                    lyricSsid = id
-                }
-                if (lyricLoadingFor == id) lyricLoadingFor = null
+            val t = withTimeoutOrNull(lyricTimeoutMs) {
+                withContext(Dispatchers.IO) { localLyrics(id) }
+            } ?: ""
+            if (curSsid == id) {
+                lyric = lyricLines(t)
+                installWordLyric(null, id, t)
+                lyricLoading = false
+                lyricSsid = id
             }
+            if (lyricLoadingFor == id) lyricLoadingFor = null
         }
     }
 
     /** 取封面主色，并设定亮度下限，保证在深色底上可读 */
     private fun updateCover(url: String?) {
-        val u = Api.abs(url)
+        val u = Http.abs(url)
         if (u == null || !u.startsWith("http")) { coverColor = null; return }
         val target = curSsid
         viewModelScope.launch(Dispatchers.IO) {
@@ -3624,7 +3612,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 26.11.91：本地新建歌单 → 云端 create + **上传所有歌曲** + 回填 nmId。
-     * 以前只传 neteaseIdOf 能解析的歌，本站曲库歌全被丢掉；现在按歌名+歌手
+     * 以前只传 neteaseIdOf 能解析的歌，本地曲库歌全被丢掉；现在按歌名+歌手
      * 映射到网易云 id，能映射的尽量都传上去。
      */
     private fun uploadLocalPlaylist(localId: String) {
@@ -3666,7 +3654,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** ssid -> 解析出的网易云歌曲 id（缓存，避免每次同步重复搜索） */
     private val uploadIdCache = ConcurrentHashMap<String, Long>()
 
-    /** 把一个本地 ssid 尽量解析成网易云歌曲 id：本站歌按歌名+歌手搜索映射 */
+    /** 把一个本地 ssid 尽量解析成网易云歌曲 id：本地歌按歌名+歌手搜索映射 */
     private fun resolveUploadId(ssid: String, index: Map<String, Song>): Long {
         neteaseIdOf(ssid)?.let { if (it > 0L) return it }
         uploadIdCache[ssid]?.let { return it }
@@ -3864,7 +3852,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     NmLog.note("红心歌单指纹未变，跳过合并 pid=${likeGroup.nmId}")
                 }
 
-                // 26.11.91：把本地曲库 / 本站歌也映射到网易云 id，才能「上传所有歌曲」。
+                // 26.11.91：把本地曲库 / 本地歌也映射到网易云 id，才能「上传所有歌曲」。
                 // 索引覆盖所有本地歌单曲目 + 本轮拉到的云端曲目，避免拿不到歌名。
                 val songIndex = withContext(Dispatchers.Main) {
                     val localSsids = local.flatMap { it.songs }.distinct()
@@ -3947,7 +3935,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
 
                 // 26.11.91：本地有、云端没有的歌单 → 在云端创建并上传**所有**歌曲。
-                // 以前只传 neteaseIdOf 能解析的歌，本站曲库的歌全被丢掉；现在按
+                // 以前只传 neteaseIdOf 能解析的歌，本地曲库的歌全被丢掉；现在按
                 // 歌名+歌手映射成网易云 id，分批上传，失败还能拆半重投。
                 // 云端这次返回的自建歌单 id 集合：本地仍带着某个 nmId、但云端
                 // 已经没有这张歌单时，说明它是在别处被删掉的。以前这种歌单
@@ -4051,7 +4039,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             .header("User-Agent", "Mozilla/5.0")
             .header("Referer", "https://music.163.com/")
             .build()
-        Api.client.newCall(req).execute().use { r ->
+        Http.client.newCall(req).execute().use { r ->
             if (!r.isSuccessful) null
             else r.body?.bytes()?.takeIf { it.size > 64 && it.size < 8 * 1024 * 1024 }
         }
@@ -4282,7 +4270,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * 本地歌单删歌后，把删掉的那几首同步到网易云歌单。
      *
-     * 只处理网易云来源的歌：本站曲库的歌在网易云那边不存在，
+     * 只处理网易云来源的歌：本地曲库的歌在网易云那边不存在，
      * 传过去要么被忽略、要么报错，所以直接跳过。
      */
     private fun syncNmRemove(p: Playlist, ssids: List<String>) {
@@ -4370,7 +4358,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      */
     fun downloadMv(v: Screen.Video) {
         if (mvDownloading) return
-        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        if (offline) { toast("离线模式下无法下载，请恢复网络"); return }
         mvDownloading = true
         mvDownloadProgress = 0f
         val noti = Noti(app)
@@ -4425,7 +4413,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 下载歌曲本体 + 封面 + 歌词 + 歌曲信息，并写入本地记录（离线可用） */
     fun download(list: List<Song>) {
         if (list.isEmpty()) return
-        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        if (offline) { toast("离线模式下无法下载，请恢复网络"); return }
         // 同一首歌可以下多个音质：按（歌曲 + 音质）判断是否已下载
         val todo = list.filter { s ->
             val q = downloadQuality(s)
@@ -4441,7 +4429,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             )
             return
         }
-        // 列表里可能混着本站 / 网易云，按音质是否一致分组下载
+        // 列表里可能混着本地 / 网易云，按音质是否一致分组下载
         val groups = todo.groupBy { downloadQuality(it) }
         downloading = downloading + todo.map { it.ssid }
         toast("开始下载 ${todo.size} 首（${qualityLabel(todo.first().let { downloadQuality(it) })}）")
@@ -4564,8 +4552,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * 下载整个歌单。
      *
-     * 音质按来源分开处理：歌单里可能混着本站歌曲和网易云歌曲，
-     * 网易云的档位（exhigh / lossless …）和本站的 quality 键不是一套，
+     * 音质按来源分开处理：歌单里可能混着本地歌曲和网易云歌曲，
+     * 网易云的档位（exhigh / lossless …）和本地的 quality 键不是一套，
      * [downloadQuality] 会分别取，[download] 再按音质分组下载。
      * 已经下过当前音质的自动跳过。
      */
@@ -4583,14 +4571,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /**
      * 整个歌单按指定音质批量下载。
      *
-     * 音质不能一刀切：歌单里可能同时有本站歌曲和网易云歌曲，
+     * 音质不能一刀切：歌单里可能同时有本地歌曲和网易云歌曲，
      * 两套音质键不同（lossless/high/normal 与 standard/exhigh/lossless…），
      * 所以按来源分开下 —— 网易云那部分用选的档位，
-     * 本站那部分只在选的是本站键时才用，否则沿用当前音质设置。
+     * 本地那部分只在选的是本地键时才用，否则沿用当前音质设置。
      */
     fun downloadAllWithQuality(songs: List<Song>, q: String) {
         if (songs.isEmpty()) return
-        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        if (offline) { toast("离线模式下无法下载，请恢复网络"); return }
         val nm = songs.filter { it.source == SRC_NETEASE }
         val local = songs.filter { it.source != SRC_NETEASE }
         val localKey = if (q in listOf("lossless", "high", "normal", "low")) q else quality
@@ -4606,7 +4594,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 按指定音质下载（重新下载时用） */
     fun downloadWithQuality(list: List<Song>, q: String) {
         if (list.isEmpty()) return
-        if (offline) { toast("离线模式下无法下载，请先连接服务器"); return }
+        if (offline) { toast("离线模式下无法下载，请恢复网络"); return }
         val todo = list.filter { it.ssid !in downloading && !isDownloadedWithQuality(it.ssid, q) }
         if (todo.isEmpty()) { toast("这个音质已下载过"); return }
         runDownload(todo, q)
@@ -4636,7 +4624,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         toastJob = viewModelScope.launch { delay(2500); toastMsg = null }
     }
 
-    /** 26.11.61：分享链接不再指向已停用的源站，改指向网易云歌曲页 */
+    /** 26.11.95：旧曲库源站已移除，分享链接统一指向网易云歌曲页 */
     fun songLink(ssid: String): String {
         val nid = neteaseIdOf(ssid)
         return if (nid != null) "https://music.163.com/#/song?id=$nid" else ""
@@ -4955,7 +4943,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /**
      * 26.11.80：长按 / 点按钮下载大图，**不依赖界面上那张图有没有加载出来**。
-     * 之前只把 st.cover 原样交给 Api.fetch：URL 为空、http 明文、缺 UA 被 CDN 拒、
+     * 之前只把 st.cover 原样交给 Http.fetch：URL 为空、http 明文、缺 UA 被 CDN 拒、
      * 或前端图还在加载时，下载就跟着一起失败，还只提示一句「图片下载失败」。
      * 现在多候选地址（https 化 / 原图 / 高清档）+ 带请求头逐个重试；
      * 连 URL 都没有时，按当前页面的在线 id 现拉一次详情补封面再下。

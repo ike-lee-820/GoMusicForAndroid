@@ -86,7 +86,8 @@ object CastRoute {
                 Netease.cookie = vm.prefs.nmCookie
                 runCatching { Netease.audioUrl(nid, vm.quality, lvl) }.getOrNull()
             } else {
-                runCatching { Api.audioUrl(s.ssid, vm.quality) }.getOrNull()
+                // 26.11.95：非网易云歌没有在线音源，投屏只能用播放器正在播的本地文件
+                null
             }
         }
     }

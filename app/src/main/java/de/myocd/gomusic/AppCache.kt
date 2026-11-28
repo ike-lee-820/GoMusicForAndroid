@@ -38,7 +38,7 @@ object AppCache {
         val t = runCatching { f.readText() }.getOrNull() ?: return null
         if (t.isBlank()) return null
         return runCatching {
-            val obj = Api.json.parseToJsonElement(t) as? JsonObject ?: return@runCatching emptyMap<String, List<String>>()
+            val obj = Http.json.parseToJsonElement(t) as? JsonObject ?: return@runCatching emptyMap<String, List<String>>()
             val out = LinkedHashMap<String, List<String>>()
             for ((k, v) in obj) {
                 val arr = v as? JsonArray ?: continue

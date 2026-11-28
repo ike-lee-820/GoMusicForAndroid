@@ -1133,7 +1133,7 @@ fun SongsTab(vm: MainViewModel, state: LazyListState) {
 }
 
 
-/** 歌曲栏顶部：最近播放（本站与网易云都记录） */
+/** 歌曲栏顶部：最近播放（本地与网易云都记录） */
 @Composable
 fun HistoryRow(vm: MainViewModel) {
     val go = LocalGo.current
@@ -1535,7 +1535,7 @@ fun ConfirmDialog(text: String, onDismiss: () -> Unit, onOk: () -> Unit) {
 /**
  * 音质选择：批量下载前先选档位。
  *
- * 选项由调用方按歌单内容拼好（网易云档位 / 本站音质键），
+ * 选项由调用方按歌单内容拼好（网易云档位 / 本地音质键），
  * 选中后回传音质键；取消或关闭回传 null。
  */
 @Composable
@@ -1744,7 +1744,7 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
     val p = vm.playlists.firstOrNull { it.id == s.id }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
-    // 下载全部：先选音质。歌单里可能混着本站与网易云歌曲，两套音质键不同
+    // 下载全部：先选音质。歌单里可能混着本地与网易云歌曲，两套音质键不同
     var pickingQuality by remember { mutableStateOf(false) }
     if (p == null) {
         LaunchedEffect(Unit) { if (vm.stack.isNotEmpty()) vm.stack.removeAt(vm.stack.lastIndex) }
@@ -1814,7 +1814,7 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
         }
     }
     if (pickingQuality) {
-        // 选项按歌单内容拼：网易云歌曲用网易云档位，本站歌曲用本站音质键
+        // 选项按歌单内容拼：网易云歌曲用网易云档位，本地歌曲用本地音质键
         val hasNm = songs.any { it.source == SRC_NETEASE }
         val hasLocal = songs.any { it.source != SRC_NETEASE }
         val opts = buildList {
@@ -2401,7 +2401,7 @@ fun MvIconButton(
 /** 音质菜单。[tint] 为 null 时用文字按钮（设置页）；传颜色时用图标按钮（播放器控制区） */
 @Composable
 fun QualityMenu(vm: MainViewModel, tint: Color = LocalGo.current.on) {
-    // 本站曲库的歌只有服务端给的那一份，没有多档位可选，不显示这个菜单
+    // 非网易云歌曲没有在线多档位，不显示这个菜单
     if (!vm.nmQualityMode) return
     var open by remember { mutableStateOf(false) }
     val go = LocalGo.current
@@ -3550,10 +3550,10 @@ fun SettingsSheet(vm: MainViewModel) {
                 )
                 HS(8)
                 Txt(
-                    if (vm.offline) "离线模式：连接服务器失败" else "已连接服务器",
+                    if (vm.offline) "离线：仅本地文件与已下载内容" else "在线曲库：网易云；本地曲库已就绪",
                     13, Modifier.weight(1f), color = go.muted,
                 )
-                GoButton("重试", primary = vm.offline) { vm.reconnect() }
+                GoButton("重新载入本地曲库", primary = vm.offline) { vm.reconnect() }
             }
             VS(16)
 
@@ -3568,7 +3568,7 @@ fun SettingsSheet(vm: MainViewModel) {
                 Column(Modifier.weight(1f)) {
                     Txt("接入网易云曲库", 14, weight = FontWeight.Medium)
                     Txt(
-                        if (!vm.nmOn) "关闭：仅使用本站曲库"
+                        if (!vm.nmOn) "关闭：不接入网易云，仅使用本地曲库（设备文件 / 已下载 / 导入歌单）"
                         else if (vm.nmUser.isNullOrBlank()) "已开启：搜索与播放可直接用，登录后才能同步我的歌单"
                         else "已开启：${vm.nmUser}",
                         12, color = go.muted,
@@ -3841,7 +3841,7 @@ fun SettingsSheet(vm: MainViewModel) {
             Txt(
                 when (vm.zhConvert) {
                     ZhConvert.TO_TRAD -> "歌名、歌词、歌手与界面文字统一显示繁体"
-                    ZhConvert.SEARCH_ONLY -> "界面不转换；搜索本站时简体与繁体的结果一起返回"
+                    ZhConvert.SEARCH_ONLY -> "界面不转换；搜索本地时简体与繁体的结果一起返回"
                     ZhConvert.OFF -> "保持原样，不做任何转换"
                     else -> "歌名、歌词、歌手与界面文字统一显示简体"
                 },

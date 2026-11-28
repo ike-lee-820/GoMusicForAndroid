@@ -3,11 +3,6 @@ package de.myocd.gomusic
 import android.util.Base64
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.OkHttpClient
@@ -17,10 +12,7 @@ import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.UnknownHostException
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-
-/** 服务器地址 */
 
 @Serializable
 data class Song(
@@ -29,10 +21,11 @@ data class Song(
     val artist: String = "",
     val album: String = "",
     val coverUrl: String? = null,
+    /** 26.11.95：以下两项是旧曲库源站的仓库元数据，仅为兼容历史快照保留，
+     * 不再对应任何在线仓库 / 代理，应用也不会拿它们去拼请求。 */
     val repoName: String? = null,
     val owner: String? = null,
-    val locked: Boolean? = null,
-    /** 曲库来源：[SRC_LOCAL] 本站 / [SRC_NETEASE] 网易云 */
+    /** 曲库来源：[SRC_LOCAL] 本地（设备文件 / 已下载 / 导入歌单） / [SRC_NETEASE] 网易云 */
     val source: String = SRC_LOCAL,
     /** 网易云歌曲 id（source = [SRC_NETEASE] 时有效） */
     val nmId: Long = 0,
@@ -45,7 +38,7 @@ data class Song(
      *
      * 网易云歌曲的 mv 字段就是 MV 的 id；为 0 表示这首歌没有 MV，
      * 播放器功能栏据此决定是否显示 MV 按钮。
-     * 本站曲库没有 MV 数据源，默认 0。
+     * 本地文件没有 MV 数据源，默认 0。
      */
     val mvId: Long = 0,
     /** 26.11.34：设备本地音频文件 Uri（source = device 时有效），播放器直接用它播放 */
@@ -210,7 +203,15 @@ fun buildLyricRows(lines: List<LrcLine>, trans: List<String>? = null): List<Lyri
     }
 }
 
-object Api {
+/**
+ * 26.11.95：通用 HTTP / JSON 工具，不再指向任何曲库源站。
+ *
+ * 旧曲库源站的 API 客户端（/api/songs、/api/song/:id、/api/lyric、
+ * /api/proxy/raw…）已整组删除，应用在线曲库只剩网易云（[Netease]），
+ * 其余全部是设备本地文件 / 已下载文件 / 还原字符导入的歌单。
+ * 这里只保留与曲库无关的 OkHttp 客户端、JSON 解析、URL 归一化与字节下载。
+ */
+object Http {
     val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
 
     /**
@@ -234,8 +235,8 @@ object Api {
      *
      * 以前整条链共用一个 60s callTimeout 的客户端，服务端一慢，点一首歌
      * 光等一个请求就要一分钟，界面看起来就是「点了没反应」。接口请求统一
-     * 收到 4/10/15s，OkHttp 层的自动重试也关掉（[get] 自己会立即重试一次，
-     * 两层重试叠起来只会更慢）。并发从默认 5 提到 16，批量取地址不排队。
+     * 收到 4/10/15s，OkHttp 层的自动重试也关掉（避免两层重试叠起来更慢）。
+     * 并发从默认 5 提到 16，批量取地址不排队。
      */
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
@@ -263,48 +264,18 @@ object Api {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * 连通性探测用：短超时 + 不重试。
-     * 用来快速判断「服务器到底连不连得上」，失败立刻进离线模式，不让用户干等。
-     */
-    private val probeClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS)
-        .callTimeout(6, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(false)
-        .dns(ipv4First)
-        .build()
-
-    private val detailCache = ConcurrentHashMap<String, SongDetail>()
-
-    /** 音质从高到低的已知排序，未知键排在最后 */
+    /** 音质从高到低的已知排序，未知键排在最后（只用于本地已下载音质） */
     private val ORDER = listOf("normal", "high", "low", "extreme", "source", "lossless")
     fun rank(k: String): Int = ORDER.indexOf(k).let { if (it < 0) 99 else it }
 
     /**
-     * 26.11.61：源站已停用。只接受完整 URL / data: / file:，
-     * 根相对路径（旧源站返回的 /api/...）不再拼到任何域名，直接丢弃。
+     * 26.11.95：旧曲库源站已彻底移除，只接受完整 URL / data: / file:。
+     * 根相对路径（旧曲库源站返回的 /api/...）一律丢弃，不再拼到任何域名。
      */
     fun abs(u: String?): String? = when {
         u.isNullOrBlank() -> null
         u.startsWith("http") || u.startsWith("data:") || u.startsWith("file:") -> u
         else -> null
-    }
-
-    /**
-     * 网络抖动（尤其 WiFi 刚连上、IPv6 不通）时立即重试一次。
-     *
-     * 以前每个请求都带 Connection: close，等于每次重新 TCP + TLS 握手；
-     * 失败还要 sleep 500ms / 1000ms 才重试，再叠上 OkHttp 自己的重试，
-     * 一次普通接口最坏要白等好几秒。现在保留 keep-alive、去掉等待，
-     * 重试次数 3 次收到 2 次。
-     */
-    /**
-     * 26.11.61：旧曲库源站已完全停用。
-     * 保留签名是为了让所有旧调用点继续编译，但绝不再发出任何 HTTP 请求。
-     */
-    private fun get(path: String, tries: Int = 2, http: OkHttpClient = client): String {
-        throw IOException("源站已停用，不再请求 $path")
     }
 
     /** 下载到输出流；[onProgress] 回调 (已读字节, 总字节，-1 表示未知) */
@@ -346,35 +317,6 @@ object Api {
         null
     }
 
-    /**
-     * [quick] = true 时用短超时客户端、只请求一次：
-     * 一次失败就立刻判定为离线，不再重试等待。
-     */
-    /** 源站停用：曲库由本地已下载 / 历史快照 / 歌单组装，见 MainViewModel.load() */
-    fun songs(quick: Boolean = true): List<Song> = emptyList()
-
-    fun artists(): Map<String, ArtistInfo> = emptyMap()
-
-    fun lyrics(ssid: String): String = ""
-
-    private fun JsonElement?.str(): String? =
-        (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
-
-    private fun urls(e: JsonElement): List<String> = when (e) {
-        is JsonArray -> e.mapNotNull { abs(it.str()) }
-        is JsonPrimitive -> listOfNotNull(abs(e.str()))
-        else -> emptyList()
-    }
-
-    /** 源站停用：不再取 /api/song/:id，返回空详情让调用点走本地兜底 */
-    fun detail(ssid: String): SongDetail = SongDetail(
-        ssid = ssid, lyrics = "", cover = null, audio = emptyMap(),
-    )
-
-    /** 选择最接近所需音质的播放地址（多段文件当前只取第一段） */
-    fun audioUrl(ssid: String, quality: String): String {
-        throw IOException("源站已停用，该歌曲没有在线音源")
-    }
 }
 
 /** 标签中文名，未知键原样显示 */
@@ -422,13 +364,6 @@ fun lyricLines(t: String): List<LrcLine> {
 }
 
 /**
- * 文档 6：仓库内「专辑名/cover.webp」即该专辑封面，通过
- * `/api/proxy/raw/:repo/:path?o=<owner>` 代理访问。
- * 列表里 coverUrl 缺失时用这个兜底。
- */
-fun guessCoverUrl(s: Song): String? = null // 26.11.61：源站封面代理已停用
-
-/**
  * 封面高清化。
  *
  * 之前所有网易云封面统一拼 `?param=300y300`：列表小图够用，但播放器/专辑页
@@ -440,7 +375,7 @@ fun guessCoverUrl(s: Song): String? = null // 26.11.61：源站封面代理已�
  * - 去掉已有的 param / thumbnail / imageView2 / imageMogr2 缩略参数
  * - 网易云图床（126.net）补 `param=宽y高`；其它图床只在原本带 param 时才补
  * - QQ 音乐路径里的 `T003R500x500M000...` 同步升级
- * - 本地路径 / data: URI / 其它业务参数（如本站 cover.webp 的 o=）原样保留
+ * - 本地路径 / data: URI / 其它业务参数（如本地 cover.webp 的 o=）原样保留
  *
  * 只影响 URL，不改变缓存逻辑：URL 变了，旧的 300y300 缓存不会命中，
  * 会自动重新下一张高清图，无需手动清缓存。
@@ -479,10 +414,10 @@ fun imageModel(u: String?): Any? {
     }
     if (u.startsWith("content://") || u.startsWith("file://")) return android.net.Uri.parse(u)
     // 只有确实存在的本地绝对路径才当文件；
-    // 26.11.61：源站停用后根相对封面路径直接丢弃，不再拼域名
+    // 26.11.95：旧曲库源站移除后，根相对封面路径直接丢弃，不再拼域名
     if (u.startsWith("/")) {
         val f = java.io.File(u)
         if (f.exists()) return f
     }
-    return Api.abs(u)
+    return Http.abs(u)
 }

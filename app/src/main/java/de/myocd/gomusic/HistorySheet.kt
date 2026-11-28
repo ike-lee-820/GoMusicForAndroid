@@ -35,7 +35,7 @@ private const val HISTORY_PAGE = 200
 /** 首屏渲染条数 */
 private const val HISTORY_FIRST = 200
 
-/** 历史页：展示全部播放记录（本站 + 网易云），可单条删除或清空 */
+/** 历史页：展示全部播放记录（本地 + 网易云），可单条删除或清空 */
 @Composable
 fun HistorySheet(vm: MainViewModel) {
     val go = LocalGo.current

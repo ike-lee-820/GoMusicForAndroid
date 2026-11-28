@@ -471,14 +471,11 @@ private fun prepareRecAudio(ctx: Context, song: Song, cfg: RecorderConfig): Pair
             }
         }
 
-        val url = if (song.source == SRC_NETEASE && song.nmId > 0) {
-            Netease.audioExactLevel(song.nmId, lv)
-        } else {
-            val d = Api.detail(song.ssid)
-            d.audio[lv]?.firstOrNull() ?: d.audio[cfg.quality]?.firstOrNull()
-        } ?: return@runCatching null
+        // 26.11.95：旧曲库源站已移除，非网易云只能复用上面已命中的本地音频
+        if (song.source != SRC_NETEASE || song.nmId <= 0) return@runCatching null
+        val url = Netease.audioExactLevel(song.nmId, lv) ?: return@runCatching null
 
-        FileOutputStream(out, false).use { o -> Api.fetch(url, o) }
+        FileOutputStream(out, false).use { o -> Http.fetch(url, o) }
         if (out.length() > 1024) (out to lv) else null
     }.getOrNull()
 }

@@ -104,7 +104,7 @@ data class Playlist(
 class Prefs(ctx: Context) {
     private val app = ctx.applicationContext
     private val sp = app.getSharedPreferences("gomusic", Context.MODE_PRIVATE)
-    private val json = Api.json
+    private val json = Http.json
 
     var playCounts: Map<String, Int>
         get() = runCatching {
@@ -249,7 +249,7 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("nm_uid", 0L)
         set(v) { sp.edit().putLong("nm_uid", v).apply() }
 
-    /** 播放历史（最近在前），同时记录本站与网易云，最多 [MAX_HISTORY] 条 */
+    /** 播放历史（最近在前），同时记录本地与网易云，最多 [MAX_HISTORY] 条 */
     var history: List<String>
         get() = runCatching {
             json.decodeFromString<List<String>>(sp.getString("history", "[]")!!)

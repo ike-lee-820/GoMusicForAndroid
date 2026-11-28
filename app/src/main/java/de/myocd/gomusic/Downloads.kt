@@ -107,7 +107,7 @@ object LocalLib {
         val mime = if (ext == "mp4") "video/mp4" else "video/*"
         val (u, f) = openOut(ctx, MV_DIR, "${safe(title)}.$ext", mime)
         val os = stream(ctx, u, f) ?: throw java.io.IOException("无法写入下载目录")
-        os.use { Api.fetch(url, it, onProgress) }
+        os.use { Http.fetch(url, it, onProgress) }
         finish(ctx, u)
         return uriText(u, f)
     }
@@ -124,7 +124,7 @@ object LocalLib {
         }
         val (u, f) = openOut(ctx, "图片", "${safe(name)}.$ext", mime)
         val os = stream(ctx, u, f) ?: throw java.io.IOException("无法写入下载目录")
-        os.use { Api.fetch(url, it) }
+        os.use { Http.fetch(url, it) }
         finish(ctx, u)
         return uriText(u, f)
     }
@@ -132,7 +132,7 @@ object LocalLib {
     /**
      * 26.11.80：简介页大图下载，与界面上这张图有没有加载出来完全解耦。
      *
-     * 旧版只把 st.cover 原样交给 Api.fetch（无 UA / Referer、http 明文、
+     * 旧版只把 st.cover 原样交给 Http.fetch（无 UA / Referer、http 明文、
      * URL 为空或带低清 param 时都直接失败），而且失败原因被吞掉，只提示
      * 「图片下载失败」。这里把每个地址展开成 https 化 / 高清档 / 原图 /
      * 原始地址多组候选，带浏览器请求头逐个尝试，校验响应确实是图片后才落盘。
@@ -163,7 +163,7 @@ object LocalLib {
                     .header("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 GoMusic")
                     .header("Referer", "https://music.163.com/")
                     .build()
-                val bytes = Api.downloadClient.newCall(req).execute().use { r ->
+                val bytes = Http.downloadClient.newCall(req).execute().use { r ->
                     if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
                     val b = r.body?.bytes() ?: throw IOException("空响应")
                     if (b.size < 1024) throw IOException("响应过小（${b.size} 字节）")
@@ -211,16 +211,14 @@ object LocalLib {
         quality: String,
         onProgress: ((readBytes: Long, totalBytes: Long) -> Unit)? = null,
     ): DownloadRecord {
-        // 网易云歌曲：地址与歌词都走网易云接口，其余（封面、信息文件）流程与本站一致
+        // 26.11.95：旧曲库源站已移除。网易云歌曲走网易云接口；
+        // 其余歌没有在线详情，封面与歌词只取本地已下载 / 列表里已有的那一份。
         val nmId = neteaseIdOf(song.ssid)
         val isNm = nmId != null
         val d = if (isNm) {
             SongDetail(song.ssid, runCatching { Netease.lyric(nmId!!) }.getOrDefault(""), song.coverUrl, emptyMap())
-        } else try {
-            Api.detail(song.ssid)
-        } catch (e: Exception) {
-            // 离线也能补信息：用列表里已有的封面
-            SongDetail(song.ssid, "", Api.abs(song.coverUrl), emptyMap())
+        } else {
+            SongDetail(song.ssid, "", Http.abs(song.coverUrl), emptyMap())
         }
         // 网易云：取地址并带回**实际拿到的档位**。
         // 请求 lossless 而歌曲只有 320k 时会一路降档，仍按请求的档位记录的话，
@@ -233,9 +231,11 @@ object LocalLib {
             nmReal = hit.second
             hit.first
         } else if (d.audio.isEmpty()) {
-            throw java.io.IOException("没有可用音频")
+            throw java.io.IOException(
+                "没有可用在线音频：旧曲库源站已移除，仅网易云歌曲可下载；本地文件请直接播放"
+            )
         } else {
-            val key = d.audio.keys.minByOrNull { kotlin.math.abs(Api.rank(it) - Api.rank(quality)) }!!
+            val key = d.audio.keys.minByOrNull { kotlin.math.abs(Http.rank(it) - Http.rank(quality)) }!!
             d.audio[key]!!.first()
         }
         // 同一首歌下多个音质时，文件名带上音质，避免后下的把先下的覆盖掉
@@ -251,22 +251,23 @@ object LocalLib {
         // 1. 音频
         val (au, af) = openOut(ctx, AUDIO_DIR, "$base.$ext", "audio/$ext")
         val os = stream(ctx, au, af) ?: throw java.io.IOException("无法写入下载目录")
-        os.use { Api.fetch(url, it, onProgress) }
+        os.use { Http.fetch(url, it, onProgress) }
         finish(ctx, au)
         val audioRef = uriText(au, af)
 
         // 2. 封面
         var coverRef = ""
-        val coverUrl = d.cover ?: Api.abs(song.coverUrl)
+        val coverUrl = d.cover ?: Http.abs(song.coverUrl)
         if (!coverUrl.isNullOrBlank()) {
-            Api.bytes(coverUrl)?.let {
+            Http.bytes(coverUrl)?.let {
                 coverRef = write(ctx, COVER_DIR, "$base.jpg", "image/jpeg", it)
             }
         }
 
         // 3. 歌词
         var lrc = d.lyrics
-        if (lrc.isBlank() && !isNm) lrc = runCatching { Api.lyrics(song.ssid) }.getOrDefault("")
+        if (lrc.isBlank() && !isNm)
+            lrc = runCatching { LocalAudio.loadLyric(ctx, song.ssid, song.audioUri) }.getOrDefault("")
         var lyricRef = ""
         if (lrc.isNotBlank()) {
             lyricRef = write(ctx, LYRIC_DIR, "$base.lrc", "application/octet-stream", lrc.toByteArray())
@@ -310,7 +311,7 @@ object LocalLib {
         val recs = Prefs(ctx).downloads.filter { it.ssid == ssid && it.audio.isNotBlank() }
         if (recs.isEmpty()) return null
         val rec = recs.firstOrNull { it.quality == quality }
-            ?: recs.minByOrNull { kotlin.math.abs(Api.rank(it.quality) - Api.rank(quality)) }
+            ?: recs.minByOrNull { kotlin.math.abs(Http.rank(it.quality) - Http.rank(quality)) }
             ?: return null
         return rec.audio.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
     }
@@ -355,7 +356,7 @@ object LocalLib {
         val t = readText(ctx, ref)
         if (t.isBlank()) return emptyList()
         return runCatching {
-            val arr = Api.json.parseToJsonElement(t) as? kotlinx.serialization.json.JsonArray
+            val arr = Http.json.parseToJsonElement(t) as? kotlinx.serialization.json.JsonArray
             arr?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
                 ?: emptyList()
         }.getOrDefault(emptyList())

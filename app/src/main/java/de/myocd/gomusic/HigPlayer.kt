@@ -815,7 +815,7 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
                     if (subPage == 1) {
                         if (!vm.nmQualityMode) {
                             Text(
-                                "本站曲库只有服务端提供的单一音源，没有多档位可切换",
+                                "当前歌曲没有在线音质档位：仅网易云歌曲支持多档位，本地文件按原文件播放",
                                 fontSize = 15.sp, color = go.muted,
                                 modifier = Modifier.padding(20.dp),
                             )
@@ -1146,7 +1146,7 @@ private fun LyricsPane(
 
 @Composable
 private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = false) {
-    // 所有来源（/lyric/new 的 yrc、退回的老 /lyric、本站、本地、离线）
+    // 所有来源（/lyric/new 的 yrc、退回的老 /lyric、本地、本地、离线）
     // 都已在 ViewModel 里统一成 WordLyric，因此这里只有一套大字渲染，
     // 老歌词不再掉回旧的 LyricsList 小字列表。
     val w = vm.wordLyric

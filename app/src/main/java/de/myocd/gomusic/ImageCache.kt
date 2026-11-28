@@ -66,7 +66,7 @@ object ImageCache {
         val f = fileOf(url)
         if (f.exists() && f.length() > 0) return
         try {
-            val bytes = Api.bytes(url) ?: return
+            val bytes = Http.bytes(url) ?: return
             if (bytes.isEmpty()) return
             val tmp = File(f.parentFile, f.name + ".tmp")
             tmp.writeBytes(bytes)

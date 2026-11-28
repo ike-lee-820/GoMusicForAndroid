@@ -60,7 +60,7 @@ object Translate {
 
     /** 整篇生成比较慢，但最多等 30 秒；超时按「这句没翻出来」处理，不拖住歌词页 */
     private val http: OkHttpClient by lazy {
-        Api.client.newBuilder()
+        Http.client.newBuilder()
             .readTimeout(20, TimeUnit.SECONDS)
             .callTimeout(30, TimeUnit.SECONDS)
             .build()
@@ -136,7 +136,7 @@ object Translate {
     private fun openRouter(spoken: String): String? {
         if (OR_KEY.isBlank()) return null
         // 未开启 reasoning，响应里就只有译文，不带思考过程
-        val body: String = Api.json.encodeToString(
+        val body: String = Http.json.encodeToString(
             OrReq(OR_MODEL, listOf(OrMsg("user", spoken))),
         )
         val req = Request.Builder()
@@ -197,7 +197,7 @@ object Translate {
     // ---------------- 工具 ----------------
 
     private fun parseObj(s: String): JsonObject? =
-        runCatching { Api.json.parseToJsonElement(s) as? JsonObject }.getOrNull()
+        runCatching { Http.json.parseToJsonElement(s) as? JsonObject }.getOrNull()
 
     private fun JsonObject.obj(k: String): JsonObject? = this[k] as? JsonObject
 

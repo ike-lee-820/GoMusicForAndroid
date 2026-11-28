@@ -33,17 +33,14 @@ object RecorderFlow {
         val remote = if (song.source == SRC_NETEASE && song.nmId > 0) {
             runCatching { Netease.availableLevels(song.nmId).ok }.getOrDefault(emptyList())
         } else emptyList()
-        val detail = if (remote.isEmpty()) {
-            runCatching {
-                Api.detail(song.ssid).audio.keys.map { nmLevelKey(nmLevelOfQuality(it)) }
-            }.getOrDefault(emptyList())
-        } else emptyList()
+        // 26.11.95：旧曲库源站已移除，非网易云歌不再有「在线详情档位」，
+        // 可用档位只来自网易云接口与本地已下载文件。
         val local = runCatching {
             Prefs(ctx).downloads
                 .filter { it.ssid == song.ssid && it.audio.isNotBlank() }
                 .map { nmLevelKey(it.quality) }
         }.getOrDefault(emptyList())
-        val set = (remote + detail + local)
+        val set = (remote + local)
             .map { nmLevelKey(it) }
             .filter { it in REC_QUALITIES }
             .toSet()
@@ -102,11 +99,10 @@ object RecorderFlow {
             Netease.audioExactLevel(song.nmId, lv)
                 ?: error("音质 $lv 不可用：服务端降档或无地址")
         } else {
-            val d = Api.detail(song.ssid)
-            d.audio[lv]?.firstOrNull() ?: error("音质 $lv 在详情里不可用")
+            error("音质 $lv 不可用：旧曲库源站已移除，仅网易云或已下载音频可用")
         }
         FileOutputStream(out, false).use { o ->
-            Api.fetch(url, o) { read, total ->
+            Http.fetch(url, o) { read, total ->
                 val ratio = if (total > 0) (read * 18L / total).toInt().coerceIn(0, 18) else 0
                 val kb = read / 1024L
                 val totalKb = if (total > 0) "/${total / 1024L}KB" else ""
@@ -121,15 +117,15 @@ object RecorderFlow {
     /** 下载 /lyric 原始 LRC 与 tlyric；自定义 LRC 仍可覆盖原文 */
     private fun downloadLyricRows(ctx: Context, cfg: RecorderConfig, song: Song): List<LyricRow> {
         val id = if (song.source == SRC_NETEASE) song.nmId else 0L
-        val rawBytes = if (id > 0) Api.bytes("$NM_BASE/lyric?id=$id") else null
+        val rawBytes = if (id > 0) Http.bytes("$NM_BASE/lyric?id=$id") else null
         val raw = rawBytes?.let { String(it, Charsets.UTF_8) }.orEmpty()
         val root = if (raw.isBlank()) null else runCatching {
-            Api.json.parseToJsonElement(raw) as? JsonObject
+            Http.json.parseToJsonElement(raw) as? JsonObject
         }.getOrNull()
         var lrc = lyricField(root, "lrc")
         val tLrc = lyricField(root, "tlyric")
         if (lrc.isBlank() && id > 0) lrc = Netease.lyric(id)
-        if (lrc.isBlank()) lrc = runCatching { Api.detail(song.ssid).lyrics }.getOrDefault("")
+        // 26.11.95：非网易云歌不再有任何在线歌词接口，留空由自定义 LRC 兜底
         val finalLrc = cfg.customLrc.takeIf { it.isNotBlank() } ?: lrc
         runCatching { File(ctx.cacheDir, "rec_lyric_${id}_${System.currentTimeMillis()}.lrc").writeText(finalLrc) }
         runCatching { File(ctx.cacheDir, "rec_tlyric_${id}_${System.currentTimeMillis()}.lrc").writeText(tLrc) }

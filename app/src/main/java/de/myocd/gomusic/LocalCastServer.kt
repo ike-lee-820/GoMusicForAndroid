@@ -16,10 +16,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * 26.11.55：投屏本机 HTTP 转发。
  *
- * 电视 / 音箱直接拉网易云、本站的临时 CDN 链接，常被防盗链 UA / Referer、
+ * 电视 / 音箱直接拉网易云的临时 CDN 链接，常被防盗链 UA / Referer、
  * 签名过期或 http 明文挡掉（403），表现就是「投过去了但没声音」。
  * 这里在手机上起一个极简 HTTP 服务：设备只访问 http://<手机局域网IP>:<port>/audio，
- * 由手机带正确请求头从源站取流再转发；Range 请求透传，拖动进度也能工作。
+ * 由手机带正确请求头从 CDN 取流再转发；Range 请求透传，拖动进度也能工作。
  * 封面走 /cover，供 DIDL-Lite 的 albumArtURI 使用。
  */
 object LocalCastServer {

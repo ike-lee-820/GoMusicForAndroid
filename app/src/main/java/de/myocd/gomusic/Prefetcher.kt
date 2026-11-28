@@ -10,7 +10,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 独立预取调度域：和播放解析用的 Netease.urlClient / Api.client 物理隔离。
+ * 独立预取调度域：和播放解析用的 Netease.urlClient / Http.client 物理隔离。
  *
  * 目标：提前把后面几首的音源地址、逐字歌词、歌曲详情取好，切过去直接命中缓存，
  * 但**绝不与当前播放解析抢线程**。做法：

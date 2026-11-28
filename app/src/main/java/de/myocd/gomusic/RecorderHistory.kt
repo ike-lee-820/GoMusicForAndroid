@@ -34,7 +34,7 @@ object RecorderHistory {
     private const val SP = "gomusic_rec_history"
     private const val KEY = "records"
     private const val MAX = 200
-    private val json = Api.json
+    private val json = Http.json
     private val _items = mutableStateListOf<RecRecord>()
     val items: List<RecRecord> get() = _items
 

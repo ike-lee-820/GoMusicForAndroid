@@ -40,8 +40,9 @@ import androidx.media3.exoplayer.DefaultLoadControl
 
 /**
  * 后台播放服务。
- * 队列条目使用占位地址 gomusic:///<ssid>，真正的播放地址在加载时
- * 通过 /api/song/:ssid 解析（按当前音质选择）。
+ * 队列条目使用占位地址 gomusic:///<ssid>，加载时按当前音质解析：
+ * 已下载的走本地文件，网易云歌曲走网易云取地址接口；旧曲库源站已移除，
+ * 其余条目没有在线音源，直接报错。
  *
  * 后台播放策略见 [applyFocus]：可被打断 / 仅通话暂停 / 始终播放。
  */
@@ -211,13 +212,16 @@ class PlaybackService : MediaSessionService() {
                     val url = try {
                         if (nid != null) {
                             // 未登录也要走网易云取地址：只是拿不到高音质档位，
-                            // 但仍能播。之前要求 cookie 非空，未登录的网易云
-                            // 歌曲会掉到本站接口去取，结果取不到直接播不了
+                            // 但仍能播。旧曲库源站已移除，不再有任何本地在线接口兜底
                             Netease.cookie = p.nmCookie
                             Netease.audioUrl(nid, q, nl.takeIf { it.isNotBlank() })
                                 ?: throw IOException("网易云没有可用音源")
                         } else {
-                            Api.audioUrl(ssid, p.quality)
+                            // 26.11.95：旧曲库源站已彻底移除，非网易云歌没有在线音源。
+                            // 已下载文件在上面已经命中；没下载就明确报错，不再碰任何旧接口。
+                            throw IOException(
+                                "该歌曲没有在线音源：旧曲库源站已移除，请播放本地文件或用网易云搜索"
+                            )
                         }
                     } catch (e: Exception) {
                         throw IOException(e)
@@ -229,7 +233,7 @@ class PlaybackService : MediaSessionService() {
                     // 网易云 CDN 校验 Referer / UA，缺了会返回 403
                     // —— 这就是「拿到正确 url 却播不了」的常见原因
                     val isNm = nid != null && p.nmCookie.isNotBlank()
-                    NmLog.note("解析到播放地址：$url -> $safe（${if (isNm) "网易云" else "本站"}）")
+                    NmLog.note("解析到播放地址：$url -> $safe（${if (isNm) "网易云" else "本地"}）")
                     // 交给 CacheDataSource：边播边缓存，播完即整首落盘。
                     // 切歌或换音质时 PlayCache.noteUrl 会清掉上一份
                     PlayCache.noteUrl(safe)
@@ -413,7 +417,7 @@ class PlaybackService : MediaSessionService() {
         val pr = Prefs(applicationContext)
         val raw = pr.lastQueue
         if (raw.isBlank()) return
-        val arr = runCatching { Api.json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
+        val arr = runCatching { Http.json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
             ?: return
         val items = arr.mapNotNull { e ->
             val o = e as? JsonObject ?: return@mapNotNull null

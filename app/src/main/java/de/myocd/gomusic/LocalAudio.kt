@@ -12,8 +12,8 @@ import java.nio.charset.Charset
 import java.security.MessageDigest
 
 /**
- * 设备本地音频文件来源。与「本站曲库」[SRC_LOCAL] 区分：
- * 这类歌的歌名、歌手、专辑、封面、歌词全部来自文件本身，不查服务端。
+ * 设备本地音频文件来源。与还原字符导入 / 已下载的本地歌单区分：
+ * 这类歌的歌名、歌手、专辑、封面、歌词全部来自文件本身，不查任何服务端。
  */
 const val SRC_DEVICE = "device"
 

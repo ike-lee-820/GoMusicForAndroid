@@ -132,7 +132,7 @@ fun zhText(s: String): String {
 val LocalZhMode = androidx.compose.runtime.compositionLocalOf { ZhConvert.TO_SIMPLE }
 
 /**
- * 本站（本地曲库）搜索的匹配判断。
+ * 本地曲库（设备文件 / 已下载 / 导入歌单）搜索的匹配判断。
  *
  * 「仅搜索统一」模式下，把待匹配文本与关键词都归一成简体和繁体各比一次，
  * 这样用简体搜能出繁体结果、用繁体搜也能出简体结果，两种写法一起叠加回来。
@@ -251,7 +251,7 @@ fun Modifier.clickScale(enabled: Boolean = true, onClick: () -> Unit): Modifier 
 
 /**
  * 来源标记：网易云曲库在封面右下角叠一个小图标，
- * 用来和本站曲库区分（不用图标、不用 emoji）。
+ * 用来和本地曲库区分（不用图标、不用 emoji）。
  */
 fun srcPrefix(source: String): String = ""
 

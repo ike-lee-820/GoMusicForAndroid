@@ -89,7 +89,7 @@ data class RecorderConfig(
 
 object RecorderPrefs {
     private const val SP = "gomusic_recorder"
-    private val json = Api.json
+    private val json = Http.json
 
     fun load(ctx: Context): RecorderConfig = runCatching {
         val raw = ctx.getSharedPreferences(SP, Context.MODE_PRIVATE).getString("cfg", "") ?: ""

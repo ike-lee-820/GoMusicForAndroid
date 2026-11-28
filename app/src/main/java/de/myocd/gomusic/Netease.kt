@@ -30,7 +30,8 @@ import kotlinx.coroutines.coroutineScope
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 
-/** 曲库来源：本站 / 网易云 */
+/** 曲库来源：本地（设备文件 / 已下载 / 导入歌单） / 网易云。
+ * 值保持 "local" 不变，只为兼容已持久化的快照与歌单；旧曲库源站已彻底移除。 */
 const val SRC_LOCAL = "local"
 const val SRC_NETEASE = "netease"
 
@@ -114,7 +115,7 @@ fun nmLevelKey(name: String): String = when (name.trim().lowercase()) {
     else -> name.trim().lowercase()
 }
 
-/** 本站音质键 -> 网易云默认档位 */
+/** 本地音质键 -> 网易云默认档位 */
 fun nmLevelOfQuality(quality: String): String = when (quality) {
     "lossless" -> "lossless"
     "high" -> "exhigh"
@@ -211,7 +212,7 @@ object Netease {
     private fun get(
         path: String,
         vararg params: Pair<String, String>,
-        http: OkHttpClient = Api.client,
+        http: OkHttpClient = Http.client,
         tries: Int = 2,
         /** 26.11.81：退出登录时本地 cookie 已经清空，但要让服务端注销的是旧凭证 */
         cookieOverride: String? = null,
@@ -983,7 +984,7 @@ object Netease {
     /**
      * 26.11.63：搜索专用客户端。
      *
-     * 之前用 Api.client.newBuilder()，会和播放、预取、下载、更新检查共享同一个
+     * 之前用 Http.client.newBuilder()，会和播放、预取、下载、更新检查共享同一个
      * Dispatcher 与连接池；一批慢请求排前面，搜索就被挤到队尾。现在给搜索独立的
      * 调度池与连接池，超时也压到「连不上就立刻换」的程度。
      */
@@ -991,7 +992,7 @@ object Netease {
         maxRequests = 24
         maxRequestsPerHost = 12
     }
-    private val searchClient: OkHttpClient = Api.client.newBuilder()
+    private val searchClient: OkHttpClient = Http.client.newBuilder()
         .connectTimeout(2, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .writeTimeout(6, TimeUnit.SECONDS)
@@ -1008,7 +1009,7 @@ object Netease {
      * 26.11.70：歌单同步专用客户端。
      *
      * 「同步所有云端歌单」会连着打 /user/playlist + 每张歌单 /playlist/detail +
-     * 若干 /song/detail。若沿用 Api.client，会和播放解析、搜索、预取抢同一个
+     * 若干 /song/detail。若沿用 Http.client，会和播放解析、搜索、预取抢同一个
      * dispatcher，同步一跑整首歌起播就变慢。这里物理隔开，且只发一次不重试。
      */
     private val syncClient: OkHttpClient = OkHttpClient.Builder()
@@ -2141,7 +2142,7 @@ object Netease {
     /**
      * 往网易云歌单加歌（/playlist/tracks?op=add）。
      *
-     * 只接受网易云歌曲 id：本站曲库的歌在网易云那边不存在，
+     * 只接受网易云歌曲 id：本地曲库的歌在网易云那边不存在，
      * 传过去会被忽略或报错，调用方已经先过滤过。
      */
     fun playlistAdd(pid: Long, trackIds: List<Long>): Boolean {
@@ -2200,7 +2201,7 @@ object Netease {
     /**
      * 26.11.91：把「歌名 + 歌手」映射到网易云歌曲 id。
      *
-     * 本站曲库 / 本地音频没有 nmId，直接丢给 /playlist/tracks 会被忽略，
+     * 本地曲库 / 本地音频没有 nmId，直接丢给 /playlist/tracks 会被忽略，
      * 于是本地歌单上传后云端永远少歌。这里用轻量搜索（不 enrich）找同名同
      * 歌手的第一首，尽量把「所有歌曲」都传上去；找不到就由调用方计入未上传。
      */
@@ -2414,7 +2415,7 @@ object Netease {
         val url = sb.toString()
         return try {
             val req = Request.Builder().url(url).post(body).build()
-            Api.client.newCall(req).execute().use { r ->
+            Http.client.newCall(req).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.req(url)
                 NmLog.res(url, r.code, t)
@@ -2581,7 +2582,7 @@ object Netease {
         NmLog.req(url)
         return try {
             val req = Request.Builder().url(url).post(form).build()
-            Api.client.newCall(req).execute().use { r ->
+            Http.client.newCall(req).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.res(url, r.code, t)
                 (runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject)
@@ -2650,7 +2651,7 @@ object Netease {
         val url = sb.toString()
         return try {
             val req = Request.Builder().url(url).post(body).build()
-            Api.client.newCall(req).execute().use { r ->
+            Http.client.newCall(req).execute().use { r ->
                 val t = r.body?.string().orEmpty()
                 NmLog.req(url); NmLog.res(url, r.code, t)
                 val el = runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject

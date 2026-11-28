@@ -35,7 +35,7 @@ object Updater {
     /**
      * 更新专用客户端：不限总时长。
      *
-     * 共用 Api.client 有 60s 的 callTimeout，而 APK 有几十 MB，
+     * 共用 Http.client 有 60s 的 callTimeout，而 APK 有几十 MB，
      * 在慢网络/加速节点不稳定时 60s 根本下不完 —— 下到一半被掐断，
      * 表现就是「下载失败」或一直卡着。检查接口走 GitHub，同样可能很慢，
      * 所以这里只在「连不上」时快速放弃（15s），连上之后不限时。

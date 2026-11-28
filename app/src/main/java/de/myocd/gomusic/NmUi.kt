@@ -61,7 +61,7 @@ fun NmLoginSheet(vm: MainViewModel) {
                     vm.stopQrLogin()
                 }
             }
-            Txt("登录后才会搜索网易云曲库；未登录时只使用本站曲库", 12, color = go.muted)
+            Txt("登录后才会同步我的网易云歌单；曲库只有网易云与本地文件", 12, color = go.muted)
             Spacer(Modifier.height(12.dp))
             Row {
                 GoButton("扫码登录", primary = tab == 0) { tab = 0 }

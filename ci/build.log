@@ -1,0 +1,66 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.10.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:generateDebugBuildConfig
+> Task :app:generateDebugResValues
+> Task :app:checkDebugAarMetadata
+> Task :app:mapDebugSourceSetPaths
+> Task :app:generateDebugResources
+> Task :app:packageDebugResources
+> Task :app:createDebugCompatibleScreenManifests
+> Task :app:extractDeepLinksDebug
+> Task :app:parseDebugLocalResources
+> Task :app:mergeDebugResources
+> Task :app:processDebugMainManifest
+> Task :app:processDebugManifest
+> Task :app:javaPreCompileDebug
+> Task :app:mergeDebugShaders
+> Task :app:compileDebugShaders NO-SOURCE
+> Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:mergeDebugAssets
+> Task :app:compressDebugAssets
+> Task :app:processDebugManifestForPackage
+> Task :app:desugarDebugFileDependencies
+> Task :app:mergeDebugJniLibFolders
+> Task :app:checkDebugDuplicateClasses
+> Task :app:mergeDebugNativeLibs
+> Task :app:mergeLibDexDebug
+
+> Task :app:stripDebugDebugSymbols
+Unable to strip the following libraries, packaging them as they are: libandroidx.graphics.path.so.
+
+> Task :app:validateSigningDebug
+> Task :app:writeDebugAppMetadata
+> Task :app:writeDebugSigningConfigVersions
+> Task :app:processDebugResources
+> Task :app:mergeExtDexDebug
+> Task :app:compileDebugKotlin
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/EqAudioProcessor.kt:1:1 Annotation 'androidx.media3.common.util.UnstableApi' is not annotated with '@RequiresOptIn'. '@OptIn' has no effect.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/FfmpegKmpCore.kt:1:1 Annotation 'androidx.media3.common.util.UnstableApi' is not annotated with '@RequiresOptIn'. '@OptIn' has no effect.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/LocalAudio.kt:55:42 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/LocalAudio.kt:57:24 'fun <T : Parcelable!> getParcelableArrayListExtra(p0: String!): ArrayList<T!>?' is deprecated. Deprecated in Java.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/PlaybackService.kt:14:8 'class PhoneStateListener : Any' is deprecated. Deprecated in Java.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/PlaybackService.kt:71:31 'class PhoneStateListener : Any' is deprecated. Deprecated in Java.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/PlaybackService.kt:235:32 Condition is always 'true'.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/Screens.kt:672:13 'fun LinearProgressIndicator(progress: Float, modifier: Modifier = ..., color: Color = ..., trackColor: Color = ..., strokeCap: StrokeCap = ...): Unit' is deprecated. Use the overload that takes `progress` as a lambda.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/SocialUi.kt:193:29 'val endExclusive: Int' is deprecated. Can throw an exception when it's impossible to represent the value with Int type, for example, when the range includes MAX_VALUE. It's recommended to use 'endInclusive' property that doesn't throw.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/SocialUi.kt:197:5 'fun ClickableText(text: AnnotatedString, modifier: Modifier = ..., style: TextStyle = ..., softWrap: Boolean = ..., overflow: TextOverflow = ..., maxLines: Int = ..., onTextLayout: (TextLayoutResult) -> Unit = ..., onClick: (Int) -> Unit): Unit' is deprecated. Use Text or BasicText and pass an AnnotatedString that contains a LinkAnnotation.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/SurroundAudioProcessor.kt:1:1 Annotation 'androidx.media3.common.util.UnstableApi' is not annotated with '@RequiresOptIn'. '@OptIn' has no effect.
+w: file:///home/runner/work/GoMusicForAndroid/GoMusicForAndroid/app/src/main/java/de/myocd/gomusic/WebViewUi.kt:100:13 'var databaseEnabled: Boolean' is deprecated. Deprecated in Java.
+
+> Task :app:compileDebugJavaWithJavac
+> Task :app:dexBuilderDebug
+> Task :app:mergeDebugGlobalSynthetics
+> Task :app:processDebugJavaRes
+> Task :app:mergeProjectDexDebug
+> Task :app:mergeDebugJavaResource
+> Task :app:packageDebug
+> Task :app:createDebugApkListingFileRedirect
+> Task :app:assembleDebug
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/b-1795866372058.json
+
+BUILD SUCCESSFUL in 1m 55s
+37 actionable tasks: 37 executed

@@ -20,6 +20,8 @@ import androidx.compose.ui.text.font.FontFamily
 /** 对应网页端 :root 的 CSS 变量；26.11.42 起按亮/暗两套 HIG 语义色生成 */
 data class GoColors(
     val bg: Color,
+    /** 26.11.74：播放器专用底色。亮色时全局背景纯白，播放器仍用浅灰衬托封面 */
+    val playerBg: Color,
     val surface: Color,
     val surfaceHi: Color,
     val on: Color,
@@ -31,6 +33,7 @@ data class GoColors(
 
 private val DarkColors = GoColors(
     bg = Color(0xFF000000),
+    playerBg = Color(0xFF000000),
     surface = Color(0xFF1C1C1E),
     surfaceHi = Color(0xFF2C2C2E),
     on = Color(0xFFFFFFFF),
@@ -41,7 +44,9 @@ private val DarkColors = GoColors(
 )
 
 private val LightColors = GoColors(
-    bg = Color(0xFFF2F2F7),
+    // 26.11.74：亮色模式下除播放器外所有页面背景一律纯白
+    bg = Color(0xFFFFFFFF),
+    playerBg = Color(0xFFF2F2F7),
     surface = Color(0xFFFFFFFF),
     surfaceHi = Color(0xFFE5E5EA),
     on = Color(0xFF000000),

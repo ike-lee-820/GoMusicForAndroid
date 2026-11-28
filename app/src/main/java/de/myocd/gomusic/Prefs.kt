@@ -296,6 +296,20 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putLong("nm_like_pid", v).apply() }
 
     /**
+     * 26.11.74：本地已从「我的喜欢」删掉、但还没确认从网易云「我喜欢的音乐」
+     * 删成功的歌曲 ssid。
+     *
+     * 没登录 / 没同步出 pid / 接口失败时先记在这里，同步重放后再清除；
+     * 同步合并云端红心时必须把这批排除，否则「本地删了、云端还在」会
+     * 在下一次同步又并回本地，而且被当成新歌重新上传，永远删不掉。
+     */
+    var pendingUnlike: Set<String>
+        get() = runCatching {
+            json.decodeFromString<List<String>>(sp.getString("pending_unlike", "[]")!!).toSet()
+        }.getOrDefault(emptySet())
+        set(v) { sp.edit().putString("pending_unlike", json.encodeToString(v.toList())).apply() }
+
+    /**
      * 26.11.73：用户手动删掉的云端歌单 id。
      *
      * 云端删除 / 取消收藏偶发失败时，下次同步仍会返回这张歌单，

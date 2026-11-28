@@ -257,7 +257,7 @@ fun HigPlayerRoot(vm: MainViewModel) {
         smallX = x; smallY = y; smallS = sz; smallReady = true
     }
     Box(
-        Modifier.fillMaxSize().background(go.bg)
+        Modifier.fillMaxSize().background(go.playerBg)
             .onGloballyPositioned { c ->
                 val p = c.positionInRoot()
                 rootX = p.x; rootY = p.y

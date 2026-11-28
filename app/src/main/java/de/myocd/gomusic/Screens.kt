@@ -276,15 +276,23 @@ fun MainScreen(vm: MainViewModel) {
         rememberLazyListState(), rememberLazyListState()
     )
     val top = vm.stack.lastOrNull()
+    // 26.11.74：横屏判定要提前到返回处理之前。
+    val landscape = isLandscape()
 
-    // 后注册的先响应：歌词页/队列页先回封面，再按一次才收起播放器
-    BackHandler(enabled = vm.showPlayer && vm.playerPage == PLAYER_COVER) {
+    // 后注册的先响应：竖屏歌词页/队列页先回封面，再按一次才收起播放器。
+    //
+    // 26.11.74 修「横屏按系统返回退不出去」：横屏根本没有封面页，
+    // playerPage 恒为 LYRICS/QUEUE，以前命中下面那条 → gotoPlayerPage(COVER)，
+    // 播放器根层的 LaunchedEffect 又立刻把 COVER 纠正回 LYRICS，返回键
+    // 看起来完全没反应，只能点界面上的按钮退出。现在横屏直接收起播放器。
+    BackHandler(enabled = vm.showPlayer && (vm.playerPage == PLAYER_COVER || landscape)) {
         vm.showPlayer = false
+        vm.hideLyricBar(false) // 下次进来控制区恢复可见
     }
     BackHandler(enabled = !vm.showPlayer && vm.stack.isNotEmpty()) {
         vm.stack.removeAt(vm.stack.lastIndex)
     }
-    BackHandler(enabled = vm.showPlayer && vm.playerPage != PLAYER_COVER) {
+    BackHandler(enabled = vm.showPlayer && vm.playerPage != PLAYER_COVER && !landscape) {
         vm.gotoPlayerPage(PLAYER_COVER)
         vm.hideLyricBar(false)
     }
@@ -295,7 +303,6 @@ fun MainScreen(vm: MainViewModel) {
 
     // 横屏（含平板）：底栏挪到左侧竖排、迷你播放器挪到右侧竖排，
     // 中间留给内容 —— 竖屏那两条横栏在横屏下会把内容压得很扁
-    val landscape = isLandscape()
     // 横屏：状态栏隐藏了，左侧要留出挖孔/圆角的空间。
     // 这个间隔用「内边距」实现：交给左侧导航栏自己消化，让它的 surface
     // 背景一直铺到屏幕左边缘。以前加在最外层 Box 上（外间距），左边会露出

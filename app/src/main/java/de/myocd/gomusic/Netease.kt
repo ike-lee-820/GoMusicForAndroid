@@ -2004,27 +2004,47 @@ object Netease {
         return ok
     }
 
-    /** 从「我喜欢的音乐」批量移除；失败同样退到 /like 单曲接口 */
-    fun likeRemove(pid: Long, ids: List<Long>): Int {
-        if (pid <= 0L || ids.isEmpty()) return 0
-        var ok = 0
-        ids.distinct().chunked(50).forEach { batch ->
-            if (playlistDel(pid, batch)) ok += batch.size
-            else ok += likeBatch(batch, false)
+    /**
+     * 26.11.74：从「我喜欢的音乐」批量移除，返回**真正确认删掉**的歌曲 id。
+     *
+     * 以前优先 /playlist/tracks?op=del：它对 specialType=5 的红心歌单会回
+     * code 200 但红心状态不变，应用以为成功、云端其实没删，下次同步又把
+     * 这些歌并回本地。现在以 /like?like=false 的结果为准，只有它失败的
+     * 那几首才用 playlistDel 批量兜底。
+     */
+    fun likeRemoveIds(pid: Long, ids: List<Long>): Set<Long> {
+        if (ids.isEmpty()) return emptySet()
+        val all = ids.distinct()
+        val ok = likeBatchIds(all, false).toMutableSet()
+        val failed = all - ok
+        if (failed.isNotEmpty() && pid > 0L) {
+            failed.chunked(50).forEach { batch ->
+                if (playlistDel(pid, batch)) ok += batch
+            }
         }
-        NmLog.note("移除红心 $ok/${ids.size} 首 pid=$pid")
+        NmLog.note("移除红心 ${ok.size}/${all.size} 首 pid=$pid（/like 权威）")
         return ok
     }
 
+    fun likeRemove(pid: Long, ids: List<Long>): Int = likeRemoveIds(pid, ids).size
+
     /**
-     * /playlist/tracks 整批失败时才逐首 /like。6 个一组并发：几百首红心
-     * 串行打会把同步拖成几分钟，也不该和播放解析抢 Api.client 的连接。
+     * /like 逐首并发（6 个一组）。走同步专用客户端，不抢播放链路的连接。
+     * 返回真正返回 200 的 id，调用方据此判断哪些还要兜底 / 留在重试队列。
      */
-    private fun likeBatch(ids: List<Long>, like: Boolean): Int = runBlocking(Dispatchers.IO) {
-        ids.chunked(6).sumOf { grp ->
-            grp.map { id -> async { likeSong(id, like) } }.awaitAll().count { it }
+    private fun likeBatchIds(ids: List<Long>, like: Boolean): Set<Long> =
+        runBlocking(Dispatchers.IO) {
+            val out = LinkedHashSet<Long>()
+            ids.distinct().chunked(6).forEach { grp ->
+                grp.map { id -> async { id to likeSong(id, like) } }
+                    .awaitAll().forEach { (id, ok) -> if (ok) out += id }
+            }
+            out
         }
-    }
+
+    /** 整批 /playlist/tracks 失败时才用；保留给 likeAdd 的兜底计数 */
+    private fun likeBatch(ids: List<Long>, like: Boolean): Int =
+        likeBatchIds(ids, like).size
 
     /** /like?id=&like=true|false：红心歌单的单曲写入兜底 */
     fun likeSong(id: Long, like: Boolean): Boolean {

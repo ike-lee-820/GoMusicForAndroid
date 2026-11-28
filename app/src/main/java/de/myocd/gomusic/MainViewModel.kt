@@ -2307,27 +2307,66 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 26.11.71：「我的喜欢」＝ 本地红心 ∪ 网易云「我喜欢的音乐」歌单。
-     * 星星按钮、批量移除、清空都同时回写云端，保证下次同步不会把删掉的歌拉回来。
+     * 26.11.74：「我的喜欢」＝ 本地红心 ∪ 网易云「我喜欢的音乐」歌单。
+     *
+     * 删除不再「发一次请求就算完」：本地删掉的网易云歌曲先记进
+     * pendingUnlike，确认 /like?like=false 成功才出队。没登录 / 没拿到
+     * 红心歌单 id / 接口失败都留着，下次同步重放；同步合并云端红心时
+     * 这批歌会被排除，不会再并回本地、更不会被当成新歌重新上传。
      */
     var favorites by mutableStateOf(prefs.favorites); private set
     fun isFavorite(ssid: String?): Boolean = ssid != null && ssid in favorites
 
-    /** 把本地红心的改动推到网易云「我喜欢的音乐」歌单；pid 未知时先触发一次静默同步 */
+    /** 重放待删队列，返回真正在云端删掉的 ssid；失败的继续留在队列里 */
+    private fun flushPendingUnlike(pid: Long): Set<String> {
+        val pending = prefs.pendingUnlike
+        if (pending.isEmpty() || pid <= 0L || !canSyncCloud()) return emptySet()
+        Netease.cookie = prefs.nmCookie
+        val ids = pending.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) {
+            // 全是本地专属歌曲，云端本来就没有，直接出队
+            prefs.pendingUnlike = emptySet()
+            return emptySet()
+        }
+        val okIds = Netease.likeRemoveIds(pid, ids)
+        val done = pending.filter {
+            val n = neteaseIdOf(it); n != null && n in okIds
+        }.toSet()
+        prefs.pendingUnlike = pending - done
+        if (done.isNotEmpty()) NmLog.note("红心待删队列重放 ${done.size}/${pending.size}")
+        return done
+    }
+
+    /** 把本地红心的改动推到网易云「我喜欢的音乐」歌单 */
     private fun syncFavToCloud(ssids: Collection<String>, add: Boolean) {
-        if (ssids.isEmpty() || !canSyncCloud()) return
+        val nm = ssids.filter { neteaseIdOf(it) != null }.toSet()
+        if (nm.isEmpty()) return
+        prefs.pendingUnlike = if (add) prefs.pendingUnlike - nm
+        else prefs.pendingUnlike + nm
+        if (!canSyncCloud()) return // 未登录：留在队列，登录后同步重放
         val pid = prefs.nmLikePid
         if (pid <= 0L) {
+            // 以前这里直接 return，删除动作就丢了；同步末尾会 flush 待删队列
             syncNmPlaylists(quiet = true)
             return
         }
-        val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
-        if (ids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             Netease.cookie = prefs.nmCookie
-            val ok = if (add) Netease.likeAdd(pid, ids) else Netease.likeRemove(pid, ids)
-            withContext(Dispatchers.Main) {
-                if (ok == 0) toast("网易云红心未同步成功（本地已改）")
+            val ids = nm.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+            if (add) {
+                val ok = Netease.likeAdd(pid, ids)
+                withContext(Dispatchers.Main) {
+                    if (ok == 0) toast("网易云红心未同步成功（本地已改）")
+                }
+            } else {
+                val okIds = Netease.likeRemoveIds(pid, ids)
+                val done = nm.filter {
+                    val n = neteaseIdOf(it); n != null && n in okIds
+                }.toSet()
+                prefs.pendingUnlike = prefs.pendingUnlike - done
+                withContext(Dispatchers.Main) {
+                    if (done.size < nm.size) toast("网易云红心未删除成功（本地已删，下次同步重试）")
+                }
             }
         }
     }
@@ -2351,26 +2390,35 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         syncFavToCloud(ids, add = false)
     }
 
-    /**
-     * 26.11.49 / 26.11.71：我的喜欢清空（操作前有二次确认）。
-     * 云端红心歌单也整张清空，否则下次同步又把云端那些歌合并回本地，
-     * 用户会看到「清空了但又回来了」。
-     */
+    /** 26.11.74：清空（二次确认后）同时清空云端红心歌单，失败的留待重放 */
     fun clearFavorites() {
+        val removed = favorites
         favorites = emptySet()
         prefs.favorites = emptySet()
         prefs.nmLikeStamp = ""
+        val nm = removed.filter { neteaseIdOf(it) != null }.toSet()
+        prefs.pendingUnlike = prefs.pendingUnlike + nm
+        if (!canSyncCloud()) return
         val pid = prefs.nmLikePid
-        if (pid <= 0L || !canSyncCloud()) return
+        if (pid <= 0L) {
+            syncNmPlaylists(quiet = true)
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             Netease.cookie = prefs.nmCookie
-            val ids = runCatching { Netease.playlistSongs(pid) }
+            // 本地清掉的 + 云端全量：本地可能本来就比云端少几首
+            val cloudIds = runCatching { Netease.playlistSongs(pid) }
                 .getOrDefault(emptyList<Song>())
                 .mapNotNull { neteaseIdOf(it.ssid) }
                 .filter { it > 0L }
-            val ok = if (ids.isNotEmpty()) Netease.likeRemove(pid, ids) else 0
+            val ids = (nm.mapNotNull { neteaseIdOf(it) } + cloudIds).distinct()
+            val okIds = if (ids.isNotEmpty()) Netease.likeRemoveIds(pid, ids) else emptySet()
+            val done = prefs.pendingUnlike.filter {
+                val n = neteaseIdOf(it); n != null && n in okIds
+            }.toSet()
+            prefs.pendingUnlike = prefs.pendingUnlike - done
             withContext(Dispatchers.Main) {
-                if (ok < ids.size) toast("云端红心未完全清除（本地已清空）")
+                if (okIds.size < ids.size) toast("云端红心未完全清除（本地已清空，下次同步重试）")
             }
         }
     }
@@ -3512,7 +3560,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 // 指纹相同时自动同步跳过，手动同步强制重跑。
                 val favBefore = withContext(Dispatchers.Main) { favorites }
                 val likeStamp = likeGroup?.cloudStamp.orEmpty()
-                val likeKey = "$likeStamp|${favBefore.sorted().joinToString(",").hashCode()}"
+                val likeKey = "$likeStamp|${favBefore.sorted().joinToString(",").hashCode()}|${prefs.pendingUnlike.sorted().joinToString(",").hashCode()}"
+                // 26.11.74：本地删过、云端还没删成功的红心先重放一次。
+                // 成功删掉的 + 仍失败的都要从合并结果里排除：云端快照可能
+                // 还带着这些歌，不排除就会并回本地、又被当成新歌传上去。
+                val unlikeDone = if (likeGroup != null) flushPendingUnlike(likeGroup.nmId) else emptySet()
+                val unlikeBlocked = prefs.pendingUnlike + unlikeDone
                 var likedFromCloud = 0
                 var likedToCloud = 0
                 var likedLocalOnly = 0
@@ -3529,9 +3582,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     val cloudFailed = likeGroup.trackCount > 0 && likeSongs.isEmpty()
                     val cloudSsids = if (cloudFailed) legacySsids
                     else likeSongs.map { it.ssid }.toSet()
-                    mergedFav = favBefore + cloudSsids + legacySsids
+                    mergedFav = (favBefore + cloudSsids + legacySsids) - unlikeBlocked
                     favChanged = mergedFav != favBefore
-                    likedFromCloud = mergedFav.size - favBefore.size
+                    likedFromCloud = (mergedFav.size - favBefore.size).coerceAtLeast(0)
                     likedLocalOnly = mergedFav.count { neteaseIdOf(it) == null }
                     val up = (mergedFav - cloudSsids)
                         .mapNotNull { neteaseIdOf(it) }
@@ -3542,7 +3595,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         NmLog.note("云端红心拉取失败，跳过本次上传 pid=${likeGroup.nmId}")
                     }
                     prefs.nmLikeStamp =
-                        "$likeStamp|${mergedFav.sorted().joinToString(",").hashCode()}"
+                        "$likeStamp|${mergedFav.sorted().joinToString(",").hashCode()}|${prefs.pendingUnlike.sorted().joinToString(",").hashCode()}"
                 } else if (likeGroup != null) {
                     NmLog.note("红心歌单指纹未变，跳过合并 pid=${likeGroup.nmId}")
                 }

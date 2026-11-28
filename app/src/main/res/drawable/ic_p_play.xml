@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 26.11.81：用户提供的清晰版图标，位图轮廓转矢量。任意尺寸都锐利，不再有低清 PNG 放大发糊或截图羽化边缘。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp"
+    android:height="160dp"
+    android:viewportWidth="160"
+    android:viewportHeight="160">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M 31.11,4 L 26.44,5.12 L 23.83,6.43 L 21.04,8.68 L 18.61,11.67 L 17.12,14.67 L 16,18.97 L 16,139.84 L 16.75,143.59 L 18.24,146.95 L 19.54,148.83 L 21.78,151.07 L 23.83,152.57 L 27.75,154.25 L 30.73,154.81 L 33.53,154.81 L 37.26,154.06 L 40.43,152.57 L 135.35,93.63 L 139.08,90.26 L 140.95,87.45 L 142.44,83.34 L 142.81,78.66 L 142.07,74.92 L 140.95,72.3 L 139.08,69.49 L 135.73,66.5 L 39.68,5.87 L 35.77,4.37 Z" />
+</vector>

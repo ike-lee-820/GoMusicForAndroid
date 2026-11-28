@@ -142,6 +142,16 @@ private fun QrLogin(vm: MainViewModel) {
             Modifier.clickable { vm.startQrLogin() },
             color = if (vm.nmQr == null) go.primary else go.muted,
         )
+        // 26.11.81：手动查询登录是否完成，并给出明确答复
+        Spacer(Modifier.height(12.dp))
+        GoButton(
+            if (vm.nmQrChecking) "查询中…" else "刷新状态",
+            enabled = !vm.nmQrChecking,
+        ) { vm.refreshQrLogin() }
+        if (vm.nmQrReply.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Txt(vm.nmQrReply, 12, color = go.primary)
+        }
     }
 }
 

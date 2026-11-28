@@ -887,8 +887,10 @@ private fun ProgressLine(vm: MainViewModel, go: GoColors) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(left, fontSize = 13.sp, color = fg.copy(alpha = 0.7f))
             Spacer(Modifier.weight(1f))
+            // 26.11.81：不再把 quality 键（normal / high / …）当文字画出来，
+            // 实时显示当前音质的中文名；网易云歌曲显示网易云档位中文名。
             Text(
-                if (vm.quality == "lossless") "无损" else vm.quality,
+                vm.qualityDisplay,
                 fontSize = 12.sp, color = fg,
                 modifier = Modifier.clip(RoundedCornerShape(999.dp))
                     .background(go.surfaceHi.copy(alpha = 0.55f))

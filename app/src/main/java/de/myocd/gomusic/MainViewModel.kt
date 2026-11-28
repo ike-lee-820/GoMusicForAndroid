@@ -399,13 +399,24 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
     private var nmJob: Job? = null
     private var qrJob: Job? = null
+    /** 26.11.81：当前二维码的 key，手动「刷新状态」要拿它去查 /login/qr/check */
+    private var qrKey: String? = null
+    /** 轮询与手动刷新可能同时拿到 803，只让一个去落登录态 */
+    @Volatile private var qrDone = false
     /** 二维码登录：二维码图片（data: URI）与提示文案 */
     var nmQr by mutableStateOf<String?>(null); private set
     var nmQrTip by mutableStateOf("正在获取二维码"); private set
     var nmBusy by mutableStateOf(false); private set
+    /** 手动查询中 / 明确答复（不只是改一行状态提示） */
+    var nmQrChecking by mutableStateOf(false); private set
+    var nmQrReply by mutableStateOf(""); private set
 
     fun startQrLogin() {
         qrJob?.cancel()
+        qrDone = false
+        qrKey = null
+        nmQrChecking = false
+        nmQrReply = ""
         nmQr = null
         nmQrTip = "正在获取二维码"
         qrJob = viewModelScope.launch(Dispatchers.IO) {
@@ -414,6 +425,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 withContext(Dispatchers.Main) { nmQrTip = "获取二维码失败，请检查网络" }
                 return@launch
             }
+            qrKey = key
             val img = runCatching { Netease.qrImage(key) }.getOrNull()
             withContext(Dispatchers.Main) {
                 nmQr = img
@@ -426,6 +438,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 when (st.code) {
                     803 -> {
                         // 授权成功：拿到凭证就立刻写入，不再依赖后续刷新
+                        if (qrDone) return@launch
+                        qrDone = true
                         val ck = st.cookie
                         withContext(Dispatchers.Main) {
                             if (ck.isNullOrBlank()) {
@@ -452,6 +466,73 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun stopQrLogin() {
         qrJob?.cancel()
         nmQr = null
+        qrKey = null
+        nmQrChecking = false
+        // 26.11.81：保留 nmQrReply。登录成功会立刻关掉弹层，若在这里清掉，
+        // 「登录已完成」那句答复就一闪而过；下次进登录页由 startQrLogin 清空。
+    }
+
+    /**
+     * 26.11.81：二维码登录加「刷新状态」——手动查一次 /login/qr/check，
+     * 并给出明确答复。轮询仍在后台跑，两者可能同时拿到 803，用 qrDone 去重。
+     */
+    fun refreshQrLogin() {
+        val key = qrKey
+        if (key.isNullOrBlank()) {
+            val m = "二维码还没生成，正在重新获取"
+            nmQrReply = m
+            toast(m)
+            startQrLogin()
+            return
+        }
+        if (nmQrChecking) return
+        nmQrChecking = true
+        nmQrReply = "正在查询登录状态…"
+        viewModelScope.launch(Dispatchers.IO) {
+            val st = runCatching { Netease.qrCheck(key) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                nmQrChecking = false
+                if (st == null) {
+                    val m = "查询失败，请检查网络后再点一次"
+                    nmQrReply = m
+                    toast(m)
+                    return@withContext
+                }
+                val reply: String = when (st.code) {
+                    803 -> {
+                        if (qrDone) "登录已完成"
+                        else {
+                            qrDone = true
+                            val ck = st.cookie
+                            if (ck.isNullOrBlank()) {
+                                nmQrTip = "授权完成但未拿到登录凭证，请重新扫码"
+                                "扫码已授权，但没拿到登录凭证，请重新扫码"
+                            } else {
+                                nmQr = null
+                                nmLogin(ck, null)
+                                "登录已完成"
+                            }
+                        }
+                    }
+                    800 -> {
+                        nmQr = null
+                        nmQrTip = "二维码已过期，点此重新获取"
+                        "二维码已过期，请重新获取二维码"
+                    }
+                    802 -> {
+                        nmQrTip = "已扫码，请在手机上确认"
+                        "已扫码，但还没在手机上确认登录"
+                    }
+                    801 -> {
+                        nmQrTip = "用网易云音乐 App 扫码"
+                        "还没有人扫码，请用网易云音乐 App 扫码"
+                    }
+                    else -> "状态 ${st.code}：${st.message ?: "登录尚未完成"}"
+                }
+                nmQrReply = reply
+                toast(reply)
+            }
+        }
     }
 
     /**
@@ -1062,6 +1143,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun nmLogout() {
+        // 26.11.81：先把旧凭证留一份，本地立刻清干净，再后台调用 /logout
+        // 注销服务端会话；本地退出不等待网络结果。
+        val oldCookie = Netease.cookie
         prefs.nmCookie = ""
         prefs.nmAccount = ""
         Netease.cookie = ""
@@ -1070,7 +1154,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         nmSongs = emptyList()
         nmAlbums = emptyList()
         nmArtists = emptyList()
-        toast("已退出网易云")
+        toast("正在退出网易云…")
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = if (oldCookie.isBlank()) false
+                else runCatching { Netease.logout(oldCookie) }.getOrDefault(false)
+            withContext(Dispatchers.Main) {
+                toast(if (ok) "已退出网易云（服务端会话已注销）"
+                      else "已退出本地登录，服务端注销未确认")
+            }
+        }
     }
 
     /** 校验登录态，失效则清空 */
@@ -2970,16 +3062,28 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     val nmQualityMode: Boolean get() = curSsid?.let { isNetease(it) } == true
     /** 网易云当前音质档位（空 = 跟随设置） */
     val nmLevel: String get() = prefs.nmLevel
+    /** 26.11.81：切成 Compose 状态，切档位时播放器上的中文名才会立刻刷新 */
+    var nmLevelState by mutableStateOf(prefs.nmLevel); private set
 
     /** 当前网易云歌曲实际用的档位：菜单里高亮这一项 */
     val curLevel: String get() =
-        prefs.nmLevel.takeIf { it.isNotBlank() } ?: nmLevelOfQuality(quality)
+        nmLevelState.takeIf { it.isNotBlank() } ?: nmLevelOfQuality(quality)
+
+    /**
+     * 26.11.81：播放器进度条下方显示当前音质的中文名，随切歌 / 切档位实时变化。
+     * 旧版直接把 quality 键（normal / high / …）当文字画出来，只有 lossless
+     * 特判成「无损」，所以用户看到的是一个英文 normal。
+     * 网易云歌曲走网易云档位（curLevel），本站曲库走 quality，两套都转中文。
+     */
+    val qualityDisplay: String get() =
+        if (nmQualityMode) nmLevelLabel(curLevel) else qualityLabel(quality)
 
     fun updateQuality(k: String) {
         // 网易云歌曲：档位存到 nmLevel，不动本站的 quality
         if (k in NM_LEVELS) {
             if (k == curLevel) return
             prefs.nmLevel = k
+            nmLevelState = k
         } else {
             quality = k
             prefs.quality = k

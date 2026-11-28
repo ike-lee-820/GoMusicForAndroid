@@ -212,6 +212,8 @@ object Netease {
         vararg params: Pair<String, String>,
         http: OkHttpClient = Api.client,
         tries: Int = 2,
+        /** 26.11.81：退出登录时本地 cookie 已经清空，但要让服务端注销的是旧凭证 */
+        cookieOverride: String? = null,
     ): JsonObject {
         val sb = StringBuilder(NM_BASE).append(path).append('?')
         params.forEach { sb.append(it.first).append('=').append(enc(it.second)).append('&') }
@@ -228,7 +230,8 @@ object Netease {
         if (params.none { it.first.equals("randomCNIP", ignoreCase = true) }) {
             sb.append("randomCNIP=true&")
         }
-        if (!cred && cookie.isNotBlank()) sb.append("cookie=").append(encCookie(cookie)).append('&')
+        val ck = cookieOverride ?: cookie
+        if (!cred && ck.isNotBlank()) sb.append("cookie=").append(encCookie(ck)).append('&')
         sb.append("timestamp=").append(System.currentTimeMillis())
         val url = sb.toString()
         NmLog.req(url)
@@ -2205,6 +2208,21 @@ object Netease {
         return p?.str("nickname")
             ?: r.obj("account")?.str("userName")
             ?: (p?.get("userId") as? JsonPrimitive)?.content
+    }
+
+    /**
+     * 26.11.81：退出登录必须调用 /logout 注销服务端会话。
+     * 之前 nmLogout 只清本地 cookie，服务端那边的凭证仍然有效 —— 用同一份
+     * cookie 还能继续访问账号数据。这里显式带上旧凭证，因为调用时本地
+     * Netease.cookie 已经被清空了。
+     */
+    fun logout(cookie: String): Boolean {
+        if (cookie.isBlank()) return false
+        val r = runCatching { get("/logout", cookieOverride = cookie) }
+            .getOrDefault(JsonObject(emptyMap()))
+        val ok = r.code() == 200
+        NmLog.note("退出登录 /logout 返回 code=${r.code()}，${if (ok) "已注销" else "未确认"}")
+        return ok
     }
 
     /** 登录态是否有效：只看账号信息是否存在，不强制要求 profile */

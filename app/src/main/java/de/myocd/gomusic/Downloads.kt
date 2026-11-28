@@ -7,7 +7,9 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import kotlinx.serialization.Serializable
+import okhttp3.Request
 import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 
 /** 一条下载记录：音频 + 封面 + 歌词 + 信息文件的位置 */
@@ -125,6 +127,81 @@ object LocalLib {
         os.use { Api.fetch(url, it) }
         finish(ctx, u)
         return uriText(u, f)
+    }
+
+    /**
+     * 26.11.80：简介页大图下载，与界面上这张图有没有加载出来完全解耦。
+     *
+     * 旧版只把 st.cover 原样交给 Api.fetch（无 UA / Referer、http 明文、
+     * URL 为空或带低清 param 时都直接失败），而且失败原因被吞掉，只提示
+     * 「图片下载失败」。这里把每个地址展开成 https 化 / 高清档 / 原图 /
+     * 原始地址多组候选，带浏览器请求头逐个尝试，校验响应确实是图片后才落盘。
+     */
+    fun saveImageSmart(ctx: Context, name: String, urls: List<String>): String {
+        val candidates = urls.asSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("http", ignoreCase = true) }
+            .flatMap { raw ->
+                val secure = if (raw.startsWith("http://")) {
+                    "https://" + raw.removePrefix("http://")
+                } else raw
+                sequenceOf(
+                    hdCoverUrl(secure, 2000),   // 高清档
+                    secure.substringBefore('?'), // 不带参数原图
+                    secure,                      // https 原样
+                    raw,                         // 原始地址（含参数）
+                )
+            }
+            .filterNotNull()
+            .distinct()
+            .toList()
+        if (candidates.isEmpty()) throw IOException("没有可用的图片地址")
+        var last: Exception? = null
+        for (u in candidates) {
+            try {
+                val req = Request.Builder().url(u)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 GoMusic")
+                    .header("Referer", "https://music.163.com/")
+                    .build()
+                val bytes = Api.downloadClient.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+                    val b = r.body?.bytes() ?: throw IOException("空响应")
+                    if (b.size < 1024) throw IOException("响应过小（${b.size} 字节）")
+                    b
+                }
+                val ext = imageExt(bytes) ?: throw IOException("响应不是图片")
+                val mime = when (ext) {
+                    "png" -> "image/png"
+                    "webp" -> "image/webp"
+                    "gif" -> "image/gif"
+                    else -> "image/jpeg"
+                }
+                val (uri, f) = openOut(ctx, "图片", "${safe(name)}.$ext", mime)
+                val os = stream(ctx, uri, f) ?: throw IOException("无法写入下载目录")
+                try {
+                    os.use { it.write(bytes) }
+                } catch (e: Exception) {
+                    uri?.let { runCatching { ctx.contentResolver.delete(it, null, null) } }
+                    throw e
+                }
+                finish(ctx, uri)
+                return uriText(uri, f)
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw IOException(last?.message ?: "所有图片地址均不可用")
+    }
+
+    /** 按魔数判断图片格式，避免把 403 的 HTML / JSON 错误页存成 .jpg */
+    private fun imageExt(b: ByteArray): String? = when {
+        b.size > 2 && b[0] == 0xFF.toByte() && b[1] == 0xD8.toByte() -> "jpg"
+        b.size > 4 && b[0] == 0x89.toByte() && b[1] == 0x50.toByte() -> "png"
+        b.size > 3 && b[0] == 0x47.toByte() && b[1] == 0x49.toByte() -> "gif"
+        b.size > 12 &&
+            String(b, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+            String(b, 8, 4, Charsets.US_ASCII) == "WEBP" -> "webp"
+        else -> null
     }
 
     /** 下载一首歌：音频 + 封面 + 歌词 + 歌曲信息（meta.json），返回记录 */

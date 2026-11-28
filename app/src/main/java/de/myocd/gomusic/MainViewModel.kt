@@ -89,6 +89,9 @@ data class IntroState(
     val artistId: Long = 0,
     val desc: String = "",
     val descLoading: Boolean = false,
+    /** 26.11.80：接口确实通了 / 请求失败，用于区分「暂无简介」与「获取失败可重试」 */
+    val descOk: Boolean = false,
+    val descFailed: Boolean = false,
     val brief: String = "",
     val sections: List<Pair<String, String>> = emptyList(),
     val topics: List<String> = emptyList(),
@@ -4310,8 +4313,15 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     var intro by mutableStateOf<IntroState?>(null); private set
 
-    /** 进入简介页时加载；同一首页面不重复请求 */
-    fun loadIntro(s: Screen) {
+    /**
+     * 进入简介页时加载；同一页面不重复请求。
+     *
+     * 26.11.80 之前：专辑简介只在「已登录」时请求 /ugc/album/get，
+     * 未登录直接显示「登录后才能查看简介」，而该端点部分部署还不存在 ——
+     * 结果就是永远拿不到专辑简介。现在主链改走不需要登录的 /album，
+     * ugc 退为登录后的补充，两边取更长的那段；封面 / 歌手名一并补齐。
+     */
+    fun loadIntro(s: Screen, force: Boolean = false) {
         val isAlbum = s is Screen.AlbumIntro
         val id: Long
         val title: String
@@ -4327,60 +4337,134 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             else -> return
         }
         val kind = if (isAlbum) "album" else "artist"
-        val cur = intro
-        if (cur != null && cur.kind == kind && cur.id == id) {
-            // 登录后重新进来，之前没拿到 ugc 简介就补一次；其余情况直接用缓存
-            val needDesc = nmLogged && cur.desc.isBlank() && !cur.descLoading
-            if (!needDesc) return
+        val cur = intro?.takeIf { it.kind == kind && it.id == id }
+        if (!force && cur != null) {
+            // 已拿到正文、已明确失败（等用户点重试）、或正在加载，都不重复发请求
+            if (cur.desc.isNotBlank() || cur.descFailed || cur.descLoading) return
         }
         intro = IntroState(
             kind = kind, id = id, title = title, cover = cover, artist = artist,
-            descLoading = nmLogged, detailLoading = !isAlbum,
+            desc = cur?.desc.orEmpty(),
+            descLoading = id > 0,
+            detailLoading = !isAlbum && id > 0,
         )
-        if (nmLogged && id > 0) {
-            viewModelScope.launch {
-                val info = withContext(Dispatchers.IO) {
-                    runCatching { if (isAlbum) Netease.ugcAlbum(id) else Netease.ugcArtist(id) }
-                        .getOrDefault(Netease.UgcInfo())
-                }
-                intro?.let { c ->
-                    intro = c.copy(
-                        desc = info.desc,
-                        descLoading = false,
-                        cover = info.cover ?: c.cover,
-                        title = info.title.takeIf { it.isNotBlank() } ?: c.title,
-                        artist = info.artist.takeIf { it.isNotBlank() } ?: c.artist,
-                        artistId = info.artistId,
-                    )
+        // 本地条目暂时没有网易云 id：页面先开出来，等后台按名字补 id 再重取
+        if (id <= 0) return
+        viewModelScope.launch {
+            val (base, ugc) = withContext(Dispatchers.IO) {
+                coroutineScope {
+                    val a = async {
+                        runCatching {
+                            if (isAlbum) Netease.albumIntro(id)
+                            else Netease.artistDetail(id)?.let {
+                                Netease.UgcInfo(
+                                    cover = it.cover, title = it.title,
+                                    artist = it.artist, artistId = it.nmId, ok = true,
+                                )
+                            } ?: Netease.UgcInfo()
+                        }.getOrDefault(Netease.UgcInfo())
+                    }
+                    val b = async {
+                        if (nmLogged) runCatching {
+                            if (isAlbum) Netease.ugcAlbum(id) else Netease.ugcArtist(id)
+                        }.getOrDefault(Netease.UgcInfo()) else Netease.UgcInfo()
+                    }
+                    a.await() to b.await()
                 }
             }
+            intro?.takeIf { it.kind == kind && it.id == id }?.let { c ->
+                val desc = listOf(base.desc, ugc.desc, c.desc).maxByOrNull { it.length }.orEmpty()
+                val ok = base.ok || ugc.ok
+                intro = c.copy(
+                    desc = desc,
+                    descLoading = false,
+                    descOk = ok || desc.isNotBlank(),
+                    descFailed = !ok && desc.isBlank(),
+                    cover = base.cover ?: ugc.cover ?: c.cover,
+                    title = ugc.title.takeIf { it.isNotBlank() }
+                        ?: base.title.takeIf { it.isNotBlank() } ?: c.title,
+                    artist = ugc.artist.takeIf { it.isNotBlank() }
+                        ?: base.artist.takeIf { it.isNotBlank() } ?: c.artist,
+                    artistId = ugc.artistId.takeIf { it > 0 }
+                        ?: base.artistId.takeIf { it > 0 } ?: c.artistId,
+                )
+            }
         }
-        // 歌手详细信息无论是否登录都取
-        if (!isAlbum && id > 0) {
+        // 歌手详细信息无论是否登录都取，briefDesc 同时作为简介正文
+        if (!isAlbum) {
             viewModelScope.launch {
                 val d = withContext(Dispatchers.IO) {
                     runCatching { Netease.artistDesc(id) }.getOrDefault(Netease.ArtistDescInfo())
                 }
-                intro?.let { c ->
+                intro?.takeIf { it.kind == kind && it.id == id }?.let { c ->
                     intro = c.copy(
                         brief = d.brief, sections = d.sections, topics = d.topics,
                         detailLoading = false, detailOk = d.ok,
+                        desc = d.brief.takeIf { it.length > c.desc.length } ?: c.desc,
+                        descLoading = false,
+                        descOk = d.ok || c.descOk,
+                        descFailed = !d.ok && !c.descOk && c.desc.isBlank(),
                     )
                 }
+            }
+        }
+    }
+
+    /** 简介卡片上「获取失败，点击重试」 */
+    fun retryIntro(s: Screen) {
+        loadIntro(s, force = true)
+        when (s) {
+            is Screen.AlbumIntro -> if (s.id <= 0) resolveIntroId(true, s.title, s.artist, s.cover)
+            is Screen.ArtistIntro -> if (s.id <= 0) resolveIntroId(false, s.name, "", s.cover)
+            else -> Unit
+        }
+    }
+
+    /** 本地分组没有在线 id：按名字搜一次，补到当前简介页再重取简介 */
+    private fun resolveIntroId(isAlbum: Boolean, title: String, artist: String, cover: String?) {
+        viewModelScope.launch {
+            val g = withContext(Dispatchers.IO) {
+                runCatching {
+                    val key = if (artist.isBlank()) title else "$artist $title"
+                    val hit = { h: Group ->
+                        h.title.isNotBlank() && (
+                            h.title.equals(title, ignoreCase = true) ||
+                                h.title.contains(title, ignoreCase = true) ||
+                                title.contains(h.title, ignoreCase = true))
+                    }
+                    if (isAlbum) Netease.searchAlbums(key, 10).firstOrNull(hit)
+                    else Netease.searchArtists(title, 10).firstOrNull(hit)
+                }.getOrNull()
+            }
+            val idx = stack.lastIndex
+            val top = stack.getOrNull(idx)
+            if (g != null && top != null) {
+                stack[idx] = when {
+                    isAlbum && top is Screen.AlbumIntro && top.id <= 0 ->
+                        top.copy(id = g.nmId, cover = top.cover ?: g.cover)
+                    !isAlbum && top is Screen.ArtistIntro && top.id <= 0 ->
+                        top.copy(id = g.nmId, cover = top.cover ?: g.cover)
+                    else -> return@launch
+                }
+                loadIntro(stack.last(), force = true)
+            } else if (g == null) {
+                intro = intro?.copy(descFailed = true, descLoading = false)
+                toast("未找到在线信息，点简介处可重试")
             }
         }
     }
 
     fun openAlbumIntro(id: Long, title: String, cover: String?, artist: String) {
-        if (id <= 0) { toast("没有找到这张专辑的信息"); return }
+        // 26.11.80：不再因为 id<=0 直接 toast 不进页面，本地专辑也要能看到信息
         stack.add(Screen.AlbumIntro(id, title, cover, artist))
         loadIntro(stack.last())
+        if (id <= 0) resolveIntroId(true, title, artist, cover)
     }
 
     fun openArtistIntro(id: Long, name: String, cover: String?) {
-        if (id <= 0) { toast("没有找到这个歌手的信息"); return }
         stack.add(Screen.ArtistIntro(id, name, cover))
         loadIntro(stack.last())
+        if (id <= 0) resolveIntroId(false, name, "", cover)
     }
 
     /** 本地按名字分组的专辑页：先用歌里带的网易云专辑 id，没有再严格按名字找 */
@@ -4398,8 +4482,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                 }.getOrNull()
             }
+            // 26.11.80：找不到在线 id 也要把简介页开出来，由 resolveIntroId 继续补，
+            // 不能像以前那样只弹一句 toast、点了封面像没反应
             if (g != null) openAlbumIntro(g.nmId, album, cover ?: g.cover, artist)
-            else toast("没有找到这张专辑的信息")
+            else openAlbumIntro(0, album, cover, artist)
         }
     }
 
@@ -4419,7 +4505,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }.getOrNull()
             }
             if (g != null) openArtistIntro(g.nmId, name, cover ?: g.cover)
-            else toast("没有找到这个歌手的信息")
+            else openArtistIntro(0, name, cover)
         }
     }
 
@@ -4459,14 +4545,40 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }.onFailure { toast("复制失败：${it.message}") }
     }
 
-    /** 长按大图选择下载：存到 Download/GoMusic/图片 */
+    /**
+     * 26.11.80：长按 / 点按钮下载大图，**不依赖界面上那张图有没有加载出来**。
+     * 之前只把 st.cover 原样交给 Api.fetch：URL 为空、http 明文、缺 UA 被 CDN 拒、
+     * 或前端图还在加载时，下载就跟着一起失败，还只提示一句「图片下载失败」。
+     * 现在多候选地址（https 化 / 原图 / 高清档）+ 带请求头逐个重试；
+     * 连 URL 都没有时，按当前页面的在线 id 现拉一次详情补封面再下。
+     */
     fun saveIntroImage(url: String?, name: String) {
-        if (url.isNullOrBlank()) { toast("没有可下载的图片"); return }
+        val st = intro
+        val list = buildList {
+            url?.takeIf { it.isNotBlank() }?.let { add(it) }
+            st?.cover?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                runCatching { LocalLib.saveImage(app, name, url); true }.getOrDefault(false)
+            val candidates = if (list.isNotEmpty()) list else withContext(Dispatchers.IO) {
+                runCatching {
+                    when (st?.kind) {
+                        "album" -> Netease.albumIntro(st.id).cover
+                        "artist" -> Netease.artistDetail(st.id)?.cover
+                        else -> null
+                    }
+                }.getOrNull()?.let { listOf(it) } ?: emptyList()
             }
-            toast(if (ok) "图片已保存到 Download/GoMusic/图片" else "图片下载失败")
+            if (candidates.isEmpty()) {
+                toast("没有可下载的图片，联网打开一次本页后再试")
+                return@launch
+            }
+            val r = withContext(Dispatchers.IO) {
+                runCatching { LocalLib.saveImageSmart(app, name, candidates) }
+            }
+            toast(r.fold(
+                onSuccess = { "图片已保存到 Download/GoMusic/图片" },
+                onFailure = { "图片下载失败：${it.message}" },
+            ))
         }
     }
 }

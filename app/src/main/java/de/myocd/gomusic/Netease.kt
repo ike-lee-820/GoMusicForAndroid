@@ -2227,6 +2227,8 @@ object Netease {
         val title: String = "",
         val artist: String = "",
         val artistId: Long = 0,
+        /** 26.11.80：接口确实通了（哪怕这张专辑没有简介正文），用于区分「暂无简介」和「获取失败」 */
+        val ok: Boolean = false,
     )
 
     /** 歌手详细信息：简述 + 分段介绍 + 相关专栏标题 */
@@ -2303,11 +2305,49 @@ object Netease {
             title = d.str("name", "title", "albumName", "artistName") ?: "",
             artist = artist,
             artistId = artistIdOf(d),
+            ok = true,
         )
     }
 
     fun ugcAlbum(id: Long): UgcInfo = ugc("/ugc/album/get", id)
     fun ugcArtist(id: Long): UgcInfo = ugc("/ugc/artist/get", id)
+
+    /**
+     * 26.11.80：专辑简介的主来源改走 /album。
+     *
+     * 之前简介页只请求 /ugc/album/get：那个端点要登录、部分部署根本不提供，
+     * 而未登录时 loadIntro 干脆连请求都不发 —— 结果「登录后才能查看简介」
+     * 或永远「暂无简介」。
+     *
+     * /album 不需要登录，专辑页取曲目用的就是它，返回 album.description /
+     * briefDesc、picUrl、artist，顺手把封面和歌手名一起补齐；ugc 接口退为
+     * 登录后的补充来源，两边取更长的那段简介。
+     */
+    fun albumIntro(id: Long): UgcInfo {
+        if (id <= 0) return UgcInfo()
+        val r = get("/album", "id" to id.toString())
+        if (r.code() != 200) {
+            NmLog.note("专辑详情 /album 返回 code=${r.code()}")
+            return UgcInfo()
+        }
+        val a = r.obj("album") ?: r.obj("data")?.obj("album")
+            ?: r.obj("data") ?: r
+        val desc = descText(a).ifBlank { descText(r) }
+        val artist = artistsOf(a).ifBlank {
+            a.obj("artist")?.str("name") ?: a.str("artist", "artistName", "singer") ?: ""
+        }
+        val cover = pic(a.str("picUrl", "blurPicUrl", "cover", "pic"))
+            ?: pic(r.obj("album")?.str("picUrl", "blurPicUrl", "cover"))
+        NmLog.note("专辑详情 /album id=$id 简介长度=${desc.length} 封面=${!cover.isNullOrBlank()}")
+        return UgcInfo(
+            desc = desc,
+            cover = cover,
+            title = a.str("name", "title", "albumName") ?: "",
+            artist = artist,
+            artistId = artistIdOf(a),
+            ok = true,
+        )
+    }
 
     /** 歌手详细信息：无论是否登录都能取，失败时返回空结构由 UI 提示 */
     fun artistDesc(id: Long): ArtistDescInfo {

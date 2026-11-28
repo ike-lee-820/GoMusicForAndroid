@@ -41,8 +41,9 @@ import androidx.compose.ui.unit.dp
  *
  * 专辑：点专辑页的封面或标题进来，显示大图、标题、歌手、简介。
  * 歌手：点歌手页的大图或名字进来，显示大图、名字、简介、详细信息。
- * ugc 简介仅在带登录凭证时请求；歌手详细信息（artist/desc）不要求登录。
- * 大图长按弹下载选项，所有简介 / 详情文字长按整段复制。
+ * 26.11.80：专辑简介走 /album（不需要登录），ugc 仅登录后补充；
+ * 大图长按或点「下载图片」都能下载，不依赖图片是否在界面上加载出来。
+ * 所有简介 / 详情文字长按整段复制。
  */
 @Composable
 fun IntroPage(vm: MainViewModel, s: Screen) {
@@ -62,7 +63,10 @@ fun IntroPage(vm: MainViewModel, s: Screen) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    IntroImage(vm, st.cover, st.title.ifBlank { if (isAlbum) "专辑封面" else "歌手图片" })
+                    IntroImage(
+                        vm, secureCover(st.cover),
+                        st.title.ifBlank { if (isAlbum) "专辑封面" else "歌手图片" },
+                    )
                     Spacer(Modifier.height(16.dp))
                     CopyBlock(
                         vm,
@@ -87,7 +91,6 @@ fun IntroPage(vm: MainViewModel, s: Screen) {
             item {
                 InfoCard("简介") {
                     when {
-                        !vm.nmLogged -> Txt("登录后才能查看简介", 13, color = go.muted)
                         st.descLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(
                                 color = go.primary,
@@ -98,6 +101,13 @@ fun IntroPage(vm: MainViewModel, s: Screen) {
                             Txt("正在加载简介…", 13, color = go.muted)
                         }
                         st.desc.isNotBlank() -> CopyBlock(vm, st.desc, 14)
+                        // 26.11.80：区分「这张专辑本身没有简介」和「接口没取到」，
+                        // 未登录也走 /album，不再一律显示「登录后才能查看简介」
+                        st.descFailed -> Txt(
+                            "简介获取失败，点击重试", 13,
+                            Modifier.clickable { vm.retryIntro(s) }.padding(vertical = 6.dp),
+                            color = go.primary,
+                        )
                         else -> Txt("暂无简介", 13, color = go.muted)
                     }
                 }
@@ -185,18 +195,27 @@ private fun CopyBlock(
     )
 }
 
-/** 大图：长按弹出下载选项 */
+/** 网易云 / 字节 CDN 都支持 https；老数据里的 http 明文地址统一升级 */
+private fun secureCover(u: String?): String? = u?.let {
+    if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it
+}
+
+/** 大图：长按弹出下载选项；同时常驻一个「下载图片」按钮，图片没加载出来也能下 */
 @Composable
 private fun IntroImage(vm: MainViewModel, cover: String?, name: String) {
     val go = LocalGo.current
     var ask by remember { mutableStateOf(false) }
     val w = minOf(LocalConfiguration.current.screenWidthDp * 0.72f, 320f).dp
-    Box(
-        Modifier.size(w).pointerInput(Unit) {
-            detectTapGestures(onLongPress = { ask = true })
-        },
-    ) {
-        Cover(cover, Modifier.fillMaxSize(), 24.dp, hd = true)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(w).pointerInput(Unit) {
+                detectTapGestures(onLongPress = { ask = true })
+            },
+        ) {
+            Cover(secureCover(cover), Modifier.fillMaxSize(), 24.dp, hd = true)
+        }
+        Spacer(Modifier.height(8.dp))
+        GoButton("下载图片") { vm.saveIntroImage(cover, name) }
     }
     if (ask) {
         GoSheet({ ask = false }, "图片") {

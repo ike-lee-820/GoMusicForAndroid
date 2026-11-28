@@ -3,6 +3,7 @@ package de.myocd.gomusic
 import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -95,7 +97,6 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -115,6 +116,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -1212,13 +1214,13 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                         suppressed = true
                     } else {
                         scrollJob?.cancel()
-                        scrollJob = launch { state.animateScrollToItem(a) }
+                        scrollJob = launch { state.easeScrollToItem(a) }
                     }
                 }
             } else if (suppressed && !held && lastActive >= 0) {
                 suppressed = false
                 scrollJob?.cancel()
-                scrollJob = launch { state.animateScrollToItem(lastActive) }
+                scrollJob = launch { state.easeScrollToItem(lastActive) }
             }
         }
     }
@@ -1248,27 +1250,8 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                 derivedStateOf { w.activeIndex(framePos.longValue) == i }
             }
             val alpha = if (isActive) 1f else 0.32f
-            // 26.11.76：当前行滚入时轻轻 Q 弹一下。
-            // 非激活时目标停在 0.985，激活瞬间只有 1.5% 的行程，欠阻尼
-            // spring 让它回弹过冲再收住；非激活行 over 恒为 0，整列不会
-            // 被统一压扁或下移。animateScrollToItem / 抑制窗口 / 点击跳转
-            // 这些已修好的滚动逻辑一行都没动。
-            val jelly by animateFloatAsState(
-                targetValue = if (isActive) 1f else 0.985f,
-                animationSpec = spring<Float>(dampingRatio = 0.5f, stiffness = 380f),
-                label = "lyricJelly",
-            )
-            val over = if (isActive) jelly - 1f else 0f
-            val jellyScale = 1f + over
-            val jellyYPx = with(LocalDensity.current) { (-400f * over).dp.toPx() }
             Column(
-                Modifier.fillMaxWidth()
-                    .graphicsLayer {
-                        scaleX = jellyScale
-                        scaleY = jellyScale
-                        translationY = jellyYPx
-                    }
-                    .padding(horizontal = 8.dp)
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                     // 点击歌词跳到这一行；制作信息行不跳。
                     // 清掉手动滑动抑制窗口：用户主动选行，就该立刻跟到那一行
                     .clickable(enabled = !line.meta) {
@@ -1313,23 +1296,46 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
     }
 }
 
+/**
+ * 26.11.77：行与行之间的跟随滚动换成定时长、缓入缓出的连续推进。
+ *
+ * 系统 animateScrollToItem 用固定 spring：每切一句先 cancel 上一个动画，
+ * 速度归零再弹出去，落到下一句时一顿 —— 这就是「不同句滚动很生硬」。
+ * 逐字歌词和行级歌词共用这段循环，所以两种歌词都生硬。
+ *
+ * 这里只在目标行已经出现在可视区时接管（自动切句几乎总是相邻行）：
+ * 按目标行相对视口顶部的真实像素距离，用 FastOutSlowIn 逐帧推进 520ms，
+ * 起止速度都为 0，不回弹、不倒退。目标不可见时退回系统动画，行为不变。
+ * 首次直接落位、抑制窗口、点击跳转、补滚回当前行这些状态机一行没动。
+ */
+private suspend fun LazyListState.easeScrollToItem(index: Int) {
+    if (index < 0) return
+    val target = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+    if (target == null) {
+        animateScrollToItem(index)
+        return
+    }
+    val total = target.offset.toFloat()
+    if (abs(total) < 1f) return
+    val durationNs = 520_000_000L
+    val t0 = withFrameNanos { it }
+    var applied = 0f
+    scroll {
+        while (true) {
+            val t = withFrameNanos {
+                ((it - t0).toFloat() / durationNs).coerceIn(0f, 1f)
+            }
+            val want = total * FastOutSlowInEasing.transform(t)
+            this.scrollBy(want - applied)
+            applied = want
+            if (t >= 1f) break
+        }
+    }
+}
+
 private fun smoothstep(t: Float): Float {
     val x = t.coerceIn(0f, 1f)
     return x * x * (3f - 2f * x)
-}
-
-/**
- * 26.11.76：给「时间 → 明暗边界位置」的映射加一点果冻感。
- *
- * 严格单调（导数恒正），已唱过的字不会又变暗回去，否则会变成闪烁。
- * 只是在匀速推进上叠一个 6% 的轻推：前段略微超前、中段稍缓、末段收住，
- * 边界像被轻轻弹了一下再滑过去，不再是 smoothstep 那种机械匀速。
- * 仍然只有字形明暗两档，没有任何渐变条 / 光晕 / 叠加层。
- */
-private fun jellyEase(p: Float): Float {
-    val x = p.coerceIn(0f, 1f)
-    val q = x + 0.06f * sin(2f * kotlin.math.PI.toFloat() * x) * (1f - x)
-    return q.coerceIn(0f, 1f)
 }
 
 private fun mixColor(a: Color, b: Color, t: Float): Color {
@@ -1370,6 +1376,11 @@ private fun charWidth(c: Char): Float = when {
  *
  * 仍然没有任何矩形、渐变条、光晕或叠加层：SpanStyle 只改字色。
  * 位置逐帧读取，字号固定 26sp。
+ *
+ * 26.11.77：撤掉 26.11.76 那层「时间→位置」的果冻缓动。它把 progress
+ * 非线性化，字亮起的时刻与真实演唱时间对不上（时间不准确），而且只在
+ * 纵向切句上做回弹，横向渐亮反而被削弱。现在边界回到严格线性，
+ * 渐亮带略微加宽，横向沿字流推进的明暗波保持连续。
  */
 @Composable
 private fun WordLineText(
@@ -1414,16 +1425,17 @@ private fun WordLineText(
         ends[i] = acc / total
         centers[i] = (starts[i] + ends[i]) / 2f
     }
-    // 羽化带 ≈ 3 个平均字宽：只用 1 个字宽时边界仍会卡在字缝上，
-    // 相邻字依旧 1.0 → 0.0 硬切；跨 3 个字才有可见的渐进过渡。
-    val feather = (weights.average().toFloat() / total * 3.0f).coerceAtLeast(0.02f)
+    // 羽化带 ≈ 3.6 个平均字宽：只用 1 个字宽时边界会卡在字缝上，
+    // 相邻字依旧 1.0 → 0.0 硬切。26.11.77 从 3 个略微放宽到 3.6 个，
+    // 让「暗 → 亮」沿字流横向铺得更开、渐亮更连续。
+    // 时间 → 边界仍是严格线性（直接用 frames[active].progress 原值），
+    // 不做任何缓动：字亮起的时刻与真实演唱时间一一对应，不会错位。
+    val feather = (weights.average().toFloat() / total * 3.6f).coerceAtLeast(0.02f)
 
     val active = frames.indexOfFirst { it.phase == CharPhase.ACTIVE }
     val lastSung = frames.indexOfLast { it.phase == CharPhase.SUNG }
     val edge = when {
-        // 26.11.76：推进速度带一点轻推回弹，边界位置仍单调不倒退
-        active >= 0 -> starts[active] + (ends[active] - starts[active]) *
-            jellyEase(frames[active].progress)
+        active >= 0 -> starts[active] + (ends[active] - starts[active]) * frames[active].progress
         // 整行唱完：把边界推到行尾之外，保证最后一个字也是全亮
         lastSung == frames.lastIndex -> 1f + feather
         lastSung >= 0 -> ends[lastSung]
@@ -1433,11 +1445,11 @@ private fun WordLineText(
     // 只有两档明暗，不用主色：主色会在字流里形成彩色带，又被看成「棍子」
     val dark = go.on.copy(alpha = alpha * 0.28f)
     val bright = go.on.copy(alpha = alpha)
-    // 0.25 的右偏让「已唱」一侧更快饱和，过渡主要落在未唱一侧
-    val bias = 0.25f
+    // 0.20 的右偏让「已唱」一侧饱和、未唱一侧渐亮，两侧都留出过渡带
+    val bias = 0.20f
     val text: AnnotatedString = buildAnnotatedString {
         frames.forEachIndexed { i, f ->
-            // edge 左侧（已唱）→ 亮，右侧（未唱）→ 暗，中间跨三四个字连续过渡
+            // edge 左侧（已唱）→ 亮，右侧（未唱）→ 暗，中间跨四五个字连续渐亮
             val b = smoothstep(((edge - centers[i]) / feather) + 0.5f + bias)
             pushStyle(
                 SpanStyle(

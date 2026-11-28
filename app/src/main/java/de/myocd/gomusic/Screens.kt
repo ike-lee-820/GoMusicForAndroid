@@ -349,6 +349,7 @@ fun MainScreen(vm: MainViewModel) {
                                     // MV 不在这里画：它是全屏覆盖层，由最外层单独组合，
                                     // 否则会被后面组合的 FullPlayer 盖住
                                     is Screen.Video -> Spacer(Modifier.size(0.dp))
+                                    is Screen.WebLink -> WebLinkPage(vm, s.url)
                                 }
                             }
                         } else {

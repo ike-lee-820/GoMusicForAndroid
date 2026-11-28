@@ -86,7 +86,7 @@ fun NmLoginSheet(vm: MainViewModel) {
                     Txt(vm.nmRiskTip, 12, color = go.on)
                     Spacer(Modifier.height(6.dp))
                     Txt(
-                        "在浏览器完成验证后回到这里重新点登录即可；验证码通常仍然有效，先别重新获取",
+                        "在应用内完成验证后回到这里重新点登录即可；验证码通常仍然有效，先别重新获取",
                         11, color = go.muted,
                     )
                     Spacer(Modifier.height(10.dp))

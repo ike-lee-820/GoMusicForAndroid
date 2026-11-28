@@ -69,6 +69,8 @@ sealed interface Screen {
     ) : Screen
     /** MV 播放：整屏视频页 */
     data class Video(val title: String, val url: String) : Screen
+    /** 26.11.88：应用内 WebView 页面（所有 HTTP(S) 链接统一走这里） */
+    data class WebLink(val url: String) : Screen
     /** 专辑简介：大图 / 标题 / 歌手 / 简介 */
     data class AlbumIntro(
         val id: Long, val title: String, val cover: String?, val artist: String = "",
@@ -558,14 +560,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         NmLog.note("登录风控提示：${nmRiskTip}（验证页=${if (nmRiskUrl != null) "有" else "无"}）")
     }
 
-    /** 用外部浏览器打开验证页（易盾滑块在真实浏览器里才能正常完成） */
+    /** 26.11.88：安全验证页改在应用内 WebView 打开，带固定 UA 与账号 cookie */
     fun openNmVerify() {
         val u = nmRiskUrl ?: return
-        val i = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching { app.startActivity(i) }
-            .onFailure { toast("无法打开验证页：${it.message}") }
+        openInternalLink(u)
     }
 
     /** 复制链接：方便在电脑浏览器里完成验证 */
@@ -5304,17 +5302,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             chooseSocialTab(2)
             ltJoin(room, inviter)
             toast("正在加入一起听房间 $room")
+            // 26.11.88：即便属于业务邀请，链接本身也在应用内 WebView 打开
+            openInternalLink(u)
             return
         }
-        // 普通网页链接：交给系统浏览器（带 NEW_TASK，ViewModel 没有 Activity）
-        val ok = runCatching {
-            app.startActivity(
-                Intent(Intent.ACTION_VIEW, Uri.parse(u))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-            true
-        }.getOrDefault(false)
-        if (!ok) toast("没有应用能打开这个链接")
+        // 26.11.88：所有网页链接统一在应用内 WebView 打开（固定 UA + 当前账号 cookie）
+        openInternalLink(u)
     }
 
     /** 找朋友：数字 uid 直接查资料，其余按昵称搜 */
@@ -5789,6 +5782,40 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             radioDetailText = t
             radioDetailPrograms = emptyList()
             radioDetailBusy = false
+        }
+    }
+
+
+    // ================= 26.11.88：应用内 WebView 统一入口 =================
+
+    /** 当前 WebView 页要用的 cookie；null = 还没取好，非 null（含空串）= 可以加载 */
+    var webCookie by mutableStateOf<String?>(null); private set
+
+    /**
+     * 打开任意 HTTP(S) 链接：先进应用内 WebView 页，再异步确定 cookie。
+     * 登录用当前账号 cookie，未登录用游客 cookie（/register/anonimous，10 分钟缓存）。
+     * 不在主线程发网络请求，所以 WebView 先建好、cookie 到位后再注入并 loadUrl。
+     */
+    fun openInternalLink(raw: String) {
+        val u = raw.trim()
+        if (u.isBlank()) return
+        webCookie = null
+        stack.add(Screen.WebLink(u))
+        viewModelScope.launch {
+            val ck = withContext(Dispatchers.IO) {
+                prefs.nmCookie.takeIf { it.isNotBlank() }
+                    ?: runCatching { Netease.anonCookie() }.getOrDefault(null)
+                    ?: ""
+            }
+            // 只给当前这个网页页用；若用户已经关掉就不再写
+            if (stack.lastOrNull() is Screen.WebLink) webCookie = ck
+        }
+    }
+
+    fun closeWebLink() {
+        if (stack.lastOrNull() is Screen.WebLink) {
+            stack.removeAt(stack.lastIndex)
+            webCookie = null
         }
     }
 

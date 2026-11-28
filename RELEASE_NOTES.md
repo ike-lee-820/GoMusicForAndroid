@@ -1,4 +1,4 @@
-# GoMusic 26.11.87
+# GoMusic 26.11.88
 
 ## ① 删除 log 输出
 
@@ -35,5 +35,21 @@
 
 推荐歌单 `/personalized`、每日推荐歌单 `/recommend/resource`、网友精选碟 `/top/playlist`、精品歌单 `/top/playlist/highquality`、推荐 MV `/personalized/mv`、最新 MV `/mv/first`。六路各自独立并发，一路失败不影响其余；歌单卡片点开详情页，MV 卡片取直链后进整屏视频页。
 
+> 说明：26.11.87 在 CI 阶段因 `SearchUi.kt` 少 import `LazyRow` 编译失败、未发布；该修复（补 import）已并入本版，本版是上述全部改动的一次性正式发布。
+
+## ⑥ 所有链接改在应用内 WebView 打开，UA / cookie 强制固定
+
+新增统一网页容器 `WebLinkPage`：`Screen.WebLink(url)` 进页面栈，`vm.openInternalLink(url)` 是**唯一**的网页打开入口，不再调系统浏览器。收口范围：
+
+- **私信里的链接**（`openChatLink`）：普通 URL 不再 `ACTION_VIEW` 丢给浏览器，全部进应用内 WebView
+- **验证码登录 / 安全验证**：风控 `-462` 返回的易盾验证页，`NmUi` 的「打开验证页」改走内部 WebView（文案同步改成「在应用内完成验证」）
+- **应用外更新下载页**：`UpdateUi` 的下载页链接也进 WebView；其中 APK 等下载类链接由 `DownloadListener` 交给系统下载/安装（下载文件不是「打开网页」）
+- **一起听分享链接**：仍按上一版解析 `roomId/inviterId/songId` 自动加入房间（业务动作保留），同时链接本身也在 WebView 内打开，满足「所有链接」；页面内跳转一律留在 WebView，只有 `tel:` / `weixin:` / `intent:` 等非 http(s) scheme 才交系统
+
+**UA 固定**（写死常量，且 `onPageStarted` 每次再设一遍防被改）：
+`com.netease.cloudmusic/9006035 (Linux; U; Android 14; zh_CN_#Hans; HEY2-W09; Build/HONORHEY2-W09; Cronet/72.0.3626.122)`
+
+**cookie 固定**：登录时用当前账号的 `prefs.nmCookie`；未登录时异步取游客 cookie（`/register/anonimous`，带 10 分钟缓存）。打开前先 `CookieManager.removeAllCookies` 清掉残留的其它账号，回调里再把 cookie 串逐条注入 `music.163.com` / `st.music.163.com` / `163.com` / `reg.163.com` / `mapi.myocd.de5.net` 等域并 `flush()`，最后才 `loadUrl`——全程不阻塞主线程。开启 JS、DOM Storage、第三方 cookie、混合内容，支持缩放；顶栏有返回/刷新/复制链接与加载进度，系统返回键先在网页内回退、退到头才关页。
+
 ## 说明与限制
-这轮附带的 30 个文档链接与全部接口 URL 资源解析服务均失败，接口参数按你贴在正文里的说明实现；`mapi.myocd.de5.net` 在沙盒返回 403，**未做实机联调**，以 CI 编译＋签名校验为准。电台接口是否需要登录、榜单/付费类接口是否对当前账号开放，取决于服务端；空结果会给出可重试提示而不是静默空白。
+这轮附带的 30 个文档链接与全部接口 URL 资源解析服务均失败，接口参数按你贴在正文里的说明实现；`mapi.myocd.de5.net` 在沙盒返回 403，**未做实机联调**，以 CI 编译＋签名校验为准。游客 cookie 依赖 `/register/anonimous` 可用，取不到时 WebView 会以空 cookie 打开并在页面里按服务端要求走自己的验证。

@@ -195,19 +195,10 @@ fun UpdateScreen(vm: MainViewModel) {
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
                     val u = vm.updateByBrowser()
-                    if (u != null) {
-                        runCatching {
-                            ctx.startActivity(
-                                android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(u),
-                                ),
-                            )
-                        }
-                    }
+                    if (u != null) vm.openInternalLink(u)
                 }
                 Spacer(Modifier.height(8.dp))
-                Txt("用浏览器打开下载页，经 v6.gh-proxy 加速", 11, color = go.muted)
+                Txt("在应用内打开下载页，经 v6.gh-proxy 加速", 11, color = go.muted)
             }
             Spacer(Modifier.height(18.dp))
             // 取消

@@ -408,19 +408,12 @@ object NmSocial {
             "orderNo" to "1",
         )
         if (songName.isNotBlank()) form["songName"] = songName
-        return if (coverBytes.isNullOrEmpty()) {
-            Netease.socialUpload(
-                "/voice/upload", emptyList(), form,
-                "songFile", fileName, bytes, mime,
-            )
-        } else {
-            // socialUpload 只支持一个文件字段；封面另发一次（按文档 imgFile 优先）
-            val ok = Netease.socialUpload(
-                "/voice/upload", emptyList(), form,
-                "songFile", fileName, bytes, mime,
-            )
-            ok
-        }
+        // socialUpload 只支持一个文件字段；imgFile 封面同传暂未实现，
+        // coverBytes 参数先保留给后续接入，本版只上传声音文件。
+        return Netease.socialUpload(
+            "/voice/upload", emptyList(), form,
+            "songFile", fileName, bytes, mime,
+        )
     }
 
     /** /voicelist/my/created：我创建的播客声音 / 播客 */

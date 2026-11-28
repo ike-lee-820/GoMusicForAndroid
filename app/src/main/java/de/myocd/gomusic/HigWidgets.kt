@@ -108,18 +108,6 @@ fun HigSearchBar(
     }
 }
 
-/** 26.11.58：搜索页 / 我的页右上角统一的设置入口，44dp 触控区 */
+/** 26.11.82：全应用唯一的设置入口，样式由 HigSettingAction 统一定义 */
 @Composable
-fun HigSettingsButton(vm: MainViewModel, go: GoColors) {
-    Box(
-        Modifier.size(44.dp).clip(CircleShape)
-            .background(go.surfaceHi)
-            .clickable { vm.showSettings = true },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            Icons.Outlined.Settings, "设置",
-            tint = go.on, modifier = Modifier.size(20.dp),
-        )
-    }
-}
+fun HigSettingsButton(vm: MainViewModel, go: GoColors) = HigSettingAction(vm, go)

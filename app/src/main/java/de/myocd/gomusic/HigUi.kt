@@ -32,10 +32,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Search
@@ -63,7 +67,7 @@ import androidx.compose.ui.unit.sp
 /**
  * 26.11.43：Apple HIG 信息架构。
  *
- * - 底栏 / 侧栏只剩三个：我的 / 主页 / 搜索
+ * - 26.11.82：底栏 / 侧栏五个，从左到右 播客 / 搜索 / 主页 / 社交 / 我的
  * - 主页内容不变（HomeTab 原样）
  * - 搜索页按用户给的 Apple Music 截图：一次输入聚合搜歌手/专辑/歌曲，
  *   Top Results 是混合纵向列表，分类 Tab 只切筛选、不重新请求
@@ -71,15 +75,18 @@ import androidx.compose.ui.unit.sp
  */
 
 // =====================================================================
-// 三 Tab 导航
+// 五 Tab 导航（26.11.82）
 // =====================================================================
 
 private data class Tab3Item(val id: Int, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val filled: androidx.compose.ui.graphics.vector.ImageVector)
 
+/** 用户指定的顺序：播客 / 搜索 / 主页 / 社交 / 我的（主页仍在正中） */
 private val TAB3_ITEMS = listOf(
-    Tab3Item(TAB3_MINE, "我的", Icons.Outlined.Person, Icons.Filled.Person),
-    Tab3Item(TAB3_HOME, "主页", Icons.Outlined.Home, Icons.Filled.Home),
+    Tab3Item(TAB3_PODCAST, "播客", Icons.Outlined.LibraryMusic, Icons.Filled.LibraryMusic),
     Tab3Item(TAB3_SEARCH, "搜索", Icons.Outlined.Search, Icons.Filled.Search),
+    Tab3Item(TAB3_HOME, "主页", Icons.Outlined.Home, Icons.Filled.Home),
+    Tab3Item(TAB3_SOCIAL, "社交", Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble),
+    Tab3Item(TAB3_MINE, "我的", Icons.Outlined.Person, Icons.Filled.Person),
 )
 
 @Composable
@@ -124,7 +131,8 @@ fun NavRail3(vm: MainViewModel, startInset: Dp = 0.dp) {
     val go = LocalGo.current
     Column(
         Modifier.fillMaxHeight().width(76.dp + startInset).background(go.surface)
-            .padding(start = startInset).navigationBarsPadding().padding(vertical = 8.dp),
+            .padding(start = startInset).navigationBarsPadding().padding(vertical = 8.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         TAB3_ITEMS.forEach { t ->
@@ -174,14 +182,8 @@ fun MinePage(vm: MainViewModel) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp),
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("我的", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = go.on)
-            Spacer(Modifier.weight(1f))
-            HigSettingsButton(vm, go)
-        }
+        // 26.11.82：与搜索 / 主页 / 私信 / 播客共用同一套大标题与设置按钮
+        HigPageHeader(vm, go, "我的")
         Spacer(Modifier.height(18.dp))
         MineSection("我的歌单", "查看全部", go, onMore = { detail = 3 }) {
             MineCardRow(vm.playlists.map { it.name to it.cover }, go) {
@@ -215,7 +217,7 @@ private fun MineSection(
 ) {
     Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = go.on)
+            HigSectionTitle(title, go)
             Spacer(Modifier.weight(1f))
             Text(
                 "$action ›", fontSize = 14.sp, color = go.primary,

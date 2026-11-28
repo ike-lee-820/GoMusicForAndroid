@@ -85,7 +85,7 @@ fun UpdateScreen(vm: MainViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(24.dp))
-            Txt("发现新版本", 22, weight = FontWeight.Bold)
+            HigSectionTitle("发现新版本", go)
             Spacer(Modifier.height(10.dp))
             // 版本对比
             Row(verticalAlignment = Alignment.CenterVertically) {

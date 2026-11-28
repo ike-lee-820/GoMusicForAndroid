@@ -140,10 +140,14 @@ data class DlStatus(
 /** 网易云搜索每次请求的条数（翻页步长） */
 const val NM_PAGE_SIZE = 20
 
-/** 26.11.43 起底栏只有三个：我的 / 主页 / 搜索 */
+/** 26.11.43 起底栏三个；26.11.82 扩成五个，展示顺序见 HigUi.TAB3_ITEMS */
 const val TAB3_MINE = 0
 const val TAB3_HOME = 1
 const val TAB3_SEARCH = 2
+/** 26.11.82：独立播客页（搜索页不搜播客） */
+const val TAB3_PODCAST = 3
+/** 26.11.82：私信页面的正式名称「社交」 */
+const val TAB3_SOCIAL = 4
 
 /** 播放器内部三页：封面 / 歌词 / 队列 */
 const val PLAYER_COVER = 0
@@ -4406,6 +4410,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } else {
                     delay(1000)
                 }
+                // 26.11.82：一起听主机把当前歌曲 / 进度写进房间；非主机时为空操作
+                publishListenState()
             }
         }
     }
@@ -4685,4 +4691,343 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             ))
         }
     }
+
+    // ================= 26.11.82：社交（私信） / 播客 / 一起听 =================
+
+    /** 应用内私聊分享的内容：歌曲 / 专辑 / 歌单 / 纯文本 */
+    data class ShareItem(
+        val kind: String,
+        val id: Long = 0,
+        val name: String = "",
+        val cover: String? = null,
+        val text: String = "",
+    )
+
+    /** /pl/count：私信未读 to 通知未读 */
+    var socialCounts by mutableStateOf(0 to 0); private set
+    var conversations by mutableStateOf<List<NmSocial.Conversation>>(emptyList()); private set
+    var socialBusy by mutableStateOf(false); private set
+    var socialError by mutableStateOf(""); private set
+    var chatUid by mutableLongStateOf(0L); private set
+    var chatName by mutableStateOf(""); private set
+    var chatAvatar by mutableStateOf<String?>(null); private set
+    var chatMessages by mutableStateOf<List<NmSocial.ChatMessage>>(emptyList()); private set
+    var chatBusy by mutableStateOf(false); private set
+    var chatBefore by mutableLongStateOf(0L); private set
+    var friendResults by mutableStateOf<List<NmSocial.UserBrief>>(emptyList()); private set
+    var friendBusy by mutableStateOf(false); private set
+    /** 全局待分享：播放器 / 歌曲菜单 / 专辑 / 歌单点「私聊分享」后弹出选人 */
+    var pendingShare by mutableStateOf<ShareItem?>(null); private set
+
+    /** 一起听：主机房间地址、客人加入的地址与最近一次拉到的状态 */
+    var listenHostUrl by mutableStateOf<String?>(null); private set
+    var listenGuestUrl by mutableStateOf<String?>(null); private set
+    var listenGuestState by mutableStateOf<RoomState?>(null); private set
+    private var listenJob: Job? = null
+
+    // ---------- 播客 ----------
+    var podcastQuery by mutableStateOf(""); private set
+    var podcastResults by mutableStateOf<List<NmSocial.Podcast>>(emptyList()); private set
+    var recentDj by mutableStateOf<List<NmSocial.Voice>>(emptyList()); private set
+    var myCreated by mutableStateOf<List<NmSocial.Podcast>>(emptyList()); private set
+    var podcastBusy by mutableStateOf(false); private set
+    var podcastDetail by mutableStateOf<NmSocial.Podcast?>(null); private set
+    var podcastVoices by mutableStateOf<List<NmSocial.Voice>>(emptyList()); private set
+    var voiceBusy by mutableStateOf(false); private set
+
+    fun setPodcastQuery(q: String) { podcastQuery = q }
+
+    /** 进入播客页：最近播放 + 我创建的播客；同一会话只拉一次 */
+    fun loadPodcastHome() {
+        if (recentDj.isNotEmpty() || myCreated.isNotEmpty()) return
+        viewModelScope.launch {
+            val (r, m) = withContext(Dispatchers.IO) {
+                NmSocial.recentDj(12) to NmSocial.myCreated()
+            }
+            recentDj = r
+            myCreated = m
+        }
+    }
+
+    /** 独立播客搜索，不进主搜索页 */
+    fun searchPodcasts(q: String) {
+        val key = q.trim()
+        podcastQuery = key
+        if (key.isBlank()) { podcastResults = emptyList(); return }
+        podcastBusy = true
+        viewModelScope.launch {
+            podcastResults = withContext(Dispatchers.IO) { NmSocial.podcastSearch(key) }
+            podcastBusy = false
+        }
+    }
+
+    fun openPodcast(id: Long) {
+        podcastDetail = NmSocial.Podcast(id = id)
+        podcastVoices = emptyList()
+        voiceBusy = true
+        viewModelScope.launch {
+            val (d, v) = withContext(Dispatchers.IO) {
+                NmSocial.podcastDetail(id) to NmSocial.voiceList(id)
+            }
+            podcastDetail = d
+            podcastVoices = v
+            voiceBusy = false
+        }
+    }
+
+    fun closePodcast() { podcastDetail = null; podcastVoices = emptyList() }
+
+    /** 播客内声音搜索 / 状态筛选（/voicelist/list/search） */
+    fun searchVoices(radioId: Long, name: String, displayStatus: String? = null) {
+        voiceBusy = true
+        viewModelScope.launch {
+            val v = withContext(Dispatchers.IO) {
+                NmSocial.voiceSearch(radioId = radioId, name = name, displayStatus = displayStatus)
+            }
+            podcastVoices = if (name.isBlank() && displayStatus == null) {
+                // 空条件时回到完整列表，避免搜索接口字段差异导致整页空白
+                withContext(Dispatchers.IO) { NmSocial.voiceList(radioId) }.ifEmpty { v }
+            } else v
+            voiceBusy = false
+        }
+    }
+
+    /** 播放播客声音：详情接口给直链，走设备音频那条路径不取音源 */
+    fun playVoice(v: NmSocial.Voice) {
+        voiceBusy = true
+        viewModelScope.launch {
+            val d = withContext(Dispatchers.IO) { NmSocial.voiceDetail(v.id) }
+            val url = d.audioUrl ?: v.audioUrl
+            voiceBusy = false
+            if (url.isNullOrBlank()) {
+                toast("这条声音暂时没有可播放的地址")
+            } else {
+                val s = Song(
+                    ssid = "voice${v.id}", title = v.name, artist = podcastDetail?.creator ?: "",
+                    album = podcastDetail?.name ?: "", coverUrl = v.cover ?: podcastDetail?.cover,
+                    source = "device", audioUri = url,
+                )
+                playSongs(listOf(s), 0)
+                openPlayer()
+            }
+        }
+    }
+
+    /** 声音排序 / 删除：只影响本人创建的播客，成功后刷新列表 */
+    fun sortVoice(radioId: Long, programId: Long, position: Int) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                NmSocial.voiceSort(radioId, programId, position)
+            }
+            toast(if (ok) "顺序已更新" else "排序失败（需要登录且为本人播客）")
+            if (ok) openPodcast(radioId)
+        }
+    }
+
+    fun deleteVoice(radioId: Long, ids: String) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { NmSocial.voiceDelete(ids) }
+            toast(if (ok) "已删除" else "删除失败（需要登录且为本人播客）")
+            if (ok) openPodcast(radioId)
+        }
+    }
+
+    /** 上传声音（文件字节由界面通过 SAF 读入） */
+    fun uploadVoice(
+        radioId: Long, categoryId: Long, secondCategoryId: Long,
+        description: String, songName: String, bytes: ByteArray, mime: String, fileName: String,
+    ) {
+        viewModelScope.launch {
+            toast("正在上传声音…")
+            val ok = withContext(Dispatchers.IO) {
+                NmSocial.voiceUpload(
+                    radioId, categoryId, secondCategoryId, description,
+                    bytes, mime, fileName, songName,
+                )
+            }
+            toast(if (ok) "上传成功" else "上传失败（检查登录 / 分类 id / 文件格式）")
+            if (ok) openPodcast(radioId)
+        }
+    }
+
+    // ---------- 私信 ----------
+
+    /** 会话列表 + 私信 / 通知未读数 */
+    fun loadSocial(force: Boolean = false) {
+        if (socialBusy) return
+        if (!force && conversations.isNotEmpty()) return
+        socialBusy = true
+        socialError = ""
+        viewModelScope.launch {
+            val (counts, list) = withContext(Dispatchers.IO) {
+                NmSocial.plCount() to NmSocial.conversations()
+            }
+            socialCounts = counts
+            conversations = list
+            socialBusy = false
+            if (list.isEmpty()) socialError = "登录后才能查看私信"
+        }
+    }
+
+    fun openChat(uid: Long, name: String, avatar: String?) {
+        chatUid = uid
+        chatName = name
+        chatAvatar = avatar
+        chatMessages = emptyList()
+        chatBefore = 0L
+        loadChat()
+    }
+
+    fun closeChat() { chatUid = 0L; chatMessages = emptyList() }
+
+    fun loadChat(more: Boolean = false) {
+        val uid = chatUid
+        if (uid <= 0) return
+        chatBusy = true
+        viewModelScope.launch {
+            val before = if (more) chatBefore else 0L
+            val list = withContext(Dispatchers.IO) { NmSocial.history(uid, 30, before) }
+            chatMessages = if (more) (list + chatMessages).distinctBy { it.id to it.time } else list
+            list.minOfOrNull { it.time }?.takeIf { it > 0 }?.let { chatBefore = it }
+            chatBusy = false
+        }
+    }
+
+    fun sendChatText(msg: String) {
+        val uid = chatUid
+        if (uid <= 0 || msg.isBlank()) return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                NmSocial.sendText(uid.toString(), msg)
+            }
+            toast(if (ok) "已发送" else "发送失败，请检查登录与网络")
+            if (ok) loadChat()
+        }
+    }
+
+    /** 资源私信：歌曲 / 专辑 / 歌单 */
+    fun sendChatResource(kind: String, id: Long, msg: String, uid: Long = chatUid) {
+        if (uid <= 0 || id <= 0) { toast("缺少分享目标或资源 id"); return }
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                when (kind) {
+                    "song" -> NmSocial.sendSong(uid.toString(), id, msg)
+                    "album" -> NmSocial.sendAlbum(uid.toString(), id, msg)
+                    "playlist" -> NmSocial.sendPlaylist(uid.toString(), id, msg)
+                    else -> NmSocial.sendText(uid.toString(), msg)
+                }
+            }
+            toast(if (ok) "已分享到私信" else "分享失败，请检查登录与网络")
+            if (ok && uid == chatUid) loadChat()
+        }
+    }
+
+    /** 找朋友：数字 uid 直接查资料，其余按昵称搜 */
+    fun searchFriends(q: String) {
+        val key = q.trim()
+        if (key.isBlank()) { friendResults = emptyList(); return }
+        friendBusy = true
+        viewModelScope.launch {
+            friendResults = withContext(Dispatchers.IO) {
+                val uid = key.toLongOrNull()
+                if (uid != null) listOfNotNull(NmSocial.userDetail(uid))
+                else NmSocial.searchUsers(key)
+            }
+            friendBusy = false
+        }
+    }
+
+    // ---------- 应用内私聊分享 ----------
+
+    fun beginShare(item: ShareItem) { pendingShare = item; loadSocial() }
+    fun cancelShare() { pendingShare = null }
+
+    /** 选中的会话：发对应类型的资源私信，然后进入该会话 */
+    fun shareTo(uid: Long, name: String, avatar: String?, msg: String) {
+        val item = pendingShare ?: return
+        pendingShare = null
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                when (item.kind) {
+                    "song" -> NmSocial.sendSong(uid.toString(), item.id, msg)
+                    "album" -> NmSocial.sendAlbum(uid.toString(), item.id, msg)
+                    "playlist" -> NmSocial.sendPlaylist(uid.toString(), item.id, msg)
+                    else -> NmSocial.sendText(uid.toString(), msg.ifBlank { item.text })
+                }
+            }
+            toast(if (ok) "已分享给 ${name}" else "分享失败，请检查登录与网络")
+            if (ok) openChat(uid, name, avatar)
+        }
+    }
+
+    // ---------- 一起听 ----------
+
+    /** 主机模式：起本地房间，把地址通过私信发给对方 */
+    fun startListenHost(peerUid: Long) {
+        val url = ListenTogetherHost.start()
+        if (url == null) { toast("无法创建房间，请检查 WiFi"); return }
+        listenHostUrl = url
+        publishListenState()
+        if (peerUid > 0) {
+            viewModelScope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    NmSocial.sendText(peerUid.toString(), "【一起听·主机模式】加入我的房间：$url")
+                }
+                toast(if (ok) "房间已创建，邀请已私信发送" else "房间已创建，但邀请发送失败")
+            }
+        } else toast("房间已创建：$url")
+    }
+
+    fun stopListenHost() {
+        ListenTogetherHost.stop()
+        listenHostUrl = null
+    }
+
+    /** 客人：填地址加入，每 2 秒拉一次主机状态 */
+    fun joinListen(url: String) {
+        val u = url.trim()
+        if (u.isBlank()) { toast("请填写房间地址"); return }
+        listenJob?.cancel()
+        listenGuestUrl = u
+        listenJob = viewModelScope.launch {
+            toast("正在加入房间…")
+            while (listenGuestUrl != null) {
+                val st = withContext(Dispatchers.IO) { ListenTogetherGuest.fetch(u) }
+                listenGuestState = st
+                delay(2000)
+            }
+        }
+    }
+
+    fun leaveListen() {
+        listenJob?.cancel()
+        listenGuestUrl = null
+        listenGuestState = null
+    }
+
+    /** 主机每轮把当前歌曲 / 进度 / 播放状态写进房间 */
+    private fun publishListenState() {
+        if (ListenTogetherHost.roomUrl == null) return
+        val s = currentSong
+        ListenTogetherHost.publish(
+            RoomState(
+                title = s?.title.orEmpty(), artist = s?.artist.orEmpty(),
+                ssid = s?.ssid.orEmpty(),
+                position = positionMs, duration = durationMs, playing = isPlaying,
+            )
+        )
+    }
+
+    /** 客人点「播放同名歌曲」：在本机曲库里找同名歌 */
+    fun playListenSong() {
+        val st = listenGuestState ?: return
+        val all = songs + nmKnown.values + snapshots.values
+        val hit = all.firstOrNull {
+            it.title.equals(st.title, ignoreCase = true) &&
+                (st.artist.isBlank() || it.artist.contains(st.artist, ignoreCase = true))
+        }
+        if (hit != null) { playSongs(listOf(hit), 0); openPlayer() }
+        else toast("本机曲库里没找到「${st.title}」")
+    }
+
 }

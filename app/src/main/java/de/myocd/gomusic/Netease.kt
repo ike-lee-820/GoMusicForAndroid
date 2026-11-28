@@ -2327,6 +2327,54 @@ object Netease {
         )
     }
 
+    // ================= 26.11.82：私信 / 播客通用桥 =================
+    /**
+     * 私信、通知、播客这一批接口都走同一套 GET（自动带 cookie / timestamp /
+     * randomCNIP / unblock）。get 是私有的，这里给 NmSocial 一个公开入口，
+     * 不复制一遍 URL 拼接与重试逻辑。
+     */
+    fun socialGet(path: String, vararg params: Pair<String, String>): JsonObject =
+        get(path, *params)
+
+    /** 通用 multipart 上传：声音文件 / 封面共用（字段名由调用方给） */
+    fun socialUpload(
+        path: String,
+        query: List<Pair<String, String>> = emptyList(),
+        form: Map<String, String> = emptyMap(),
+        fileField: String,
+        fileName: String,
+        bytes: ByteArray,
+        mime: String,
+    ): Boolean {
+        if (bytes.isEmpty()) return false
+        val type = runCatching { mime.toMediaType() }
+            .getOrDefault("application/octet-stream".toMediaType())
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            form.forEach { (k, v) -> addFormDataPart(k, v) }
+            addFormDataPart(fileField, fileName, bytes.toRequestBody(type))
+        }.build()
+        val sb = StringBuilder(NM_BASE).append(path)
+        query.forEach { (k, v) ->
+            sb.append(if (sb.indexOf('?') < 0) '?' else '&')
+                .append(k).append('=').append(enc(v))
+        }
+        sb.append(if (sb.indexOf('?') < 0) '?' else '&')
+            .append("timestamp=").append(System.currentTimeMillis())
+        if (cookie.isNotBlank()) sb.append("&cookie=").append(encCookie(cookie))
+        val url = sb.toString()
+        return try {
+            val req = Request.Builder().url(url).post(body).build()
+            Api.client.newCall(req).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.req(url); NmLog.res(url, r.code, t)
+                val el = runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject
+                val ok = r.isSuccessful && (el == null || el.code() == 200 || el.code() == -1)
+                NmLog.note("上传 $path -> ${if (ok) "成功" else "失败 HTTP ${r.code}"}")
+                ok
+            }
+        } catch (e: Exception) { NmLog.err(url, e); false }
+    }
+
     fun ugcAlbum(id: Long): UgcInfo = ugc("/ugc/album/get", id)
     fun ugcArtist(id: Long): UgcInfo = ugc("/ugc/artist/get", id)
 

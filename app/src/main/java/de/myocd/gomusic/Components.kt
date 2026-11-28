@@ -610,7 +610,7 @@ fun GoSheet(
             IconBtn(Icons.AutoMirrored.Outlined.ArrowBack, "返回", size = 40.dp) { onDismiss() }
             if (title.isNotEmpty()) {
                 HS(6)
-                Txt(title, 17, weight = FontWeight.SemiBold)
+                Txt(title, HigType.NavTitle.value.toInt(), weight = FontWeight.SemiBold)
             }
         }
     }

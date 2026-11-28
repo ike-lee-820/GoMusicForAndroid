@@ -85,6 +85,7 @@ import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Album
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.CloudQueue
@@ -319,6 +320,8 @@ fun MainScreen(vm: MainViewModel) {
                     if (top == null) when (vm.tab3) {
                         TAB3_MINE -> MinePage(vm)
                         TAB3_SEARCH -> SearchPage(vm)
+                        TAB3_PODCAST -> PodcastPage(vm)
+                        TAB3_SOCIAL -> SocialPage(vm)
                         else -> HomeContent(vm, listStates)
                     }
                     AnimatedContent(
@@ -384,6 +387,8 @@ fun MainScreen(vm: MainViewModel) {
     if (vm.showSurround) SurroundSheet(vm)
         if (vm.showRecorder) RecorderScreen(vm)
         if (vm.showRecHistory) RecorderHistoryScreen(vm)
+        // 26.11.82：歌曲 / 专辑 / 歌单的「私聊分享」选人弹层（最外层，盖住播放器）
+        if (vm.pendingShare != null) ShareTargetSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
 
         // MV：放在所有内容之后组合，才在最上层。
@@ -585,11 +590,11 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 首页不显示搜索栏：首页内容都是推荐位，不需要搜索
                 if (vm.tab == TAB_HOME) {
-                    Txt(titles[vm.tab], 20, Modifier.weight(1f), FontWeight.Bold)
+                    HigPageTitle(titles[vm.tab], go, Modifier.weight(1f))
                 } else {
                     // weight 必须写成具名参数：Txt 的第 3 个位置是 modifier，
                     // 直接传 FontWeight 会被当成 modifier 而报类型不符
-                    Txt(titles[vm.tab], 20, weight = FontWeight.Bold)
+                    HigPageTitle(titles[vm.tab], go)
                     HS(12)
                     SearchField(
                         vm.query, { vm.query = it }, hints[vm.tab],
@@ -598,7 +603,7 @@ fun HomeContent(vm: MainViewModel, listStates: List<LazyListState>) {
                     )
                 }
                 HS(4)
-                IconBtn(Icons.Outlined.Settings, "设置", size = 44.dp) { vm.showSettings = true }
+                HigSettingsButton(vm, go)
             }
             VS(8)
             if (vm.offline) OfflineBar(vm)
@@ -1387,7 +1392,7 @@ fun ExportPlaylistSheet(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            Txt("导出歌单", 16, weight = FontWeight.SemiBold)
+            HigSectionTitle("导出歌单", go)
             VS(4)
             Txt("可以勾选多个，一次导出；复制后发给别人，对方用「导入」粘贴", 12, color = go.muted)
             VS(12)
@@ -1528,6 +1533,14 @@ fun ActionRow(vm: MainViewModel, songs: List<Song>, name: String, cover: String?
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         GoButton("下载", icon = Icons.Outlined.Download) { vm.download(songs) }
         GoButton("分享", icon = Icons.Outlined.Share) { shareText(ctx, "$name $link") }
+        // 26.11.82：专辑页按专辑 id 分享；本地分组没有 id 时退化为文本私信
+        GoButton("私聊分享", icon = Icons.Outlined.ChatBubbleOutline) {
+            val aid = songs.firstOrNull { it.nmAlbumId > 0 }?.nmAlbumId ?: 0L
+            if (aid > 0) vm.beginShare(MainViewModel.ShareItem("album", aid, name, cover))
+            else vm.beginShare(
+                MainViewModel.ShareItem("text", name = name, cover = cover, text = name),
+            )
+        }
         GoButton("加入歌单", icon = Icons.AutoMirrored.Outlined.PlaylistAdd) { vm.pick(songs.map { it.ssid }, name, cover) }
         GoButton("新建歌单", icon = Icons.Outlined.Add) {
             vm.createPlaylist(name, songs.map { it.ssid }, cover)
@@ -1685,7 +1698,7 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    Txt(p.name, 20, weight = FontWeight.Bold)
+                    HigPageTitle(p.name, go)
                     Txt("${songs.size} 首", 12, color = go.muted)
                     VS(12)
                     Row(Modifier.fillMaxWidth()) {
@@ -1697,6 +1710,12 @@ fun PlaylistPage(vm: MainViewModel, s: Screen.PlaylistPage) {
                             "下载全部", icon = Icons.Outlined.Download,
                             enabled = songs.isNotEmpty() && !vm.nmSyncing,
                         ) { pickingQuality = true }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GoButton("私聊分享歌单", icon = Icons.Outlined.ChatBubbleOutline) {
+                        if (p.nmId > 0) vm.beginShare(
+                            MainViewModel.ShareItem("playlist", p.nmId, p.name, p.cover),
+                        ) else vm.toast("本地歌单没有云端 id，无法发送歌单私信")
                     }
                     Txt(
                         "下载会用当前选中的音质；网易云歌曲若没有该档位会自动降到可用的最高档，" +
@@ -3385,7 +3404,7 @@ fun SettingsSheet(vm: MainViewModel) {
     GoSheet({ vm.showSettings = false }, "设置") {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
             // ---------- 外观（26.11.42） ----------
-            Txt("外观", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("外观", LocalGo.current)
             VS(8)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -3406,7 +3425,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 视频录制 ----------
-            Txt("视频录制", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("视频录制", LocalGo.current)
             VS(8)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
@@ -3423,7 +3442,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 后台播放 ----------
-            Txt("后台播放", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("后台播放", LocalGo.current)
             VS(8)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -3462,7 +3481,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 连接 ----------
-            Txt("连接", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("连接", LocalGo.current)
             VS(8)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -3479,7 +3498,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 网易云曲库 ----------
-            Txt("网易云曲库", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("网易云曲库", LocalGo.current)
             VS(8)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
@@ -3531,7 +3550,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 后台播放 ----------
-            Txt("后台播放", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("后台播放", LocalGo.current)
             VS(8)
             Txt("其他应用播放声音或来电时，本应用是否暂停", 12, color = go.muted)
             VS(8)
@@ -3556,7 +3575,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 主题色 ----------
-            Txt("主题色", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("主题色", LocalGo.current)
             VS(12)
             GoButton("跟随封面", primary = vm.fixedTheme == null) { vm.setTheme(null) }
             VS(12)
@@ -3587,7 +3606,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 下载 ----------
-            Txt("下载", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("下载", LocalGo.current)
             VS(8)
             Txt("保存位置：${LocalLib.dirText()}（音乐 / 封面 / 歌词 / 歌曲信息）", 12, color = go.muted)
             VS(8)
@@ -3598,7 +3617,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 检查更新 ----------
-            Txt("检查更新", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("检查更新", LocalGo.current)
             VS(8)
             val up = vm.updateInfo
             Txt(
@@ -3628,7 +3647,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 字体 ----------
-            Txt("字体", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("字体", LocalGo.current)
             VS(8)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -3670,7 +3689,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 歌词排版（26.11.49：与全局字体完全独立） ----------
-            Txt("歌词排版", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("歌词排版", LocalGo.current)
             VS(8)
             Txt("仅作用于歌词页。同一句折行行距略微加大，不同歌词行之间的间距不变", 11, color = go.muted)
             VS(10)
@@ -3738,7 +3757,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(16)
 
             // ---------- 简繁转换 ----------
-            Txt("简繁转换", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("简繁转换", LocalGo.current)
             VS(8)
             val zhOpts = listOf(
                 ZhConvert.TO_SIMPLE to "转换成简体",
@@ -3773,7 +3792,7 @@ fun SettingsSheet(vm: MainViewModel) {
             VS(8)
 
             // ---------- 存储 ----------
-            Txt("存储", 15, weight = FontWeight.SemiBold)
+            HigSectionTitle("存储", LocalGo.current)
             VS(8)
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(go.surfaceHi)
@@ -3871,7 +3890,7 @@ fun SurroundSheet(vm: MainViewModel) {
                 .padding(horizontal = 20.dp, vertical = 12.dp)
                 .navigationBarsPadding(),
         ) {
-            Txt("3D 环绕", 18, color = go.on)
+            HigSectionTitle("3D 环绕", go)
             Spacer(Modifier.height(10.dp))
             Txt(
                 "独立挂在解码后的 PCM 上，不使用均衡器频段增益；均衡器全关也生效。",

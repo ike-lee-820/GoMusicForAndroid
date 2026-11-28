@@ -83,7 +83,7 @@ fun SearchPage(vm: MainViewModel) {
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("搜索", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = go.on)
+                HigPageTitle("搜索", go)
                 Spacer(Modifier.weight(1f))
                 HigSettingsButton(vm, go)
             }
@@ -304,14 +304,14 @@ private fun SectionTitle(
         Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = go.on)
+        HigSectionTitle(title, go)
         Spacer(Modifier.weight(1f))
         if (more != null && onMore != null) {
             Row(
                 Modifier.clickable { onMore() },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(more, fontSize = 13.sp, color = go.primary)
+                Text(more, fontSize = HigType.Action.value.sp, color = go.primary)
                 Icon(Icons.Outlined.ChevronRight, null, tint = go.primary, modifier = Modifier.size(16.dp))
             }
         }
@@ -635,6 +635,16 @@ private fun SongRow(vm: MainViewModel, go: GoColors, s: Song) {
                         text = { Text("下载") },
                         onClick = { menu = false; vm.download(listOf(s)) },
                     )
+                    DropdownMenuItem(
+                        text = { Text("私聊分享") },
+                        onClick = {
+                            menu = false
+                            val nid = s.nmId.takeIf { it > 0 } ?: neteaseIdOf(s.ssid) ?: 0L
+                            if (nid > 0) vm.beginShare(
+                                MainViewModel.ShareItem("song", nid, s.title, s.coverUrl),
+                            ) else vm.toast("这首歌没有网易云 id，无法发送音乐私信")
+                        },
+                    )
                 }
             }
         }
@@ -687,12 +697,7 @@ private fun RecentSearchList(vm: MainViewModel, go: GoColors) {
                 Modifier.fillMaxWidth().padding(bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "最近搜索",
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = go.on,
-                )
+                HigSectionTitle("最近搜索", go)
                 Spacer(Modifier.weight(1f))
                 Text(
                     "清除", fontSize = 15.sp, color = accent,
@@ -784,6 +789,16 @@ private fun RecentRow(vm: MainViewModel, go: GoColors, it: RecentItem) {
                             onClick = {
                                 menu = false
                                 vm.pick(listOf(it.ssid), it.title, it.cover)
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("私聊分享") },
+                            onClick = {
+                                menu = false
+                                val nid = neteaseIdOf(it.ssid) ?: 0L
+                                if (nid > 0) vm.beginShare(
+                                    MainViewModel.ShareItem("song", nid, it.title, it.cover),
+                                ) else vm.toast("这首歌没有网易云 id，无法发送音乐私信")
                             },
                         )
                         DropdownMenuItem(

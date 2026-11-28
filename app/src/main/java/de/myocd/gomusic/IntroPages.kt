@@ -169,7 +169,7 @@ private fun InfoCard(title: String, body: @Composable () -> Unit) {
             .padding(14.dp),
     ) {
         if (title.isNotBlank()) {
-            Txt(title, 15, weight = FontWeight.SemiBold, color = go.primary)
+            HigSectionTitle(title, go)
             Spacer(Modifier.height(8.dp))
         }
         body()

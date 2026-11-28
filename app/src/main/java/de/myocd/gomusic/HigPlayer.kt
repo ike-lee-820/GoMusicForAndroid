@@ -681,6 +681,20 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
             add(MoreRow("分享歌曲", Icons.Outlined.Share) {
                 shareText(ctx, "${s.title} - ${s.artist} ${vm.songLink(s.ssid)}")
             })
+            // 26.11.82：应用内私聊分享（歌曲 / 专辑 / 歌单）
+            add(MoreRow("私聊分享歌曲", Icons.Outlined.ChatBubbleOutline) {
+                val nid = s.nmId.takeIf { it > 0 } ?: neteaseIdOf(s.ssid) ?: 0L
+                if (nid > 0) vm.beginShare(
+                    MainViewModel.ShareItem("song", nid, s.title, s.coverUrl),
+                ) else vm.toast("这首歌没有网易云 id，无法发送音乐私信")
+            })
+            if (s.nmAlbumId > 0) {
+                add(MoreRow("私聊分享专辑", Icons.Outlined.Album) {
+                    vm.beginShare(
+                        MainViewModel.ShareItem("album", s.nmAlbumId, s.album, s.coverUrl),
+                    )
+                })
+            }
             add(MoreRow("分享歌词…", Icons.Outlined.ChatBubbleOutline) {
                 shareText(ctx, lyrics.ifBlank { "暂无歌词" })
             })
@@ -1648,7 +1662,7 @@ private fun QueueContent(vm: MainViewModel, go: GoColors, modifier: Modifier = M
         }
         Spacer(Modifier.height(18.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("继续播放", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = go.on)
+            HigSectionTitle("继续播放", go)
             Spacer(Modifier.weight(1f))
             var confirmClear by remember { mutableStateOf(false) }
             Text(

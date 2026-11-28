@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -278,10 +279,9 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
                 )
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Txt(
-                        titleWithSource(s.title, SRC_NETEASE), 18,
-                        modifier = Modifier.clickable { openIntro() },
-                        weight = FontWeight.Bold, maxLines = 2,
+                    HigSectionTitle(
+                        titleWithSource(s.title, SRC_NETEASE), go,
+                        Modifier.clickable { openIntro() },
                     )
                     Spacer(Modifier.height(4.dp))
                     // 歌手页副标题留空（原来写「网易云歌手」）；专辑页显示歌手名
@@ -291,13 +291,27 @@ fun NmSongsPage(vm: MainViewModel, s: Screen.NmSongs) {
                 }
             }
             Spacer(Modifier.height(12.dp))
-            Row {
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
                 GoButton("播放全部", primary = true, enabled = vm.nmPageSongs.isNotEmpty()) {
                     vm.playSongs(vm.nmPageSongs, 0)
                 }
                 Spacer(Modifier.width(8.dp))
                 GoButton("下载全部", enabled = vm.nmPageSongs.isNotEmpty()) {
                     vm.download(vm.nmPageSongs)
+                }
+                Spacer(Modifier.width(8.dp))
+                // 26.11.82：云端专辑 / 歌单直接按 id 私聊分享；歌手页用文本
+                GoButton("私聊分享") {
+                    when (s.kind) {
+                        "album", "playlist" -> vm.beginShare(
+                            MainViewModel.ShareItem(s.kind, s.id, s.title, cover),
+                        )
+                        else -> vm.beginShare(
+                            MainViewModel.ShareItem(
+                                "text", name = s.title, cover = cover, text = s.title,
+                            ),
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(8.dp))

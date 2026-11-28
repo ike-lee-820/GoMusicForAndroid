@@ -1906,7 +1906,9 @@ object Netease {
                 val subscribed = o.flag("subscribed") ||
                     (creatorId != null && creatorId != uid)
                 val special = o.num("specialType") ?: 0L
-                // 「我喜欢的音乐」specialType=5，云端同样不允许删 / 改名
+                // 26.11.71：specialType=5 是「我喜欢的音乐」，合并进本地「我的喜欢」
+                // 而不是当成普通歌单再下载一份；名字兜底防接口不给 specialType。
+                val cloudLike = special == 5L || name == "我喜欢的音乐"
                 val readOnly = subscribed || special > 0L
                 val count = (o.num("trackCount") ?: 0L).toInt()
                 val stamp = "${o.num("updateTime") ?: 0L}-$count"
@@ -1921,6 +1923,7 @@ object Netease {
                     readOnly = readOnly,
                     cloudStamp = stamp,
                     trackCount = count,
+                    cloudLike = cloudLike,
                 )
             }
             NmLog.note("我的歌单第 $page 页返回 ${arr.size} 个，累计 ${out.size} 个")
@@ -1981,6 +1984,45 @@ object Netease {
         val ok = r.code() == 200
         NmLog.note("歌单加歌 pid=$pid ids=${trackIds.size} -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
         return ok
+    }
+
+    /**
+     * 26.11.71：把一批歌曲加进「我喜欢的音乐」歌单。
+     *
+     * 这个歌单虽然 specialType=5，但 /playlist/tracks?op=add 对它是可用的；
+     * 一次别拼太多 id，按 50 个一批发。整批失败时退到 /like 单曲接口，
+     * 避免某个 id 不被接受导致整批红心都加不上。
+     */
+    fun likeAdd(pid: Long, ids: List<Long>): Int {
+        if (pid <= 0L || ids.isEmpty()) return 0
+        var ok = 0
+        ids.distinct().chunked(50).forEach { batch ->
+            if (playlistAdd(pid, batch)) ok += batch.size
+            else batch.forEach { if (likeSong(it, true)) ok++ }
+        }
+        NmLog.note("上传红心 $ok/${ids.size} 首 pid=$pid")
+        return ok
+    }
+
+    /** 从「我喜欢的音乐」批量移除；失败同样退到 /like 单曲接口 */
+    fun likeRemove(pid: Long, ids: List<Long>): Int {
+        if (pid <= 0L || ids.isEmpty()) return 0
+        var ok = 0
+        ids.distinct().chunked(50).forEach { batch ->
+            if (playlistDel(pid, batch)) ok += batch.size
+            else batch.forEach { if (likeSong(it, false)) ok++ }
+        }
+        NmLog.note("移除红心 $ok/${ids.size} 首 pid=$pid")
+        return ok
+    }
+
+    /** /like?id=&like=true|false：红心歌单的单曲写入兜底 */
+    fun likeSong(id: Long, like: Boolean): Boolean {
+        if (id <= 0L) return false
+        val r = runCatching {
+            get("/like", "id" to id.toString(), "like" to like.toString(), tries = 1)
+        }.getOrNull() ?: return false
+        return r.code() == 200
     }
 
     /** 从网易云歌单删歌（/playlist/tracks?op=del） */

@@ -283,12 +283,22 @@ class Prefs(ctx: Context) {
         get() = sp.getInt("theme_mode", 1)
         set(v) { sp.edit().putInt("theme_mode", v.coerceIn(0, 2)).apply() }
 
-    /** 「我的喜欢」本地集合（ssid），未登录也能用；与网易云「我喜欢的音乐」歌单互不覆盖 */
+    /** 「我的喜欢」本地集合（ssid）：与网易云「我喜欢的音乐」歌单合并后的结果 */
     var favorites: Set<String>
         get() = runCatching {
             json.decodeFromString<List<String>>(sp.getString("favorites", "[]")!!).toSet()
         }.getOrDefault(emptySet())
         set(v) { sp.edit().putString("favorites", json.encodeToString(v.toList())).apply() }
+
+    /** 26.11.71：网易云「我喜欢的音乐」歌单 id，点星标 / 批量删除时回写云端 */
+    var nmLikePid: Long
+        get() = sp.getLong("nm_like_pid", 0L)
+        set(v) { sp.edit().putLong("nm_like_pid", v).apply() }
+
+    /** 合并指纹：云端歌单更新时间+曲目数 与 本地喜欢集合的组合，没变就跳过自动合并 */
+    var nmLikeStamp: String
+        get() = sp.getString("nm_like_stamp", "").orEmpty()
+        set(v) { sp.edit().putString("nm_like_stamp", v).apply() }
 
     /** 搜索记录（最近在前），提交时才写，去重后最多 20 条 */
     var searchHistory: List<String>

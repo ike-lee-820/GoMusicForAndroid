@@ -113,6 +113,8 @@ data class Group(
     /** 云端内容指纹：updateTime + trackCount，用于跳过无变化的歌单 */
     val cloudStamp: String? = null,
     val trackCount: Int = 0,
+    /** 26.11.71：specialType=5 的「我喜欢的音乐」，不与本地歌单并列，合并进「我的喜欢」 */
+    val cloudLike: Boolean = false,
 )
 
 data class PickRequest(val ssids: List<String>, val name: String, val cover: String?)
@@ -2304,15 +2306,40 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         prefs.themeMode = themeMode
     }
 
-    /** 「我的喜欢」本地集合：星星按钮写入，未登录也能用 */
+    /**
+     * 26.11.71：「我的喜欢」＝ 本地红心 ∪ 网易云「我喜欢的音乐」歌单。
+     * 星星按钮、批量移除、清空都同时回写云端，保证下次同步不会把删掉的歌拉回来。
+     */
     var favorites by mutableStateOf(prefs.favorites); private set
     fun isFavorite(ssid: String?): Boolean = ssid != null && ssid in favorites
+
+    /** 把本地红心的改动推到网易云「我喜欢的音乐」歌单；pid 未知时先触发一次静默同步 */
+    private fun syncFavToCloud(ssids: Collection<String>, add: Boolean) {
+        if (ssids.isEmpty() || !canSyncCloud()) return
+        val pid = prefs.nmLikePid
+        if (pid <= 0L) {
+            syncNmPlaylists(quiet = true)
+            return
+        }
+        val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            Netease.cookie = prefs.nmCookie
+            val ok = if (add) Netease.likeAdd(pid, ids) else Netease.likeRemove(pid, ids)
+            withContext(Dispatchers.Main) {
+                if (ok == 0) toast("网易云红心未同步成功（本地已改）")
+            }
+        }
+    }
+
     fun toggleFavorite(ssid: String?): Boolean {
         if (ssid == null) return false
-        val next = if (ssid in favorites) favorites - ssid else favorites + ssid
+        val add = ssid !in favorites
+        val next = if (add) favorites + ssid else favorites - ssid
         favorites = next
         prefs.favorites = next
-        return ssid in next
+        syncFavToCloud(listOf(ssid), add)
+        return add
     }
 
     /** 26.11.49：我的喜欢批量移除 */
@@ -2321,12 +2348,28 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         val next = favorites - ids.toSet()
         favorites = next
         prefs.favorites = next
+        syncFavToCloud(ids, add = false)
     }
 
-    /** 26.11.49：我的喜欢清空 */
+    /**
+     * 26.11.49 / 26.11.71：我的喜欢清空（操作前有二次确认）。
+     * 云端红心歌单也整张清空，否则下次同步又把云端那些歌合并回本地，
+     * 用户会看到「清空了但又回来了」。
+     */
     fun clearFavorites() {
         favorites = emptySet()
         prefs.favorites = emptySet()
+        prefs.nmLikeStamp = ""
+        val pid = prefs.nmLikePid
+        if (pid <= 0L || !canSyncCloud()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            Netease.cookie = prefs.nmCookie
+            val ids = runCatching { Netease.playlistSongs(pid) }
+                .getOrDefault(emptyList<Song>())
+                .mapNotNull { neteaseIdOf(it.ssid) }
+                .filter { it > 0L }
+            if (ids.isNotEmpty()) Netease.likeRemove(pid, ids)
+        }
     }
 
     /** 搜索记录（最近在前），提交时才写 */
@@ -3387,6 +3430,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         if (prefs.nmCookie.isBlank()) { if (!quiet) toast("请先登录网易云"); return }
         if (nmSyncing) return
         nmSyncing = true
+        Netease.cookie = prefs.nmCookie
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 var uid = prefs.nmUid
@@ -3401,15 +3445,29 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     return@launch
                 }
-                val mine = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
-                if (mine.isEmpty()) {
+                val cloudAll = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
+                if (cloudAll.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         nmSyncing = false
                         if (!quiet) toast("没有取到云端歌单，请检查登录态")
                     }
                     return@launch
                 }
+                // 26.11.71：「我喜欢的音乐」不与本地歌单并列，单独合并进「我的喜欢」
+                val likeGroup = cloudAll.firstOrNull { it.cloudLike }
+                val mine = cloudAll.filterNot { it.cloudLike }
+                if (likeGroup != null) prefs.nmLikePid = likeGroup.nmId
                 val local = withContext(Dispatchers.Main) { playlists.toMutableList() }
+                // 清掉 26.11.70 把它当普通收藏歌单下载下来的那一份，避免重复显示
+                val likePid = likeGroup?.nmId ?: prefs.nmLikePid
+                if (likePid > 0L) {
+                    local.removeAll {
+                        it.nmId == likePid ||
+                            (it.cloudReadOnly &&
+                                (it.cloudBase == "我喜欢的音乐" ||
+                                    it.name.removeSuffix(CLOUD_TAG) == "我喜欢的音乐"))
+                    }
+                }
                 val existing = local.filter { it.nmId > 0L }.associateBy { it.nmId }
                 // 每批 4 张并发：既不会一次打出几十个请求挤占播放链路，
                 // 也不会像以前那样一张一张串行等，几十张歌单同步要几分钟。
@@ -3432,6 +3490,35 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 var added = 0
                 var updated = 0
                 var skipped = 0
+
+                // 26.11.71：云端「我喜欢的音乐」与本地「我的喜欢」合并。
+                // ① 云端曲目并入本地红心集合；② 本地多出来的网易云歌曲批量上传云端。
+                // 指纹相同时自动同步跳过，手动同步强制重跑。
+                val favBefore = withContext(Dispatchers.Main) { favorites }
+                val likeStamp = likeGroup?.cloudStamp.orEmpty()
+                val likeKey = "$likeStamp|${favBefore.sorted().joinToString(",").hashCode()}"
+                var likedFromCloud = 0
+                var likedToCloud = 0
+                var mergedFav: Set<String> = favBefore
+                var favChanged = false
+                if (likeGroup != null && (!quiet || prefs.nmLikeStamp != likeKey)) {
+                    val likeSongs = runCatching { Netease.playlistSongs(likeGroup.nmId) }
+                        .getOrDefault(emptyList<Song>())
+                    all.addAll(likeSongs)
+                    val cloudSsids = likeSongs.map { it.ssid }.toSet()
+                    mergedFav = favBefore + cloudSsids
+                    favChanged = true
+                    likedFromCloud = mergedFav.size - favBefore.size
+                    val up = (mergedFav - cloudSsids)
+                        .mapNotNull { neteaseIdOf(it) }
+                        .filter { it > 0L }
+                    if (up.isNotEmpty()) likedToCloud = Netease.likeAdd(likeGroup.nmId, up)
+                    prefs.nmLikeStamp =
+                        "$likeStamp|${mergedFav.sorted().joinToString(",").hashCode()}"
+                } else if (likeGroup != null) {
+                    NmLog.note("红心歌单指纹未变，跳过合并 pid=${likeGroup.nmId}")
+                }
+
                 for ((g, songs) in fetched) {
                     if (songs != null) all.addAll(songs)
                     val ids = songs?.map { it.ssid }
@@ -3485,11 +3572,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val readOnlyCount = mine.count { it.readOnly }
                 withContext(Dispatchers.Main) {
                     rememberSongs(all)
+                    if (favChanged) {
+                        favorites = mergedFav
+                        prefs.favorites = mergedFav
+                    }
                     savePl(local)
                     nmSyncing = false
                     if (!quiet) toast(
                         "同步完成：云端 ${mine.size} 张（收藏 $readOnlyCount），" +
-                            "新增 $added / 更新 $updated / 未变 $skipped，上传 $uploaded 个"
+                            "新增 $added / 更新 $updated / 未变 $skipped，上传 $uploaded 个；" +
+                            "红心合并 +$likedFromCloud / 上传 $likedToCloud"
                     )
                 }
                 // 云端排序接口只接受本人创建的歌单，收藏歌单传过去会整批失败

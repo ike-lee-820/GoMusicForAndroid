@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -676,7 +677,13 @@ fun ShareTargetSheet(vm: MainViewModel) {
     val item = vm.pendingShare ?: return
     var uidText by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) { vm.loadSocial() }
+    /** 26.11.89：0 最近会话 / 1 所有好友（关注 + 粉丝，可分页浏览、搜索） */
+    var tab by remember { mutableStateOf(0) }
+    var fq by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        vm.loadSocial()
+        vm.loadShareFriends(true)
+    }
     GoSheet({ vm.cancelShare() }, "分享到私信") {
         Column(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -690,37 +697,106 @@ fun ShareTargetSheet(vm: MainViewModel) {
                         "playlist" -> "歌单"; else -> "文本"
                     }
                     HigSectionTitle("$kindName · ${item.name}", go)
-                    Text("选择一个会话发送", fontSize = 12.sp, color = go.muted)
+                    Text("选一个会话或好友发送", fontSize = 12.sp, color = go.muted)
                 }
             }
             Spacer(Modifier.height(12.dp))
             SocialInput(msg, { msg = it }, "附言（可留空）", go)
-            Spacer(Modifier.height(12.dp))
-            HigSectionTitle("最近会话", go)
-            Spacer(Modifier.height(6.dp))
-            if (vm.conversations.isEmpty()) {
-                Text("还没有会话，可以直接输入对方 uid", fontSize = 13.sp, color = go.muted)
-            } else {
-                LazyColumn(Modifier.heightIn(max = 320.dp).fillMaxWidth()) {
-                    items(vm.conversations, key = { it.uid }) { c ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 9.dp)
-                                .clickable {
-                                    vm.shareTo(
-                                        c.uid, c.name, c.avatar,
-                                        msg.ifBlank { "分享：${item.name}" },
-                                    )
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Cover(c.avatar, Modifier.size(40.dp).clip(CircleShape), 20.dp, circle = true)
-                            Spacer(Modifier.width(10.dp))
-                            Text(c.name.ifBlank { "用户 ${c.uid}" }, fontSize = 15.sp, color = go.on)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton("最近会话", primary = tab == 0) { tab = 0 }
+                GoButton("所有好友", primary = tab == 1) { tab = 1 }
+            }
+            Spacer(Modifier.height(10.dp))
+
+            if (tab == 0) {
+                HigSectionTitle("最近会话", go)
+                Spacer(Modifier.height(6.dp))
+                if (vm.conversations.isEmpty()) {
+                    Text("还没有会话，可以直接输入对方 uid 或切到「所有好友」", fontSize = 13.sp, color = go.muted)
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 300.dp).fillMaxWidth()) {
+                        items(vm.conversations, key = { it.uid }) { c ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 9.dp)
+                                    .clickable {
+                                        vm.shareTo(
+                                            c.uid, c.name, c.avatar,
+                                            msg.ifBlank { "分享：${item.name}" },
+                                        )
+                                    },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Cover(c.avatar, Modifier.size(40.dp).clip(CircleShape), 20.dp, circle = true)
+                                Spacer(Modifier.width(10.dp))
+                                Text(c.name.ifBlank { "用户 ${c.uid}" }, fontSize = 15.sp, color = go.on)
+                            }
+                            Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
                         }
-                        Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
                     }
                 }
+            } else {
+                HigSectionTitle("所有好友（关注 + 粉丝）", go)
+                Spacer(Modifier.height(6.dp))
+                SocialInput(fq, { fq = it }, "搜索好友昵称", go)
+                Spacer(Modifier.height(8.dp))
+                val shown = vm.shareFriends.filter {
+                    fq.isBlank() || it.name.contains(fq.trim(), ignoreCase = true) ||
+                        it.signature.contains(fq.trim(), ignoreCase = true)
+                }
+                when {
+                    vm.shareFriendsBusy && vm.shareFriends.isEmpty() ->
+                        CircularProgressIndicator(color = go.primary, modifier = Modifier.size(22.dp))
+                    shown.isEmpty() -> Text(
+                        vm.shareFriendsError.ifBlank { "没有匹配的好友" },
+                        fontSize = 13.sp, color = go.muted,
+                    )
+                    else -> LazyColumn(Modifier.heightIn(max = 300.dp).fillMaxWidth()) {
+                        items(shown, key = { it.id }) { u ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 9.dp)
+                                    .clickable {
+                                        vm.shareTo(
+                                            u.id, u.name, u.avatar,
+                                            msg.ifBlank { "分享：${item.name}" },
+                                        )
+                                    },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Cover(u.avatar, Modifier.size(40.dp).clip(CircleShape), 20.dp, circle = true)
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(u.name, fontSize = 15.sp, color = go.on, maxLines = 1)
+                                    if (u.signature.isNotBlank()) {
+                                        Text(u.signature, fontSize = 11.sp, color = go.muted, maxLines = 1)
+                                    }
+                                }
+                            }
+                            Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "已加载 ${vm.shareFriends.size} 位" +
+                            if (vm.shareFriendsMore) "，还可继续加载" else "，已全部加载",
+                        fontSize = 11.sp, color = go.muted, modifier = Modifier.weight(1f),
+                    )
+                    if (vm.shareFriendsMore) {
+                        GoButton("加载更多", enabled = !vm.shareFriendsBusy) {
+                            vm.loadShareFriends()
+                        }
+                    }
+                }
+                if (vm.shareFriendsBusy && vm.shareFriends.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().height(2.dp), color = go.primary,
+                    )
+                }
             }
+
             Spacer(Modifier.height(14.dp))
             HigSectionTitle("发给指定 uid", go)
             Spacer(Modifier.height(6.dp))

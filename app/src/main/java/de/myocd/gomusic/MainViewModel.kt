@@ -5819,4 +5819,212 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+
+    // ================= 26.11.89：歌手选择 / 制作人员 / 歌词 / 好友 =================
+
+    /** 「选择歌手」弹窗里的一项 */
+    data class ArtistChoice(
+        val name: String,
+        val cover: String? = null,
+        val nmId: Long = 0L,
+        /** 本地曲库：进本地按名字分组的歌手页，不联网查网易云 */
+        val local: Boolean = false,
+    )
+
+    /** null = 弹窗关闭；非 null（哪怕空表）= 立即显示，头像随后异步补 */
+    var artistChoices by mutableStateOf<List<ArtistChoice>?>(null); private set
+    var artistChoiceBusy by mutableStateOf(false); private set
+    private var artistChoiceSong: Song? = null
+
+    fun closeArtistChooser() {
+        artistChoices = null
+        artistChoiceBusy = false
+        artistChoiceSong = null
+    }
+
+    /**
+     * 点歌手文字 / 信息菜单「查看歌手」/ 更多菜单「查看歌手」统一走这里。
+     *
+     * 旧逻辑把 "陈奕迅/王菲" 拆开后只取第一个搜索命中，于是显示的是合唱歌手名、
+     * 进去却是陈奕迅的页。现在先把拆分出来的名字**立即**列成弹窗（0 等待），
+     * 再并发按每个名字搜头像与真实 id；选谁进谁。
+     */
+    fun requestArtistChoice(s: Song) {
+        // 设备本地音频按既有约定：只按文件 Meta 展示，不跳页不联网
+        if (s.source == SRC_DEVICE || LocalAudio.isDevice(s.ssid)) return
+        val names = s.artist.split(Regex("[/,&、;；|\\\\]")).map { it.trim() }
+            .filter { it.isNotBlank() }.distinct().ifEmpty { listOf(s.artist.trim()) }
+            .filter { it.isNotBlank() }.ifEmpty { listOf("未知歌手") }
+        val local = s.source != SRC_NETEASE
+        artistChoiceSong = s
+        artistChoices = names.map { n ->
+            ArtistChoice(
+                n, null,
+                if (!local && names.size == 1 && s.nmArtistId > 0) s.nmArtistId else 0L,
+                local,
+            )
+        }
+        if (local) return
+        if (names.size == 1 && s.nmArtistId > 0) return   // 已有真实 id，不用再搜
+        artistChoiceBusy = true
+        val cookie = prefs.nmCookie
+        viewModelScope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                Netease.cookie = cookie
+                val jobs = names.map { n ->
+                    async {
+                        val g = runCatching {
+                            Netease.searchArtists(n, 6).firstOrNull { h ->
+                                h.title.equals(n, ignoreCase = true) ||
+                                    h.title.contains(n, ignoreCase = true) ||
+                                    n.contains(h.title, ignoreCase = true)
+                            }
+                        }.getOrNull()
+                        ArtistChoice(n, g?.cover, g?.nmId ?: 0L, false)
+                    }
+                }
+                jobs.map { it.await() }
+            }
+            // 用户可能已经关掉弹窗或点了别的歌，别把结果盖回去
+            if (artistChoices != null && artistChoiceSong?.ssid == s.ssid) {
+                artistChoices = resolved.mapIndexed { i, c ->
+                    // 搜索没结果的那个名字保留占位，仍可按名字进本地歌手页
+                    if (c.nmId <= 0L && i == 0 && names.size == 1 && s.nmArtistId > 0)
+                        c.copy(nmId = s.nmArtistId) else c
+                }
+                artistChoiceBusy = false
+            }
+        }
+    }
+
+    /** 选中某位歌手：收起播放器 → 进入对应歌手页，不再串到第一个 */
+    fun pickArtist(c: ArtistChoice) {
+        closeArtistChooser()
+        showPlayer = false
+        if (c.local || c.nmId <= 0L) {
+            stack.add(Screen.Artist(c.name))
+        } else {
+            openNmGroup(
+                Group(c.name, "网易云歌手", c.cover, emptyList(),
+                    artist = c.name, source = SRC_NETEASE,
+                    nmId = c.nmId, nmKind = "artist"),
+            )
+        }
+    }
+
+    // ---------- 制作人员弹窗（可长按复制） ----------
+    /** null = 关闭；空白时显示「暂无制作人员信息」 */
+    var creditsText by mutableStateOf<String?>(null); private set
+    fun openCredits(t: String) { creditsText = t }
+    fun closeCredits() { creditsText = null }
+
+    // ---------- 歌词页（全文 / 长按选择 / 复制 / 分享 / 卡片） ----------
+    var showLyricsSheet by mutableStateOf(false); private set
+    fun openLyricsSheet() { showLyricsSheet = true }
+    fun closeLyricsSheet() { showLyricsSheet = false }
+
+    /** 歌词页全文：跳过制作信息行，保留正文行 */
+    fun lyricShareLines(): List<String> =
+        wordLyric?.lines?.filter { !it.meta && it.text.isNotBlank() }
+            ?.map { it.text }.orEmpty()
+
+    /** 系统文本分享（歌词 / 选中片段） */
+    fun sharePlainText(text: String) {
+        val i = Intent(Intent.ACTION_SEND).setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, text)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val chooser = Intent.createChooser(i, "分享")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { app.startActivity(chooser) }
+            .onFailure { toast("无法分享：${it.message}") }
+    }
+
+    /** 制作歌词卡片 → 应用外分享（系统分享 PNG） */
+    fun shareLyricCardOutside(lines: List<String>, title: String, artist: String) {
+        viewModelScope.launch {
+            val f = withContext(Dispatchers.IO) {
+                runCatching { LyricCard.render(app, lines, title, artist) }.getOrNull()
+            }
+            if (f == null) { toast("歌词卡片生成失败"); return@launch }
+            val uri = runCatching {
+                androidx.core.content.FileProvider.getUriForFile(
+                    app, "${app.packageName}.fileprovider", f,
+                )
+            }.getOrNull()
+            if (uri == null) { toast("无法生成分享链接"); return@launch }
+            val i = Intent(Intent.ACTION_SEND).setType("image/png")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val chooser = Intent.createChooser(i, "分享歌词卡片")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { app.startActivity(chooser) }
+                .onFailure { toast("无法分享图片：${it.message}") }
+        }
+    }
+
+    /** 制作歌词卡片 → 应用内分享（私信没有图片接口，发排版好的文本卡片） */
+    fun shareLyricCardInside(lines: List<String>, title: String, artist: String) {
+        val text = buildString {
+            append("♪ ").append(title)
+            if (artist.isNotBlank()) append(" - ").append(artist)
+            append("\n\n")
+            append(lines.joinToString("\n"))
+            append("\n\n—— GoMusic 歌词卡片")
+        }
+        showLyricsSheet = false
+        beginShare(ShareItem(kind = "text", name = "$title · 歌词卡片", text = text))
+    }
+
+    // ---------- 应用内分享：所有好友（关注 + 粉丝） ----------
+    var shareFriends by mutableStateOf<List<NmSocial.UserBrief>>(emptyList()); private set
+    var shareFriendsBusy by mutableStateOf(false); private set
+    var shareFriendsMore by mutableStateOf(true); private set
+    var shareFriendsError by mutableStateOf(""); private set
+    private var shareFriendsOffset = 0
+    /** 0 = 正在翻关注列表，1 = 关注翻完后翻粉丝列表 */
+    private var shareFriendsPhase = 0
+
+    fun loadShareFriends(reset: Boolean = false) {
+        if (shareFriendsBusy) return
+        if (reset) {
+            shareFriendsOffset = 0
+            shareFriendsPhase = 0
+            shareFriendsMore = true
+            shareFriendsError = ""
+            shareFriends = emptyList()
+        }
+        if (!shareFriendsMore) return
+        shareFriendsBusy = true
+        viewModelScope.launch {
+            val uid = withContext(Dispatchers.IO) {
+                runCatching { Netease.uid() }.getOrDefault(0L)
+            }
+            if (uid <= 0L) {
+                shareFriendsBusy = false
+                shareFriendsError = "登录后才能查看好友列表"
+                return@launch
+            }
+            val (page, nextPhase) = withContext(Dispatchers.IO) {
+                var ph = shareFriendsPhase
+                var p = NmSocial.follows(uid, 30, shareFriendsOffset, fans = ph == 1)
+                if (p.isEmpty() && ph == 0) {
+                    ph = 1
+                    shareFriendsOffset = 0
+                    p = NmSocial.follows(uid, 30, 0, fans = true)
+                }
+                p to ph
+            }
+            shareFriendsPhase = nextPhase
+            val merged = (shareFriends + page).distinctBy { it.id }
+            shareFriends = merged
+            shareFriendsOffset += 30
+            shareFriendsMore = page.size >= 30
+            shareFriendsBusy = false
+            if (merged.isEmpty()) {
+                shareFriendsError = "没有取到好友（该账号可能没有关注，或接口需要登录）"
+            }
+        }
+    }
+
 }

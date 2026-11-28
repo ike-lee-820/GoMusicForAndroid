@@ -333,6 +333,26 @@ object NmSocial {
             ?.copy(id = u.id.takeIf { it > 0 } ?: uid)
     }.getOrNull()
 
+    /**
+     * 26.11.89：好友列表（应用内分享选人用）。
+     * /user/follows = 我关注的人，/user/followeds = 我的粉丝；
+     * 两者合并去重后就是「所有好友」，比只有「最近会话」全得多。
+     */
+    fun follows(uid: Long, limit: Int = 30, offset: Int = 0, fans: Boolean = false): List<UserBrief> =
+        runCatching {
+            val path = if (fans) "/user/followeds" else "/user/follows"
+            val r = Netease.socialCall(
+                path, false,
+                "uid" to uid.toString(),
+                "limit" to limit.toString(),
+                "offset" to offset.toString(),
+            )
+            array(r, "follow", "follows", "followeds", "friends", "userprofiles", "users")
+                .map { userOf(it) }
+                .map { u -> u.copy(id = u.id.takeIf { it > 0 } ?: 0L) }
+                .filter { it.id > 0 && it.name.isNotBlank() }
+        }.getOrDefault(emptyList())
+
     /** 按昵称找用户：/search type=1002（用户）。文档没给，uid 精确查找失败时兜底 */
     fun searchUsers(keyword: String): List<UserBrief> = runCatching {
         val r = Netease.socialCall(

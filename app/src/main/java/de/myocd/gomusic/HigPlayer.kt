@@ -146,11 +146,14 @@ private fun MainViewModel.openAlbumAndClose(s: Song) {
     else stack.add(Screen.Album(s.artist, s.album))
 }
 
+/**
+ * 26.11.89：点歌手文字 / 信息菜单「查看歌手」/ 更多菜单「查看歌手」统一进
+ * 「选择歌手」弹窗。旧版把 "陈奕迅/王菲" 拆开后只取第一个搜索命中，
+ * 显示合唱歌手名却进陈奕迅的页；现在选谁进谁，且弹窗 0 等待立即弹出。
+ * 收起播放器放到真正选中之后，不在这里做。
+ */
 private fun MainViewModel.openArtistAndClose(s: Song) {
-    showPlayer = false
-    if (s.source == SRC_DEVICE || LocalAudio.isDevice(s.ssid)) return
-    if (s.source == SRC_NETEASE && s.nmArtistId > 0) openNmSongArtist(s)
-    else stack.add(Screen.Artist(s.artist))
+    requestArtistChoice(s)
 }
 
 /** HIG 风格确认框：清空 / 批量删除共用，按钮文案可配 */
@@ -665,7 +668,6 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
         if (subPage != 0) subPage = 0 else onClose()
     }
 
-    val lyrics = vm.wordLyric?.lines?.joinToString("\n") { it.text }.orEmpty()
     val credits = vm.wordLyric?.lines?.filter { it.meta }
         ?.joinToString("\n") { it.text }.orEmpty()
     val fav = vm.isFavorite(s?.ssid)
@@ -695,11 +697,13 @@ private fun PlayerMoreSheet(vm: MainViewModel, s: Song?, onClose: () -> Unit) {
                     )
                 })
             }
-            add(MoreRow("分享歌词…", Icons.Outlined.ChatBubbleOutline) {
-                shareText(ctx, lyrics.ifBlank { "暂无歌词" })
+            // 26.11.89：「分享歌词」改成「歌词」整页，长按选行后可复制 / 分享 / 做卡片
+            add(MoreRow("歌词", Icons.Outlined.ChatBubbleOutline) {
+                vm.openLyricsSheet()
             })
+            // 26.11.89：制作人员改成弹窗展示，逐行长按可复制
             add(MoreRow("查看制作人员", Icons.Outlined.Info) {
-                if (credits.isBlank()) vm.toast("暂无制作人员信息") else shareText(ctx, credits)
+                vm.openCredits(credits)
             })
             add(MoreRow("下载", Icons.Outlined.Download) { vm.download(listOf(s)) })
             add(MoreRow("加入歌单", Icons.AutoMirrored.Outlined.PlaylistAdd) {

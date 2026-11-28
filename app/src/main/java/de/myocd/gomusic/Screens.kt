@@ -391,6 +391,11 @@ fun MainScreen(vm: MainViewModel) {
     if (vm.showSurround) SurroundSheet(vm)
         if (vm.showRecorder) RecorderScreen(vm)
         if (vm.showRecHistory) RecorderHistoryScreen(vm)
+        // 26.11.89：播放器三个弹层。放在分享选人之前组合，
+        // 保证从「歌词 → 制作卡片 → 应用内分享」打开选人时选人弹层在最上层。
+        if (vm.artistChoices != null) ArtistChooserSheet(vm)
+        vm.creditsText?.let { CreditsSheet(vm, it) }
+        if (vm.showLyricsSheet) LyricsSheet(vm)
         // 26.11.82：歌曲 / 专辑 / 歌单的「私聊分享」选人弹层（最外层，盖住播放器）
         if (vm.pendingShare != null) ShareTargetSheet(vm)
         vm.pickReq?.let { PickSheet(vm, it) }
@@ -1988,7 +1993,7 @@ fun WidePlayerPane(vm: MainViewModel, s: Song, modifier: Modifier = Modifier) {
                         s.artist, 13, color = Color.White.copy(alpha = 0.72f), maxLines = 1,
                         modifier = Modifier.clickable {
                             vm.showPlayer = false
-                            vm.openNmSongArtist(s)
+                            vm.requestArtistChoice(s)
                         }.padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                     VS(4)
@@ -2238,7 +2243,7 @@ fun PlayerBody(vm: MainViewModel, s: Song, snippet: Boolean) {
                 s.artist, 14, color = go.muted, maxLines = 1,
                 modifier = Modifier.clickable {
                     vm.showPlayer = false
-                    vm.openNmSongArtist(s)
+                    vm.requestArtistChoice(s)
                 }.padding(horizontal = 12.dp, vertical = 6.dp),
             )
 

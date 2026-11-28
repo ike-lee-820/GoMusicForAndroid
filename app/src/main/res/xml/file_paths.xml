@@ -4,4 +4,6 @@
     <external-path name="download" path="Download" />
     <external-files-path name="external_files" path="update" />
     <cache-path name="cache" path="update" />
+    <!-- 26.11.89：歌词卡片 PNG 通过 FileProvider 以 image/png 分享出去 -->
+    <cache-path name="share" path="share" />
 </paths>

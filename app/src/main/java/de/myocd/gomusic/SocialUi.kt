@@ -243,6 +243,8 @@ private fun FindFriendPane(vm: MainViewModel) {
 @Composable
 private fun ListenTogetherPane(vm: MainViewModel) {
     val go = LocalGo.current
+    // 26.11.84：进页面自动取登录态，不用用户手点「获取登录状态」
+    LaunchedEffect(Unit) { vm.ltAutoLogin() }
     var roomIdInput by remember { mutableStateOf("") }
     var inviterInput by remember { mutableStateOf("") }
     var playlistInput by remember { mutableStateOf("") }
@@ -288,7 +290,7 @@ private fun ListenTogetherPane(vm: MainViewModel) {
         Spacer(Modifier.height(8.dp))
         if (vm.ltRoomId == null) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GoButton("创建房间", primary = true, enabled = vm.ltAccount.login && !vm.ltBusy) {
+                GoButton("创建房间", primary = true, enabled = !vm.ltBusy) {
                     vm.ltCreateRoom()
                 }
             }

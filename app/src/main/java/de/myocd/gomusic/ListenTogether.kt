@@ -13,15 +13,15 @@ import kotlinx.serialization.json.JsonPrimitive
  * 26.11.82 那版因为拿不到协议正文，做的是局域网 HTTP 主机模式；这次用户
  * 把示例 HTML 与 Issue 全文都贴进来了，于是按真实接口重做：
  *
- *  创建房间   listentogether/room/create            (GET)
- *  房间检查   listentogether/room/check            (POST)
- *  加入房间   listentogether/accept                (POST)
+ *  创建房间   /listentogether/room/create            (GET)
+ *  房间检查   /listentogether/room/check            (POST)
+ *  加入房间   /listentogether/accept                (POST)
  *  房间状态   /listentogether/status              (GET)
- *  同步歌单   listentogether/sync/list/command    (POST，REPLACE)
- *  读取歌单   listentogether/sync/playlist/get    (POST)
- *  播放指令   listentogether/play/command         (POST)
- *  心跳       listentogether/heatbeat             (POST，文档拼写即 heatbeat)
- *  结束房间   listentogether/end                  (POST)
+ *  同步歌单   /listentogether/sync/list/command    (POST，REPLACE)
+ *  读取歌单   /listentogether/sync/playlist/get    (POST)
+ *  播放指令   /listentogether/play/command         (POST)
+ *  心跳       /listentogether/heatbeat             (POST，文档拼写即 heatbeat)
+ *  结束房间   /listentogether/end                  (POST)
  *
  * 请求统一走 [Netease.socialCall]：示例里 GET / POST 混用，cookie 有时在
  * query 有时在 form body，双 method 兼容不因部署差异把房间流程卡死。
@@ -141,7 +141,7 @@ object ListenTogetherApi {
      * 不同部署也可能把 roomInfo 包在 data 里，按两种都找。
      */
     fun createRoom(): String? = runCatching {
-        val r = call("listentogether/room/create", false)
+        val r = call("/listentogether/room/create", false)
         if (!ok(r)) return null
         val d = obj(r["data"]) ?: r
         val info = obj(child(d, "roomInfo")) ?: obj(child(r, "roomInfo")) ?: d
@@ -151,7 +151,7 @@ object ListenTogetherApi {
 
     /** 获取房间情况：joinable / status */
     fun checkRoom(roomId: String): RoomStatus = runCatching {
-        val r = call("listentogether/room/check", true, "roomId" to roomId)
+        val r = call("/listentogether/room/check", true, "roomId" to roomId)
         val d = obj(r["data"]) ?: r
         RoomStatus(
             inRoom = code(r) == 200,
@@ -163,7 +163,7 @@ object ListenTogetherApi {
     /** 加入房间：accept + room/check + sync/playlist/get */
     fun acceptRoom(roomId: String, inviterId: Long): Boolean = runCatching {
         val r = call(
-            "listentogether/accept", true,
+            "/listentogether/accept", true,
             "roomId" to roomId, "inviterId" to inviterId.toString(),
         )
         ok(r) || code(r) == 200
@@ -192,7 +192,7 @@ object ListenTogetherApi {
 
     /** 结束房间 */
     fun endRoom(roomId: String): Boolean = runCatching {
-        val r = call("listentogether/end", true, "roomId" to roomId)
+        val r = call("/listentogether/end", true, "roomId" to roomId)
         ok(r)
     }.getOrDefault(false)
 
@@ -208,8 +208,8 @@ object ListenTogetherApi {
     // ---------------------------------------------------------------- 歌单同步
 
     /**
-     * 发送播放列表信息。文档写的是 listentogether/sync/list，示例 loadPlaylist
-     * 用的是 listentogether/sync/list/command —— 两个都试，先示例后文档。
+     * 发送播放列表信息。文档写的是 /listentogether/sync/list，示例 loadPlaylist
+     * 用的是 /listentogether/sync/list/command —— 两个都试，先示例后文档。
      */
     fun syncList(
         roomId: String,
@@ -229,9 +229,9 @@ object ListenTogetherApi {
             "displayList" to displayList,
             "randomList" to randomList,
         )
-        val r = call("listentogether/sync/list/command", true, *p)
+        val r = call("/listentogether/sync/list/command", true, *p)
         if (ok(r)) return true
-        call("listentogether/sync/list", true, *p).let { ok(it) }
+        call("/listentogether/sync/list", true, *p).let { ok(it) }
     }.getOrDefault(false)
 
     /**
@@ -239,7 +239,7 @@ object ListenTogetherApi {
      * 也兼容逗号分隔字符串 / displayList 直接是数组。
      */
     fun syncPlaylistGet(roomId: String): List<Long> = runCatching {
-        val r = call("listentogether/sync/playlist/get", true, "roomId" to roomId)
+        val r = call("/listentogether/sync/playlist/get", true, "roomId" to roomId)
         val d = obj(r["data"]) ?: r
         val pl = obj(child(d, "playlist", "list")) ?: d
         val dl = child(pl, "displayList") ?: child(d, "displayList")
@@ -263,7 +263,7 @@ object ListenTogetherApi {
         formerSongId: String = "-1",
     ): Boolean = runCatching {
         val r = call(
-            "listentogether/play/command", true,
+            "/listentogether/play/command", true,
             "roomId" to roomId,
             "progress" to progress.toString(),
             "commandType" to commandType,
@@ -288,9 +288,9 @@ object ListenTogetherApi {
             "playStatus" to playStatus,
             "progress" to progress.toString(),
         )
-        val r = call("listentogether/heatbeat", true, *p)
+        val r = call("/listentogether/heatbeat", true, *p)
         if (ok(r)) return true
-        call("listentogether/heartbeat", true, *p).let { ok(it) }
+        call("/listentogether/heartbeat", true, *p).let { ok(it) }
     }.getOrDefault(false)
 
     // ---------------------------------------------------------------- 歌单 / 歌曲详情

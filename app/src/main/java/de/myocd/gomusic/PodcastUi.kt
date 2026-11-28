@@ -1,5 +1,7 @@
 package de.myocd.gomusic
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -59,8 +61,14 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun PodcastPage(vm: MainViewModel) {
     val go = LocalGo.current
+    val ctx = LocalContext.current
     LaunchedEffect(Unit) { vm.loadPodcastHome() }
     var q by remember { mutableStateOf("") }
+    // 26.11.84：创建播客表单
+    var creating by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+    var newDesc by remember { mutableStateOf("") }
+    var newCat by remember { mutableStateOf("") }
     Column(
         Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 20.dp),
     ) {
@@ -77,6 +85,19 @@ fun PodcastPage(vm: MainViewModel) {
             )
             Spacer(Modifier.width(8.dp))
             GoButton("搜索", primary = true) { vm.searchPodcasts(q) }
+        }
+        if (vm.podcastError.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Box(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                    .background(go.surfaceHi).padding(12.dp),
+            ) {
+                Column {
+                    Text(vm.podcastError, fontSize = 12.sp, color = go.on)
+                    Spacer(Modifier.height(8.dp))
+                    GoButton("重试加载") { vm.loadPodcastHome(force = true) }
+                }
+            }
         }
         Spacer(Modifier.height(16.dp))
         LazyColumn(
@@ -124,10 +145,63 @@ fun PodcastPage(vm: MainViewModel) {
             item {
                 HigSectionTitle("我创建的播客", go)
                 Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GoButton(if (creating) "收起" else "＋ 创建播客") { creating = !creating }
+                    GoButton("重试") { vm.loadPodcastHome(force = true) }
+                }
+                if (creating) {
+                    Spacer(Modifier.height(10.dp))
+                    Box(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                            .background(go.surfaceHi).padding(12.dp),
+                    ) {
+                        Column {
+                            Text(
+                                "服务端未部署创建接口时会明确报错，不会静默假装建好；" +
+                                    "也可用网易云网页端创建后再回到这里刷新。",
+                                fontSize = 11.sp, color = go.muted,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            SocialInput(newName, { newName = it }, "播客名称", go)
+                            Spacer(Modifier.height(6.dp))
+                            SocialInput(newDesc, { newDesc = it }, "播客简介", go)
+                            Spacer(Modifier.height(6.dp))
+                            SocialInput(
+                                newCat, { newCat = it }, "分类 id（可选）", go,
+                                keyboardType = KeyboardType.Number,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                GoButton(
+                                    "创建", primary = true,
+                                    enabled = newName.isNotBlank() && !vm.podcastCreating,
+                                ) {
+                                    vm.createPodcast(
+                                        newName, newDesc,
+                                        newCat.trim().toLongOrNull() ?: 0L,
+                                    )
+                                    creating = false
+                                    newName = ""; newDesc = ""; newCat = ""
+                                }
+                                GoButton("网页端创建") {
+                                    runCatching {
+                                        ctx.startActivity(
+                                            Intent(
+                                                Intent.ACTION_VIEW,
+                                                Uri.parse("https://music.163.com/"),
+                                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
             }
             item {
                 if (vm.myCreated.isEmpty()) {
-                    Text("登录后这里会显示你创建的播客", fontSize = 13.sp, color = go.muted)
+                    Text("暂无创建的播客（可点上方「＋ 创建播客」或「重试」）", fontSize = 13.sp, color = go.muted)
                 } else {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         items(vm.myCreated, key = { it.id }) { p ->

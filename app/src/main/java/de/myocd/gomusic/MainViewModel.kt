@@ -4733,6 +4733,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var ltBusy by mutableStateOf(false); private set
     private var ltClientSeq = 1
     private var ltLastHeartbeat = 0L
+    private var ltAutoLoginDone = false
 
     // ---------- 播客 ----------
     var podcastQuery by mutableStateOf(""); private set
@@ -4743,16 +4744,47 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var podcastDetail by mutableStateOf<NmSocial.Podcast?>(null); private set
     var podcastVoices by mutableStateOf<List<NmSocial.Voice>>(emptyList()); private set
     var voiceBusy by mutableStateOf(false); private set
+    /** 26.11.84：加载失败不再静默空白，给明确提示与重试 */
+    var podcastLoaded by mutableStateOf(false); private set
+    var podcastError by mutableStateOf(""); private set
+    var podcastCreating by mutableStateOf(false); private set
 
-    /** 进入播客页：最近播放 + 我创建的播客；同一会话只拉一次 */
-    fun loadPodcastHome() {
-        if (recentDj.isNotEmpty() || myCreated.isNotEmpty()) return
+    /** 进入播客页：最近播放 + 我创建的播客；失败可重试，不因首次空结果锁死 */
+    fun loadPodcastHome(force: Boolean = false) {
+        if (podcastLoaded && !force) return
+        podcastBusy = true
+        podcastError = ""
         viewModelScope.launch {
             val (r, m) = withContext(Dispatchers.IO) {
                 NmSocial.recentDj(12) to NmSocial.myCreated()
             }
             recentDj = r
             myCreated = m
+            podcastLoaded = true
+            podcastBusy = false
+            if (r.isEmpty() && m.isEmpty()) {
+                podcastError = "接口没有返回内容：检查登录态、服务端播客模块，或点「重试」"
+            }
+        }
+    }
+
+    /** 26.11.84：创建播客。服务端没有该接口时明确报错，不假装建好 */
+    fun createPodcast(name: String, desc: String, categoryId: Long) {
+        val n = name.trim()
+        if (n.isBlank()) { toast("请填写播客名称"); return }
+        podcastCreating = true
+        viewModelScope.launch {
+            val id = withContext(Dispatchers.IO) {
+                NmSocial.createPodcast(n, desc, categoryId)
+            }
+            podcastCreating = false
+            if (id == null) {
+                toast("当前服务端没有创建播客接口，请到网易云网页端创建")
+                podcastError = "创建播客失败：api-enhanced 模块里没有 voicelist_create，建议用下方网页端入口"
+            } else {
+                toast(if (id > 0) "播客已创建（$id）" else "创建请求已发送，正在刷新列表")
+                loadPodcastHome(force = true)
+            }
         }
     }
 
@@ -4765,6 +4797,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             podcastResults = withContext(Dispatchers.IO) { NmSocial.podcastSearch(key) }
             podcastBusy = false
+            if (podcastResults.isEmpty()) {
+                podcastError = "「$key」没有搜到播客（也可能是接口未返回数据，可重试）"
+            } else podcastError = ""
         }
     }
 
@@ -4970,7 +5005,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ---------- 一起听（官方房间协议） ----------
 
     /** 第一步：取登录态（/login/status 的 userId / nickname） */
-    fun ltLogin() {
+    /** 进入「一起听」子页只自动取一次登录态，不要求用户手点按钮 */
+    fun ltAutoLogin() {
+        if (ltAutoLoginDone || ltAccount.login || ltBusy) return
+        ltAutoLoginDone = true
+        ltLogin(silent = true)
+    }
+
+    /** 进入「一起听」子页会自动调用；silent 时只更新消息条，不弹 toast */
+    fun ltLogin(silent: Boolean = false) {
+        if (!silent && ltBusy) return
         ltBusy = true
         viewModelScope.launch {
             val a = withContext(Dispatchers.IO) { ListenTogetherApi.account() }
@@ -4978,7 +5022,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             ltBusy = false
             ltMessage = if (a.login) "已登录 ${a.nickname}，可以创建房间"
             else "未登录，请先在设置里登录网易云"
-            if (!a.login) toast(ltMessage)
+            if (!a.login && !silent) toast(ltMessage)
         }
     }
 
@@ -4995,9 +5039,21 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 创建房间：room/create → room/check → status；可顺手把链接私信给对方 */
     fun ltCreateRoom(peerUid: Long = 0L) {
-        if (!ltAccount.login) { toast("请先点「获取登录状态」并登录网易云"); return }
         ltBusy = true
         viewModelScope.launch {
+            // 26.11.84：不用等用户手点「获取登录状态」，这里自动补一次
+            var acc = ltAccount
+            if (!acc.login) {
+                acc = withContext(Dispatchers.IO) { ListenTogetherApi.account() }
+                ltAccount = acc
+                ltMessage = if (acc.login) "已登录 ${acc.nickname}，正在创建房间"
+                else "未登录，请先在设置里登录网易云"
+            }
+            if (!acc.login) {
+                ltBusy = false
+                toast(ltMessage)
+                return@launch
+            }
             val id = withContext(Dispatchers.IO) { ListenTogetherApi.createRoom() }
             if (id.isNullOrBlank()) {
                 ltBusy = false

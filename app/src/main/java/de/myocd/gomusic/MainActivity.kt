@@ -57,6 +57,9 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
+        // 26.11.84：Compose 的 imePadding() 需要 decor 不吃掉系统 insets，
+        // 否则虚拟键盘弹出时输入栏不会上浮（打字看不到输入框）。
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         // Android 9 及以下写公共下载目录需要存储权限
         if (Build.VERSION.SDK_INT < 29) storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)

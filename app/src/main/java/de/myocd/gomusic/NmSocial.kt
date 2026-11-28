@@ -13,8 +13,8 @@ import kotlinx.serialization.json.JsonPrimitive
  * 这一批接口的响应结构在不同部署里字段名并不完全一致（data.msgs /
  * data.list / data.voices / data.radios …，资源私信还是 JSON 字符串），
  * 所以解析全部走容错：按优先键找、找不到下钻一层容器，绝不因为某个
- * 字段缺失就整页空掉。请求统一复用 Netease.socialGet（带 cookie /
- * timestamp / randomCNIP），读写接口都按文档以 GET 形式发。
+ * 字段缺失就整页空掉。请求统一复用 Netease.socialCall（带 cookie /
+ * timestamp / randomCNIP，GET 失败自动换 POST 重试）。
  */
 object NmSocial {
 
@@ -128,6 +128,24 @@ object NmSocial {
     private fun code(r: JsonObject): Int =
         (r["code"] as? JsonPrimitive)?.content?.toIntOrNull() ?: -1
 
+    private val CONTENT_KEYS = setOf(
+        "list", "voicelists", "radios", "djRadios", "voices", "programs",
+        "records", "result", "songs", "msgs", "detail", "voice", "playlist",
+        "roomInfo", "roomUsers",
+    )
+
+    /** 不强制顶层 code==200：有业务数据就算成功，避免不同部署的包装差异让整页失效 */
+    private fun isOk(r: JsonObject): Boolean {
+        if (code(r) == 200) return true
+        val d = obj(r["data"])
+        if (d != null) {
+            val dc = (d["code"] as? JsonPrimitive)?.content?.toIntOrNull()
+            if (dc == 200) return true
+            if (d.keys.any { it in CONTENT_KEYS }) return true
+        }
+        return r.keys.any { it in CONTENT_KEYS }
+    }
+
     private fun data(r: JsonObject): JsonElement = r["data"] ?: r
 
     private fun cover(e: JsonElement?): String? {
@@ -171,8 +189,8 @@ object NmSocial {
 
     /** /pl/count：私信与通知未读数。字段在不同部署里叫 msg / privateMsg / notification 等 */
     fun plCount(): Pair<Int, Int> = runCatching {
-        val r = Netease.socialGet("/pl/count")
-        if (code(r) != 200) return@runCatching 0 to 0
+        val r = Netease.socialCall("/pl/count", false)
+        if (!isOk(r)) return@runCatching 0 to 0
         val d = data(r)
         val msg = intOf(d, "msg", "privateMsg", "privateMessage", "msgCount", "newMsg", "privateMsgCount")
         val notice = intOf(d, "notification", "notice", "notify", "notificationCount", "newNotice")
@@ -185,11 +203,11 @@ object NmSocial {
 
     /** /msg/private：会话列表 */
     fun conversations(limit: Int = 30, offset: Int = 0): List<Conversation> = runCatching {
-        val r = Netease.socialGet(
-            "/msg/private",
+        val r = Netease.socialCall(
+            "/msg/private", false,
             "limit" to limit.toString(), "offset" to offset.toString(),
         )
-        if (code(r) != 200) return@runCatching emptyList()
+        if (!isOk(r)) return@runCatching emptyList()
         array(r, "msgs", "list").map { m ->
             val from = userOf(m["fromUser"] ?: m["user"] ?: m["friend"])
             val lastRaw = str(m, "lastMsg", "msg", "lastMessage", "content")
@@ -211,8 +229,8 @@ object NmSocial {
             "uid" to uid.toString(), "limit" to limit.toString(),
         )
         if (before > 0) params.add("before" to before.toString())
-        val r = Netease.socialGet("/msg/private/history", *params.toTypedArray())
-        if (code(r) != 200) return@runCatching emptyList()
+        val r = Netease.socialCall("/msg/private/history", false, *params.toTypedArray())
+        if (!isOk(r)) return@runCatching emptyList()
         val me = runCatching { Netease.uid() }.getOrDefault(0L)
         array(r, "msgs", "list").map { m ->
             val fromId = lng(
@@ -238,8 +256,8 @@ object NmSocial {
     }.getOrDefault(emptyList())
 
     private fun send(path: String, vararg params: Pair<String, String>): Boolean = runCatching {
-        val r = Netease.socialGet(path, *params)
-        code(r) == 200
+        val r = Netease.socialCall(path, true, *params)
+        isOk(r)
     }.getOrDefault(false)
 
     fun sendText(userIds: String, msg: String): Boolean =
@@ -259,8 +277,8 @@ object NmSocial {
 
     /** /user/detail：按 uid 取用户资料 */
     fun userDetail(uid: Long): UserBrief? = runCatching {
-        val r = Netease.socialGet("/user/detail", "uid" to uid.toString())
-        if (code(r) != 200) return@runCatching null
+        val r = Netease.socialCall("/user/detail", false, "uid" to uid.toString())
+        if (!isOk(r)) return@runCatching null
         val p = r["profile"] ?: data(r)
         val u = userOf(p)
         u.takeIf { it.id > 0 || it.name.isNotBlank() }
@@ -269,8 +287,8 @@ object NmSocial {
 
     /** 按昵称找用户：/search type=1002（用户）。文档没给，uid 精确查找失败时兜底 */
     fun searchUsers(keyword: String): List<UserBrief> = runCatching {
-        val r = Netease.socialGet(
-            "/search", "keywords" to keyword, "type" to "1002",
+        val r = Netease.socialCall(
+            "/search", false, "keywords" to keyword, "type" to "1002",
             "limit" to "20", "offset" to "0",
         )
         array(r, "userprofiles", "users", "list").map { userOf(it) }
@@ -304,8 +322,8 @@ object NmSocial {
 
     /** /record/recent/dj：最近播放的播客声音 */
     fun recentDj(limit: Int = 100): List<Voice> = runCatching {
-        val r = Netease.socialGet("/record/recent/dj", "limit" to limit.toString())
-        if (code(r) != 200) return@runCatching emptyList()
+        val r = Netease.socialCall("/record/recent/dj", false, "limit" to limit.toString())
+        if (!isOk(r)) return@runCatching emptyList()
         array(r, "list", "records", "voices", "programs").map { m ->
             val inner = m["data"] ?: m["program"] ?: m["voice"] ?: m
             voiceOf(obj(inner) ?: m)
@@ -314,30 +332,30 @@ object NmSocial {
 
     /** /voicelist/search：播客列表（独立搜索，不进主搜索页） */
     fun podcastSearch(keyword: String, limit: Int = 30, offset: Int = 0): List<Podcast> = runCatching {
-        val r = Netease.socialGet(
-            "/voicelist/search", "keyword" to keyword,
+        val r = Netease.socialCall(
+            "/voicelist/search", false, "keyword" to keyword,
             "limit" to limit.toString(), "offset" to offset.toString(),
         )
-        if (code(r) != 200) return@runCatching emptyList()
+        if (!isOk(r)) return@runCatching emptyList()
         array(r, "list", "voicelists", "radios", "djRadios").map(::podcastOf)
             .filter { it.id > 0 }
     }.getOrDefault(emptyList())
 
     /** /voicelist/detail：播客封面 / 分类 / 名称 / 简介 */
     fun podcastDetail(id: Long): Podcast = runCatching {
-        val r = Netease.socialGet("/voicelist/detail", "id" to id.toString())
-        if (code(r) != 200) return@runCatching Podcast(id = id)
+        val r = Netease.socialCall("/voicelist/detail", false, "id" to id.toString())
+        if (!isOk(r)) return@runCatching Podcast(id = id)
         val d = data(r)
         podcastOf(obj(d) ?: r).copy(id = id)
     }.getOrDefault(Podcast(id = id))
 
     /** /voicelist/list：播客里的声音 */
     fun voiceList(voiceListId: Long, limit: Int = 200, offset: Int = 0): List<Voice> = runCatching {
-        val r = Netease.socialGet(
-            "/voicelist/list", "voiceListId" to voiceListId.toString(),
+        val r = Netease.socialCall(
+            "/voicelist/list", false, "voiceListId" to voiceListId.toString(),
             "limit" to limit.toString(), "offset" to offset.toString(),
         )
-        if (code(r) != 200) return@runCatching emptyList()
+        if (!isOk(r)) return@runCatching emptyList()
         array(r, "list", "voices", "programs").map { voiceOf(it).copy(radioId = voiceListId) }
     }.getOrDefault(emptyList())
 
@@ -354,15 +372,15 @@ object NmSocial {
         displayStatus?.let { p.add("displayStatus" to it) }
         type?.let { p.add("type" to it) }
         voiceFeeType?.let { p.add("voiceFeeType" to it.toString()) }
-        val r = Netease.socialGet("/voicelist/list/search", *p.toTypedArray())
-        if (code(r) != 200) return@runCatching emptyList()
+        val r = Netease.socialCall("/voicelist/list/search", false, *p.toTypedArray())
+        if (!isOk(r)) return@runCatching emptyList()
         array(r, "list", "voices", "programs").map(::voiceOf)
     }.getOrDefault(emptyList())
 
     /** /voice/detail：声音详情，优先取可播放直链 */
     fun voiceDetail(id: Long): VoiceDetail = runCatching {
-        val r = Netease.socialGet("/voice/detail", "id" to id.toString())
-        if (code(r) != 200) return@runCatching VoiceDetail(voice = Voice(id = id))
+        val r = Netease.socialCall("/voice/detail", false, "id" to id.toString())
+        if (!isOk(r)) return@runCatching VoiceDetail(voice = Voice(id = id))
         val d = data(r)
         val v = voiceOf(obj(d) ?: r).copy(id = id)
         val url = str(d, "url", "playUrl", "audioUrl", "mp3Url")
@@ -380,17 +398,17 @@ object NmSocial {
 
     /** /voicelist/trans：调整声音在播客里的顺序 */
     fun voiceSort(radioId: Long, programId: Long, position: Int): Boolean = runCatching {
-        val r = Netease.socialGet(
-            "/voicelist/trans", "radioId" to radioId.toString(),
+        val r = Netease.socialCall(
+            "/voicelist/trans", true, "radioId" to radioId.toString(),
             "programId" to programId.toString(), "position" to position.toString(),
             "limit" to "200", "offset" to "0",
         )
-        code(r) == 200
+        isOk(r)
     }.getOrDefault(false)
 
     /** /voice/delete：删除播客声音（ids 多个逗号隔开） */
     fun voiceDelete(ids: String): Boolean = runCatching {
-        code(Netease.socialGet("/voice/delete", "ids" to ids)) == 200
+        isOk(Netease.socialCall("/voice/delete", true, "ids" to ids))
     }.getOrDefault(false)
 
     /** /voice/upload：multipart 上传声音，字段名 songFile；可同时带 imgFile */
@@ -418,8 +436,59 @@ object NmSocial {
 
     /** /voicelist/my/created：我创建的播客声音 / 播客 */
     fun myCreated(limit: Int = 20): List<Podcast> = runCatching {
-        val r = Netease.socialGet("/voicelist/my/created", "limit" to limit.toString())
-        if (code(r) != 200) return@runCatching emptyList()
+        val r = Netease.socialCall("/voicelist/my/created", false, "limit" to limit.toString())
+        if (!isOk(r)) return@runCatching emptyList()
         array(r, "list", "voicelists", "radios").map(::podcastOf).filter { it.id > 0 }
     }.getOrDefault(emptyList())
+
+    /**
+     * 26.11.84：创建播客。
+     *
+     * 重要：api-enhanced 的 module 目录里只有 voicelist_search / detail / list /
+     * list_search / my_created / trans，**没有 voicelist_create**。用户给的文档
+     * 也没有创建接口。这里做成主备路径探测：按常见命名依次尝试，任何一个
+     * 返回成功就解析出 voiceListId；全部失败时返回 null，由界面明确告知
+     * 「当前服务端没有创建播客接口」并给网页端入口，绝不静默假装建好了。
+     */
+    fun createPodcast(
+        name: String,
+        description: String = "",
+        categoryId: Long = 0L,
+    ): Long? = runCatching {
+        val n = name.trim()
+        if (n.isBlank()) return@runCatching null
+        val p = mutableListOf(
+            "name" to n, "voiceListName" to n,
+            "description" to description, "desc" to description,
+        )
+        if (categoryId > 0L) {
+            p.add("categoryId" to categoryId.toString())
+            p.add("category" to categoryId.toString())
+        }
+        val args = p.toTypedArray()
+        for (path in listOf(
+            "/voicelist/create", "/voice/list/create",
+            "/voicelist/add", "/voice/workbench/voicelist/create",
+        )) {
+            val r = Netease.socialCall(path, true, *args)
+            if (!isOk(r)) continue
+            val d = obj(r["data"]) ?: r
+            val info = obj(childAny(d, "voicelist", "voiceList", "detail", "data")) ?: d
+            val id = lng(info, "id", "voiceListId", "radioId", "djRadioId")
+                .takeIf { it > 0L }
+                ?: lng(d, "id", "voiceListId", "radioId", "djRadioId").takeIf { it > 0L }
+            if (id != null) return@runCatching id
+            // 有些部署只回 code=200 不带 id：也算建好，交给界面刷新列表
+            if (code(r) == 200 || (d["code"] as? JsonPrimitive)?.content == "200") {
+                return@runCatching -1L
+            }
+        }
+        null
+    }.getOrNull()
+
+    private fun childAny(o: JsonObject, vararg keys: String): JsonElement? {
+        for (k in keys) o[k]?.let { return it }
+        return null
+    }
+
 }

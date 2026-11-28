@@ -2374,9 +2374,20 @@ object Netease {
         postFirst: Boolean,
         vararg params: Pair<String, String>,
     ): JsonObject {
-        fun looksOk(r: JsonObject): Boolean =
-            r.code() == 200 || r.containsKey("roomInfo") ||
-                r.containsKey("data") || r.containsKey("success")
+        fun looksOk(r: JsonObject): Boolean {
+            val c = (r["code"] as? JsonPrimitive)?.content?.toIntOrNull()
+            if (c == 200) return true
+            // 明确的业务错误（301/400/404/460…）不能因为带 data 就算成功，
+            // 否则不会换另一种 method 重试
+            if (c != null && c > 0) return false
+            val d = r["data"] as? JsonObject
+            if (d != null && d.isNotEmpty()) return true
+            return r.containsKey("roomInfo") || r.containsKey("result") ||
+                r.containsKey("list") || r.containsKey("voicelists") ||
+                r.containsKey("voices") || r.containsKey("programs") ||
+                r.containsKey("records") || r.containsKey("songs") ||
+                r.containsKey("msgs") || r["success"] == JsonPrimitive(true)
+        }
         val first = if (postFirst) socialPost(path, *params) else socialGet(path, *params)
         if (looksOk(first)) return first
         val second = if (postFirst) socialGet(path, *params) else socialPost(path, *params)

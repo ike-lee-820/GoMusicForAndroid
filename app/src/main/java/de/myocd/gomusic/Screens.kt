@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -310,7 +311,9 @@ fun MainScreen(vm: MainViewModel) {
     // 一条 bg 纯黑的窄条，和导航栏明显有色差，很难看。
     val sideInset = if (landscape) statusBarHeightDp() else 0.dp
 
-    Box(Modifier.fillMaxSize().background(go.bg)) {
+    // 26.11.84：edge-to-edge 下系统不再自动顶起内容，必须显式消费 IME inset，
+    // 否则虚拟键盘弹出时聊天输入栏 / 搜索框 / 表单会被盖住（打字看不到字）。
+    Box(Modifier.fillMaxSize().background(go.bg).imePadding()) {
         // weight 必须在 Row/Column 作用域里用，所以把内容块做成带 Modifier 的 lambda
         val contentBox: @Composable (Modifier) -> Unit = { mod ->
             Box(mod.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {

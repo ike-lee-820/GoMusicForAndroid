@@ -96,6 +96,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -105,6 +106,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -117,6 +119,7 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
 import coil.compose.AsyncImage
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -1176,6 +1179,9 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
     // 否则一次跳 250ms，几个字一起变色，看起来就是「生硬跳动」。
     val framePos = remember { mutableLongStateOf(vm.positionMs) }
     val userScrollUntil = remember { mutableLongStateOf(0L) }
+    // 26.11.79：切句翻动的即时进度 0..1，只驱动当前行的轻微扭动，
+    // 不碰逐字时间轴，字亮起的时刻仍与演唱时间一一对应。
+    val wobble = remember { mutableFloatStateOf(0f) }
     LaunchedEffect(w) {
         var lastActive = -1
         // 26.11.51：只保留一个滚动协程。以前每切一行就 launch 一个新
@@ -1215,13 +1221,13 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                         suppressed = true
                     } else {
                         scrollJob?.cancel()
-                        scrollJob = launch { state.easeScrollToItem(a) }
+                        scrollJob = launch { state.easeScrollToItem(a) { wobble.floatValue = it } }
                     }
                 }
             } else if (suppressed && !held && lastActive >= 0) {
                 suppressed = false
                 scrollJob?.cancel()
-                scrollJob = launch { state.easeScrollToItem(lastActive) }
+                scrollJob = launch { state.easeScrollToItem(lastActive) { wobble.floatValue = it } }
             }
         }
     }
@@ -1251,8 +1257,19 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                 derivedStateOf { w.activeIndex(framePos.longValue) == i }
             }
             val alpha = if (isActive) 1f else 0.32f
+            // 26.11.79：翻动时当前行微微扭一下。wobble 只在激活行读取，
+            // 非激活行不订阅这个逐帧 state，也不会变形。
+            val wob = if (isActive) wobble.floatValue else 0f
+            val twist = if (isActive) sin(wob * 2f * PI.toFloat()) * (1f - wob) else 0f
+            val squish = if (isActive) 1f + sin(wob * PI.toFloat()) * (1f - wob) * 0.014f else 1f
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                Modifier.fillMaxWidth()
+                    .graphicsLayer {
+                        rotationZ = twist * 1.3f
+                        scaleX = squish
+                        scaleY = 2f - squish
+                    }
+                    .padding(horizontal = 8.dp)
                     // 点击歌词跳到这一行；制作信息行不跳。
                     // 清掉手动滑动抑制窗口：用户主动选行，就该立刻跟到那一行
                     .clickable(enabled = !line.meta) {
@@ -1324,7 +1341,10 @@ private fun jellyScroll(t: Float): Float {
  * 目标不可见时退回系统动画，行为不变。
  * 首次直接落位、抑制窗口、点击跳转、补滚回当前行这些状态机一行没动。
  */
-private suspend fun LazyListState.easeScrollToItem(index: Int) {
+private suspend fun LazyListState.easeScrollToItem(
+    index: Int,
+    onProgress: (Float) -> Unit = {},
+) {
     if (index < 0) return
     val target = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
     if (target == null) {
@@ -1341,12 +1361,14 @@ private suspend fun LazyListState.easeScrollToItem(index: Int) {
             val t = withFrameNanos {
                 ((it - t0).toFloat() / durationNs).coerceIn(0f, 1f)
             }
+            onProgress(t)
             val want = total * jellyScroll(t)
             this.scrollBy(want - applied)
             applied = want
             if (t >= 1f) break
         }
     }
+    onProgress(0f)
 }
 
 private fun smoothstep(t: Float): Float {
@@ -1379,6 +1401,27 @@ private fun charWidth(c: Char): Float = when {
 }
 
 /**
+ * 26.11.79：把同一份字形按 [a,b] 横向区间裁切后画一档颜色。
+ * 各区间互不重叠，因此字形在同一个 x 上只有一种颜色，没有叠加层、没有
+ * 半透明混色误差 —— 用来做「字内从左到右、带软边界的擦亮」。
+ */
+private fun DrawScope.drawBand(
+    layout: TextLayoutResult,
+    color: Color,
+    x: Float,
+    y: Float,
+    h: Float,
+    a: Float,
+    b: Float,
+) {
+    if (b <= a) return
+    drawContext.canvas.save()
+    drawContext.canvas.clipRect(x + a, y - 2f, x + b, y + h + 2f)
+    drawText(layout, color = color, topLeft = Offset(x, y))
+    drawContext.canvas.restore()
+}
+
+/**
  * 26.11.48：逐字高亮只有字形本身的颜色，但**边界是整行连续的**。
  *
  * 26.11.47 让每个字按自己的时间窗独立插值，结果字 A 唱完变全亮、紧接的
@@ -1397,9 +1440,11 @@ private fun charWidth(c: Char): Float = when {
  * 非线性化，字亮起的时刻与真实演唱时间对不上（时间不准确）。边界回到严格线性。
  *
  * 26.11.78：横向不再是「整字从暗渐变到亮」的渐亮，改成字内从左到右的
- * 滚动式擦亮 —— 底层整字暗色，上层整字亮色按该字被扫过的比例裁掉右半。
- * 「顺」字先只亮左边的丿、再亮川、最后全字亮。仍然只有字形两档明暗，
- * 没有矩形、渐变条、光晕或任何叠加层；时间轴依旧严格线性。
+ * 滚动式擦亮 —— 「顺」字先只亮左边的丿、再亮川、最后全字亮。时间轴严格线性。
+ *
+ * 26.11.79：擦亮边界从一条硬裁切边改成两侧各 14% 字宽、10 档的软过渡带，明暗
+ * 不再一刀切；切句翻动时当前行叠一次极轻的扭动（1.3° 内，起止归零），
+ * 只动行位移形变，不碰逐字时间轴。仍只有字形明暗，没有叠加层。
  */
 @Composable
 private fun WordLineText(
@@ -1454,9 +1499,10 @@ private fun WordLineText(
     }
 
     // 只有两档明暗，不用主色，也没有矩形 / 渐变条 / 光晕 / 叠加层。
-    // 底层整字画暗，上层整字画亮但按「该字被边界扫过的比例」裁掉右半：
-    // 字内从左到右滚动式擦亮，而不是整字亮度从暗插值到亮的渐亮。
-    val dark = go.on.copy(alpha = alpha * 0.28f)
+    // 字内从左到右滚动式擦亮：亮侧 / 软过渡带 / 暗侧把同一个字形分段绘制，
+    // 各段不重叠。26.11.79 在边界两侧各留 14% 字宽、分 10 档过渡，
+    // 避免上一版一条硬裁切边把明暗切得太突兀；暗档也略提亮减小整体反差。
+    val dark = go.on.copy(alpha = alpha * 0.32f)
     val bright = go.on.copy(alpha = alpha)
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -1497,16 +1543,35 @@ private fun WordLineText(
                 val y = row * linePx
                 val r = layouts[i]
                 val h = r.size.height.toFloat()
-                // 底层：整字暗
-                drawText(r, color = dark, topLeft = Offset(x, y))
                 // 该字被边界扫过的比例：0=全暗，1=全亮
                 val span = (ends[i] - starts[i]).coerceAtLeast(1e-6f)
                 val p = ((edge - starts[i]) / span).coerceIn(0f, 1f)
-                if (p > 0f) {
-                    drawContext.canvas.save()
-                    drawContext.canvas.clipRect(x, y - 2f, x + w * p, y + h + 2f)
-                    drawText(r, color = bright, topLeft = Offset(x, y))
-                    drawContext.canvas.restore()
+                when {
+                    p <= 0f -> drawBand(r, dark, x, y, h, 0f, w)
+                    p >= 1f -> drawBand(r, bright, x, y, h, 0f, w)
+                    else -> {
+                        val px = w * p
+                        // 过渡带在字两端自动收窄到 0：p 刚过 0 时不会出现
+                        // 一整条亮带，p 快到 1 时也不会留下一条暗尾，明暗全程连续。
+                        val half = minOf(w * 0.14f, px, w - px)
+                        val lo = px - half
+                        val hi = px + half
+                        // 已扫过的一侧（左）全亮
+                        drawBand(r, bright, x, y, h, 0f, lo)
+                        // 软过渡带：10 档，从亮平滑到暗（方向不能反），
+                        // 仍是字形本身的颜色，不是背景条
+                        val n = 10
+                        for (k in 0 until n) {
+                            val a = lo + (hi - lo) * k / n
+                            val b = lo + (hi - lo) * (k + 1) / n
+                            drawBand(
+                                r, mixColor(bright, dark, smoothstep((k + 0.5f) / n)),
+                                x, y, h, a, b,
+                            )
+                        }
+                        // 未扫过的一侧（右）全暗
+                        drawBand(r, dark, x, y, h, hi, w)
+                    }
                 }
             }
         }

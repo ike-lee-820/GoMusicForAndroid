@@ -1280,7 +1280,10 @@ fun PlaylistsTab(vm: MainViewModel, state: LazyListState) {
             // list 可能被搜索词过滤，排序要用真实索引
             val realIdx = vm.playlists.indexOfFirst { it.id == p.id }
             GroupRow(
-                p.name, "${songs.size} 首", p.cover ?: songs.firstNotNullOfOrNull { it.coverUrl },
+                p.name,
+                // 26.11.70：收藏 / 订阅歌单在本地标出来，避免和自建歌单混淆
+                "${songs.size} 首${if (p.cloudReadOnly) " · 云端收藏" else ""}",
+                p.cover ?: songs.firstNotNullOfOrNull { it.coverUrl },
                 onClick = { vm.stack.add(Screen.PlaylistPage(p.id)) },
                 onAdd = null,
                 trailing = {

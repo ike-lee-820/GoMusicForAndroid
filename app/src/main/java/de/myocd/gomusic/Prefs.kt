@@ -56,6 +56,17 @@ data class Playlist(
      * 识别都要用这个原始名，不能把标签反复叠加，也不能把「云」字传到云端。
      */
     val cloudBase: String? = null,
+    /**
+     * 26.11.70：云端「收藏 / 订阅的歌单」和「我喜欢的音乐」不属于本人创建，
+     * 网易云不允许改名 / 删除 / 加删歌 / 排序 / 换封面。本地仍可随意编辑，
+     * 但所有改动不回写云端，免得每次都报失败。
+     */
+    val cloudReadOnly: Boolean = false,
+    /**
+     * 云端内容指纹（更新时间 + 歌曲数）。自动同步时指纹没变就跳过重新拉曲目，
+     * 避免几十张收藏歌单每次进应用都发一轮请求；手动同步可强制全量。
+     */
+    val cloudStamp: String? = null,
 )
 
 /** 对应网页端 localStorage：play_counts / user_playlists / play_mode / quality / theme_color */

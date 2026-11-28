@@ -281,6 +281,18 @@ object Netease {
 
     private fun JsonObject.obj(k: String): JsonObject? = this[k] as? JsonObject
 
+    /** 26.11.70：读取数值字段（userId / trackCount / updateTime / specialType） */
+    private fun JsonObject.num(vararg keys: String): Long? {
+        for (k in keys) {
+            val v = (this[k] as? JsonPrimitive)?.content?.toLongOrNull()
+            if (v != null) return v
+        }
+        return null
+    }
+
+    private fun JsonObject.flag(k: String): Boolean =
+        (this[k] as? JsonPrimitive)?.content?.let { it == "true" || it == "1" } ?: false
+
     /**
      * 递归找 cookie：不同接口返回的位置不一样（顶层 cookie / data.cookie / cookies），
      * 找不到就返回空，避免漏掉登录态。
@@ -413,19 +425,30 @@ object Netease {
         }
     }
 
-    /** /song/detail?ids=1,2,3 -> id -> 详情 */
-    private fun songDetail(ids: List<Long>): Map<Long, Song> {
-        val root = get(
-            "/song/detail", "ids" to ids.joinToString(","),
-            http = searchClient, tries = 1,
-        )
-        val arr = resultArray(root, "songs")
-        if (arr.isEmpty()) NmLog.note("song/detail 没有 songs 字段")
-        return arr.mapNotNull { o ->
-            val s = toSong(o) ?: return@mapNotNull null
-            val id = s.nmId
-            if (id <= 0) null else id to s
-        }.toMap()
+    /**
+     * /song/detail?ids=1,2,3 -> id -> 详情。
+     *
+     * 26.11.70：按 100 个一批切分。收藏歌单动辄上千首，一次性把全部 id
+     * 拼进 URL 会超出服务端限制直接 400，整张歌单就只剩前几首。
+     */
+    private fun songDetail(ids: List<Long>, client: OkHttpClient = searchClient): Map<Long, Song> {
+        if (ids.isEmpty()) return emptyMap()
+        val out = HashMap<Long, Song>()
+        ids.distinct().chunked(100).forEach { chunk ->
+            val root = runCatching {
+                get(
+                    "/song/detail", "ids" to chunk.joinToString(","),
+                    http = client, tries = 1,
+                )
+            }.getOrNull() ?: return@forEach
+            val arr = resultArray(root, "songs")
+            if (arr.isEmpty()) NmLog.note("song/detail 没有 songs 字段")
+            arr.forEach { o ->
+                val so = toSong(o) ?: return@forEach
+                if (so.nmId > 0) out[so.nmId] = so
+            }
+        }
+        return out
     }
 
     /** 单曲详情：播放前按 id 取完整封面 / 专辑 / 歌手 */
@@ -817,6 +840,24 @@ object Netease {
 
     /** 单次搜索请求的硬性截止：到点就真断开，不再让旧请求占着线程 */
     private const val SEARCH_CALL_MS = 6000L
+
+    /**
+     * 26.11.70：歌单同步专用客户端。
+     *
+     * 「同步所有云端歌单」会连着打 /user/playlist + 每张歌单 /playlist/detail +
+     * 若干 /song/detail。若沿用 Api.client，会和播放解析、搜索、预取抢同一个
+     * dispatcher，同步一跑整首歌起播就变慢。这里物理隔开，且只发一次不重试。
+     */
+    private val syncClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(10, TimeUnit.SECONDS)
+        .dispatcher(Dispatcher().apply {
+            maxRequests = 16
+            maxRequestsPerHost = 8
+        })
+        .connectionPool(ConnectionPool(6, 30, TimeUnit.SECONDS))
+        .build()
 
     /** 取播放地址专用客户端：短超时。取地址要快，失败就换下一种，不能干等 */
     private val urlClient: OkHttpClient = OkHttpClient.Builder()
@@ -1390,17 +1431,72 @@ object Netease {
      * 专辑走 /album，歌手走 /artist/songs；拿到后再用 song/detail 补全。
      */
     /** 专辑 / 歌手的歌曲列表。歌手支持 offset 分页（滑到底继续加载） */
+    /**
+     * 26.11.70：取一张网易云歌单的**全部**曲目，按云端 trackIds 顺序返回。
+     *
+     * /playlist/detail 的 playlist.tracks 经常只给前 10 首，完整 id 列表在
+     * playlist.trackIds。以前直接拿 tracks 用，收藏歌单同步下来只有十首，
+     * 点开歌单页也一样。这里用 trackIds 做骨架，缺的歌按 100 个一批走
+     * /song/detail 补齐，最后 enrich 补封面 / 专辑 / 歌手。
+     */
+    fun playlistSongs(id: Long, client: OkHttpClient = syncClient): List<Song> {
+        val root = runCatching {
+            get("/playlist/detail", "id" to id.toString(), http = client, tries = 1)
+        }.getOrNull() ?: return emptyList()
+        val pl = root.obj("playlist") ?: root.obj("result") ?: root
+        val trackArr = ((pl["tracks"] as? JsonElement)?.jsonArray
+            ?: (root["tracks"] as? JsonElement)?.jsonArray)
+            ?.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } }
+            .orEmpty()
+        val ids = ((pl["trackIds"] as? JsonElement)?.jsonArray)
+            ?.mapNotNull { e ->
+                (e as? JsonObject)?.num("id")
+                    ?: (e as? JsonPrimitive)?.content?.toLongOrNull()
+            }
+            .orEmpty().filter { it > 0L }
+        if (ids.isEmpty()) {
+            NmLog.note("歌单 $id 无 trackIds，沿用 tracks ${trackArr.size} 首")
+            return enrich(trackArr)
+        }
+        val byId = HashMap<Long, Song>()
+        trackArr.forEach { so -> if (so.nmId > 0L) byId[so.nmId] = so }
+        val missing = ids.filterNot { byId.containsKey(it) }
+        if (missing.isNotEmpty()) {
+            NmLog.note("歌单 $id 共 ${ids.size} 首，补齐缺失 ${missing.size} 首")
+            missing.chunked(100).forEach { chunk ->
+                runCatching { songDetail(chunk, client) }.getOrDefault(emptyMap())
+                    .forEach { (k, v) -> if (!byId.containsKey(k)) byId[k] = v }
+            }
+        }
+        val ordered = ids.mapNotNull { byId[it] }.ifEmpty { trackArr }
+        // 只对信息不完整的歌补详情。songDetail 已经把 trackIds 里缺的那些
+        // 完整取回来了，再对整张歌单调一遍 enrich 会把请求量直接翻倍。
+        val incomplete = ordered.filter {
+            it.coverUrl.isNullOrBlank() || it.album.isBlank() || it.artist.isBlank()
+        }
+        if (incomplete.isEmpty()) return ordered
+        val detail = runCatching {
+            songDetail(incomplete.map { it.nmId }, client)
+        }.getOrDefault(emptyMap())
+        return ordered.map { s ->
+            val d = detail[s.nmId] ?: return@map s
+            s.copy(
+                title = d.title.takeIf { it.isNotBlank() } ?: s.title,
+                artist = d.artist.takeIf { it.isNotBlank() } ?: s.artist,
+                album = d.album.takeIf { it.isNotBlank() } ?: s.album,
+                coverUrl = d.coverUrl ?: s.coverUrl,
+                mvId = s.mvId.takeIf { it > 0L } ?: d.mvId,
+            )
+        }
+    }
+
     fun songsOf(kind: String, id: Long, limit: Int = 30, offset: Int = 0): List<Song> {
         NmLog.note("取 $kind 的歌曲 id=$id offset=$offset")
         val root = if (kind == "album") {
             get("/album", "id" to id.toString())
         } else if (kind == "playlist") {
-            // 榜单 / 歌单：tracks 里就是歌曲
-            val r = get("/playlist/detail", "id" to id.toString())
-            val arr = (r.obj("playlist")?.get("tracks") as? JsonElement)?.jsonArray
-                ?: resultArray(r, "tracks")
-            if (arr.isEmpty()) NmLog.note("歌单 $id 无歌曲 code=${r.code()}")
-            return enrich(arr.mapNotNull { e -> (e as? JsonObject)?.let { toSong(it) } })
+            // 26.11.70：走全量曲目拉取，见 [playlistSongs]
+            return playlistSongs(id)
         } else {
             get(
                 "/artist/songs", "id" to id.toString(),
@@ -1778,34 +1874,61 @@ object Netease {
     }
 
     /**
-     * 我的网易云歌单（/user/playlist?uid=）。
+     * 26.11.70：网易云账号下**全部**歌单（自建 + 收藏/订阅 + 我喜欢的音乐）。
      *
-     * 只保留「我创建的」：前面那些是「喜欢的音乐」和收藏的歌单，
-     * 收藏的歌单不属于我，混进来会和本地歌单对不上。
-     * 判断依据是 creator.userId == uid。
+     * 以前按 creator.userId == uid 把收藏歌单整批过滤掉了，注释还写着
+     * 「收藏的歌单不属于我」——用户要的就是「所有网易云歌单」也同步到本地，
+     * 所以这里不再过滤，只把「不是我创建的」标成 readOnly：这类歌单云端
+     * 不允许改名 / 删除 / 加删歌 / 排序 / 换封面，本地编辑不回写即可。
+     *
+     * 分页拉到 more=false 或返回不足一页，避免账号歌单超过 1000 张时被截断。
      */
     fun userPlaylists(uid: Long): List<Group> {
         if (uid <= 0L) return emptyList()
-        val root = get("/user/playlist", "uid" to uid.toString(), "limit" to "1000", "offset" to "0")
-        val arr = resultArray(root, "playlist")
-        NmLog.note("我的歌单返回 ${arr.size} 个")
-        return arr.mapNotNull { o ->
-            val id = idOf(o)
-            val name = o.str("name").orEmpty()
-            if (id <= 0L || name.isBlank()) return@mapNotNull null
-            val creatorId = (o.obj("creator")?.get("userId") as? JsonPrimitive)?.content?.toLongOrNull()
-            // creator 取不到时不筛（接口偶尔不给），至少不会全丢
-            if (creatorId != null && creatorId != uid) return@mapNotNull null
-            Group(
-                title = name,
-                subtitle = "网易云歌单 · ${o.str("trackCount")?.let { "$it 首" } ?: ""}",
-                cover = pic(o.str("coverImgUrl", "picUrl", "cover")),
-                songs = emptyList(),
-                source = SRC_NETEASE,
-                nmId = id,
-                nmKind = "playlist",
-            )
-        }.distinctBy { it.nmId }
+        val out = LinkedHashMap<Long, Group>()
+        val limit = 1000
+        for (page in 0 until 10) {
+            val root = runCatching {
+                get(
+                    "/user/playlist",
+                    "uid" to uid.toString(),
+                    "limit" to limit.toString(),
+                    "offset" to (page * limit).toString(),
+                    http = syncClient, tries = 1,
+                )
+            }.getOrNull() ?: break
+            val arr = resultArray(root, "playlist")
+            arr.forEach { o ->
+                val id = idOf(o)
+                val name = o.str("name").orEmpty()
+                if (id <= 0L || name.isBlank() || out.containsKey(id)) return@forEach
+                val creatorId = o.obj("creator")?.num("userId")
+                val subscribed = o.flag("subscribed") ||
+                    (creatorId != null && creatorId != uid)
+                val special = o.num("specialType") ?: 0L
+                // 「我喜欢的音乐」specialType=5，云端同样不允许删 / 改名
+                val readOnly = subscribed || special > 0L
+                val count = (o.num("trackCount") ?: 0L).toInt()
+                val stamp = "${o.num("updateTime") ?: 0L}-$count"
+                out[id] = Group(
+                    title = name,
+                    subtitle = "${if (readOnly) "网易云收藏歌单" else "网易云歌单"} · ${count} 首",
+                    cover = pic(o.str("coverImgUrl", "picUrl", "cover")),
+                    songs = emptyList(),
+                    source = SRC_NETEASE,
+                    nmId = id,
+                    nmKind = "playlist",
+                    readOnly = readOnly,
+                    cloudStamp = stamp,
+                    trackCount = count,
+                )
+            }
+            NmLog.note("我的歌单第 $page 页返回 ${arr.size} 个，累计 ${out.size} 个")
+            // more 字段缺失时不能当成「没有下一页」，否则第一页就被截断
+            val more = (root["more"] as? JsonPrimitive)?.content
+            if (arr.size < limit || more == "false") break
+        }
+        return out.values.toList()
     }
 
     /**

@@ -39,6 +39,8 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -106,6 +108,11 @@ data class Group(
     val nmId: Long = 0,
     /** 网易云专辑 / 歌手，用于取歌曲列表 */
     val nmKind: String = "",
+    /** 26.11.70：收藏 / 订阅歌单与「我喜欢的音乐」，云端不可写 */
+    val readOnly: Boolean = false,
+    /** 云端内容指纹：updateTime + trackCount，用于跳过无变化的歌单 */
+    val cloudStamp: String? = null,
+    val trackCount: Int = 0,
 )
 
 data class PickRequest(val ssids: List<String>, val name: String, val cover: String?)
@@ -3359,13 +3366,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 26.11.66：网易云歌单双向同步。
+     * 26.11.70：网易云歌单**全量**双向同步。
      *
-     * ① 取云端自建歌单；② 本地没有的下载下来，与本地歌单重名的那份
-     * 在名字后加「云」标签，并用 cloudBase 记住云端原名（下次同步靠 nmId
-     * 识别，不会反复加标签，也不会把「云」字传回云端）；
-     * ③ 本地自建歌单反向在云端 create 并回填 nmId，之后所有改动都能回写；
-     * ④ 顺序也同步到云端。
+     * ① 取云端全部歌单：自建 + 收藏/订阅 + 「我喜欢的音乐」，不再按 creator
+     * 过滤（以前那句「收藏的歌单不属于我，混进来会和本地对不上」正是这次
+     * 要修的）；② 每张歌单按 trackIds 拉全量曲目，不是只拿前 10 首；
+     * ③ 本地没有的下载下来，重名的那份加「云」标签，cloudBase 记住云端原名；
+     * ④ 本地自建歌单反向在云端 create 并回填 nmId；⑤ 顺序也同步到云端。
+     *
+     * 收藏 / 订阅歌单与「我喜欢的音乐」云端不允许写，标记为 cloudReadOnly：
+     * 本地仍可随意编辑，但改动不回写云端，也不参与云端排序。
+     *
+     * 自动同步用 updateTime+曲目数做指纹，没变化的歌单跳过重新拉曲目，
+     * 免得几十张收藏歌单每次进应用都发一轮请求；手动同步强制全量刷新。
      *
      * 云端删掉的歌单本地仍保留：接口偶发漏返回时直接删用户本地歌单代价太大。
      */
@@ -3389,25 +3402,52 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 val mine = runCatching { Netease.userPlaylists(uid) }.getOrDefault(emptyList())
+                if (mine.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        nmSyncing = false
+                        if (!quiet) toast("没有取到云端歌单，请检查登录态")
+                    }
+                    return@launch
+                }
                 val local = withContext(Dispatchers.Main) { playlists.toMutableList() }
+                val existing = local.filter { it.nmId > 0L }.associateBy { it.nmId }
+                // 每批 4 张并发：既不会一次打出几十个请求挤占播放链路，
+                // 也不会像以前那样一张一张串行等，几十张歌单同步要几分钟。
+                val fetched = ArrayList<Pair<Group, List<Song>?>>()
+                mine.chunked(4).forEach { batch ->
+                    val part = coroutineScope {
+                        batch.map { g -> async<Pair<Group, List<Song>?>> {
+                            val old = existing[g.nmId]
+                            // null = 云端内容没变，沿用本地曲目（仅自动同步走这条）
+                            val unchanged = old != null && quiet &&
+                                old.cloudStamp == g.cloudStamp && old.songs.isNotEmpty()
+                            if (unchanged) g to null
+                            else g to runCatching { Netease.playlistSongs(g.nmId) }
+                                .getOrDefault(emptyList<Song>())
+                        } }.awaitAll()
+                    }
+                    fetched.addAll(part)
+                }
                 val all = ArrayList<Song>()
                 var added = 0
                 var updated = 0
-                for (g in mine) {
-                    val songs = runCatching { Netease.songsOf("playlist", g.nmId, 1000) }
-                        .getOrDefault(emptyList())
-                    all.addAll(songs)
-                    val ids = songs.map { it.ssid }
+                var skipped = 0
+                for ((g, songs) in fetched) {
+                    if (songs != null) all.addAll(songs)
+                    val ids = songs?.map { it.ssid }
                     val at = local.indexOfFirst { it.nmId == g.nmId && g.nmId > 0L }
                     if (at >= 0) {
                         val old = local[at]
                         val name = if (old.cloudBase != null && old.name.endsWith(CLOUD_TAG))
                             g.title + CLOUD_TAG else g.title
                         local[at] = old.copy(
-                            name = name, cloudBase = g.title, songs = ids,
+                            name = name, cloudBase = g.title,
+                            songs = ids ?: old.songs,
                             cover = g.cover ?: old.cover,
+                            cloudReadOnly = g.readOnly,
+                            cloudStamp = g.cloudStamp,
                         )
-                        updated++
+                        if (songs == null) skipped++ else updated++
                     } else {
                         val clash = local.any {
                             it.nmId != g.nmId &&
@@ -3416,8 +3456,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                         val name = if (clash) g.title + CLOUD_TAG else g.title
                         local.add(
                             Playlist(
-                                UUID.randomUUID().toString(), name, ids,
-                                g.cover, g.nmId, g.title,
+                                id = UUID.randomUUID().toString(),
+                                name = name,
+                                songs = ids ?: emptyList(),
+                                cover = g.cover,
+                                nmId = g.nmId,
+                                cloudBase = g.title,
+                                cloudReadOnly = g.readOnly,
+                                cloudStamp = g.cloudStamp,
                             )
                         )
                         added++
@@ -3427,7 +3473,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 var uploaded = 0
                 for (i in local.indices) {
                     val pl = local[i]
-                    if (pl.nmId > 0L) continue
+                    if (pl.nmId > 0L || pl.cloudReadOnly) continue
                     val pid = runCatching { Netease.playlistCreate(cloudName(pl)) }
                         .getOrDefault(0L)
                     if (pid <= 0L) continue
@@ -3436,14 +3482,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     local[i] = pl.copy(nmId = pid, cloudBase = cloudName(pl))
                     uploaded++
                 }
+                val readOnlyCount = mine.count { it.readOnly }
                 withContext(Dispatchers.Main) {
                     rememberSongs(all)
                     savePl(local)
                     nmSyncing = false
-                    if (!quiet) toast("同步完成：下载 $added 新 / $updated 更新，上传 $uploaded 个")
+                    if (!quiet) toast(
+                        "同步完成：云端 ${mine.size} 张（收藏 $readOnlyCount），" +
+                            "新增 $added / 更新 $updated / 未变 $skipped，上传 $uploaded 个"
+                    )
                 }
-                val ids = local.mapNotNull { it.nmId.takeIf { v -> v > 0L } }
-                if (ids.size >= 2) runCatching { Netease.playlistOrder(ids) }
+                // 云端排序接口只接受本人创建的歌单，收藏歌单传过去会整批失败
+                val orderIds = local.filter { !it.cloudReadOnly }
+                    .mapNotNull { it.nmId.takeIf { v -> v > 0L } }
+                if (orderIds.size >= 2) runCatching { Netease.playlistOrder(orderIds) }
             } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     nmSyncing = false
@@ -3456,7 +3508,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 歌单顺序变更后回写云端（ids 为全部云端歌单的目标顺序） */
     private fun syncPlaylistOrder() {
         if (!canSyncCloud()) return
-        val ids = playlists.mapNotNull { it.nmId.takeIf { v -> v > 0L } }
+        // 26.11.70：收藏 / 订阅歌单不能参与云端排序，传过去会整批失败
+        val ids = playlists.filter { !it.cloudReadOnly }
+            .mapNotNull { it.nmId.takeIf { v -> v > 0L } }
         if (ids.size < 2) return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { Netease.playlistOrder(ids) }
@@ -3477,7 +3531,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun setPlaylistCover(id: String, localUri: String, bytes: ByteArray?) {
         val p = playlists.firstOrNull { it.id == id } ?: return
         savePl(playlists.map { if (it.id == id) it.copy(cover = localUri) else it })
-        if (bytes == null || p.nmId <= 0L || !canSyncCloud()) return
+        if (bytes == null || p.nmId <= 0L || p.cloudReadOnly || !canSyncCloud()) return
         viewModelScope.launch(Dispatchers.IO) {
             val ok = runCatching { Netease.playlistCover(p.nmId, bytes) }.getOrDefault(false)
             withContext(Dispatchers.Main) { if (!ok) toast("云端封面上传未成功（本地已显示）") }
@@ -3589,7 +3643,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 it.copy(name = n, cloudBase = if (it.cloudBase != null) cloud else null)
             else it
         })
-        if (p.nmId > 0L && canSyncCloud()) {
+        if (p.nmId > 0L && !p.cloudReadOnly && canSyncCloud()) {
             viewModelScope.launch(Dispatchers.IO) {
                 val ok = runCatching { Netease.playlistUpdate(p.nmId, cloud) }.getOrDefault(false)
                 withContext(Dispatchers.Main) { if (!ok) toast("云端歌单改名未成功（本地已改）") }
@@ -3600,7 +3654,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun deletePlaylist(id: String) {
         val p = playlists.firstOrNull { it.id == id } ?: return
         savePl(playlists.filter { it.id != id })
-        if (p.nmId > 0L && canSyncCloud()) {
+        if (p.nmId > 0L && !p.cloudReadOnly && canSyncCloud()) {
             viewModelScope.launch(Dispatchers.IO) {
                 val ok = runCatching { Netease.playlistDelete(p.nmId) }.getOrDefault(false)
                 withContext(Dispatchers.Main) { if (!ok) toast("云端歌单删除未成功（本地已删）") }
@@ -3617,7 +3671,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         l.add(to, x)
         savePl(playlists.map { if (it.id == id) it.copy(songs = l) else it })
         // 26.11.66：/song/order/update 要的是整张歌单的目标顺序，不是被移动的那一首
-        if (p.nmId > 0L && canSyncCloud()) {
+        if (p.nmId > 0L && !p.cloudReadOnly && canSyncCloud()) {
             val ids = l.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }
             if (ids.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) {
                 runCatching { Netease.songOrder(p.nmId, ids) }
@@ -3638,7 +3692,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 传过去要么被忽略、要么报错，所以直接跳过。
      */
     private fun syncNmRemove(p: Playlist, ssids: List<String>) {
-        if (p.nmId <= 0L || !canSyncCloud()) return
+        if (p.nmId <= 0L || p.cloudReadOnly || !canSyncCloud()) return
         val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
         if (ids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -3652,7 +3706,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * 同样只同步网易云来源的歌（见 [syncNmRemove]）。
      */
     private fun syncNmAdd(p: Playlist, ssids: List<String>) {
-        if (p.nmId <= 0L || !canSyncCloud()) return
+        if (p.nmId <= 0L || p.cloudReadOnly || !canSyncCloud()) return
         val ids = ssids.mapNotNull { neteaseIdOf(it) }.filter { it > 0L }.distinct()
         if (ids.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {

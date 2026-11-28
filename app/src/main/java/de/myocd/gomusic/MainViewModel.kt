@@ -4410,8 +4410,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 } else {
                     delay(1000)
                 }
-                // 26.11.82：一起听主机把当前歌曲 / 进度写进房间；非主机时为空操作
-                publishListenState()
+                // 26.11.83：官方房间心跳（每首歌开始时 + 每 15 秒一次）
+                ltHeartbeatTick()
             }
         }
     }
@@ -4719,11 +4719,20 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 全局待分享：播放器 / 歌曲菜单 / 专辑 / 歌单点「私聊分享」后弹出选人 */
     var pendingShare by mutableStateOf<ShareItem?>(null); private set
 
-    /** 一起听：主机房间地址、客人加入的地址与最近一次拉到的状态 */
-    var listenHostUrl by mutableStateOf<String?>(null); private set
-    var listenGuestUrl by mutableStateOf<String?>(null); private set
-    var listenGuestState by mutableStateOf<RoomState?>(null); private set
-    private var listenJob: Job? = null
+    // ---------- 26.11.83：一起听（网易云官方房间） ----------
+    var ltAccount by mutableStateOf(ListenAccount()); private set
+    var ltRoomId by mutableStateOf<String?>(null); private set
+    var ltInviterId by mutableLongStateOf(0L); private set
+    var ltUsers by mutableStateOf<List<RoomUser>>(emptyList()); private set
+    var ltMessage by mutableStateOf("请点击获取登录状态"); private set
+    var ltSongId by mutableLongStateOf(0L); private set
+    var ltPlayStatus by mutableStateOf("PAUSE"); private set
+    var ltShareLink by mutableStateOf(""); private set
+    var ltPlaylistName by mutableStateOf("未获取"); private set
+    var ltTracks by mutableStateOf<List<ListenTrack>>(emptyList()); private set
+    var ltBusy by mutableStateOf(false); private set
+    private var ltClientSeq = 1
+    private var ltLastHeartbeat = 0L
 
     // ---------- 播客 ----------
     var podcastQuery by mutableStateOf(""); private set
@@ -4958,74 +4967,203 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ---------- 一起听 ----------
+    // ---------- 一起听（官方房间协议） ----------
 
-    /** 主机模式：起本地房间，把地址通过私信发给对方 */
-    fun startListenHost(peerUid: Long) {
-        val url = ListenTogetherHost.start()
-        if (url == null) { toast("无法创建房间，请检查 WiFi"); return }
-        listenHostUrl = url
-        publishListenState()
-        if (peerUid > 0) {
-            viewModelScope.launch {
-                val ok = withContext(Dispatchers.IO) {
-                    NmSocial.sendText(peerUid.toString(), "【一起听·主机模式】加入我的房间：$url")
-                }
-                toast(if (ok) "房间已创建，邀请已私信发送" else "房间已创建，但邀请发送失败")
-            }
-        } else toast("房间已创建：$url")
-    }
-
-    fun stopListenHost() {
-        ListenTogetherHost.stop()
-        listenHostUrl = null
-    }
-
-    /** 客人：填地址加入，每 2 秒拉一次主机状态 */
-    fun joinListen(url: String) {
-        val u = url.trim()
-        if (u.isBlank()) { toast("请填写房间地址"); return }
-        listenJob?.cancel()
-        listenGuestUrl = u
-        listenJob = viewModelScope.launch {
-            toast("正在加入房间…")
-            while (listenGuestUrl != null) {
-                val st = withContext(Dispatchers.IO) { ListenTogetherGuest.fetch(u) }
-                listenGuestState = st
-                delay(2000)
-            }
+    /** 第一步：取登录态（/login/status 的 userId / nickname） */
+    fun ltLogin() {
+        ltBusy = true
+        viewModelScope.launch {
+            val a = withContext(Dispatchers.IO) { ListenTogetherApi.account() }
+            ltAccount = a
+            ltBusy = false
+            ltMessage = if (a.login) "已登录 ${a.nickname}，可以创建房间"
+            else "未登录，请先在设置里登录网易云"
+            if (!a.login) toast(ltMessage)
         }
     }
 
-    fun leaveListen() {
-        listenJob?.cancel()
-        listenGuestUrl = null
-        listenGuestState = null
-    }
-
-    /** 主机每轮把当前歌曲 / 进度 / 播放状态写进房间 */
-    private fun publishListenState() {
-        if (ListenTogetherHost.roomUrl == null) return
-        val s = currentSong
-        ListenTogetherHost.publish(
-            RoomState(
-                title = s?.title.orEmpty(), artist = s?.artist.orEmpty(),
-                ssid = s?.ssid.orEmpty(),
-                position = positionMs, duration = durationMs, playing = isPlaying,
-            )
+    private fun ltShareUrl(): String {
+        val id = ltRoomId ?: return ""
+        val song = ltSongId.takeIf { it > 0L }
+            ?: currentSong?.nmId?.takeIf { it > 0L }
+            ?: neteaseIdOf(currentSong?.ssid)
+            ?: 0L
+        return ListenTogetherApi.shareLink(
+            song, id, ltInviterId.takeIf { it > 0L } ?: ltAccount.userId,
         )
     }
 
-    /** 客人点「播放同名歌曲」：在本机曲库里找同名歌 */
-    fun playListenSong() {
-        val st = listenGuestState ?: return
-        val all = songs + nmKnown.values + snapshots.values
-        val hit = all.firstOrNull {
-            it.title.equals(st.title, ignoreCase = true) &&
-                (st.artist.isBlank() || it.artist.contains(st.artist, ignoreCase = true))
+    /** 创建房间：room/create → room/check → status；可顺手把链接私信给对方 */
+    fun ltCreateRoom(peerUid: Long = 0L) {
+        if (!ltAccount.login) { toast("请先点「获取登录状态」并登录网易云"); return }
+        ltBusy = true
+        viewModelScope.launch {
+            val id = withContext(Dispatchers.IO) { ListenTogetherApi.createRoom() }
+            if (id.isNullOrBlank()) {
+                ltBusy = false
+                ltMessage = "创建房间失败，请检查登录与网络"
+                toast(ltMessage)
+                return@launch
+            }
+            ltRoomId = id
+            ltInviterId = ltAccount.userId
+            ltShareLink = ltShareUrl()
+            ltMessage = "创建房间成功：$id"
+            withContext(Dispatchers.IO) {
+                ListenTogetherApi.checkRoom(id)
+                ListenTogetherApi.status().let { st -> ltUsers = st.users }
+            }
+            ltBusy = false
+            if (peerUid > 0L) {
+                val invite = "【一起听】$ltMessage，点链接加入：$ltShareLink"
+                val ok = withContext(Dispatchers.IO) {
+                    NmSocial.sendText(peerUid.toString(), invite)
+                }
+                toast(if (ok) "房间已创建，邀请已私信发送" else "房间已创建，但邀请发送失败")
+            } else toast(ltMessage)
         }
-        if (hit != null) { playSongs(listOf(hit), 0); openPlayer() }
-        else toast("本机曲库里没找到「${st.title}」")
+    }
+
+    /** 加入房间：accept → room/check → sync/playlist/get → song/detail */
+    fun ltJoin(roomId: String, inviterId: Long) {
+        val rid = roomId.trim()
+        if (rid.isBlank()) { toast("请填写房间 ID"); return }
+        ltBusy = true
+        viewModelScope.launch {
+            val (ok, st, ids) = withContext(Dispatchers.IO) {
+                val accepted = ListenTogetherApi.acceptRoom(rid, inviterId)
+                val check = ListenTogetherApi.checkRoom(rid)
+                val list = if (accepted || check.inRoom) ListenTogetherApi.syncPlaylistGet(rid)
+                else emptyList()
+                Triple(accepted || check.inRoom, ListenTogetherApi.status(), list)
+            }
+            ltBusy = false
+            if (!ok) {
+                ltMessage = "加入房间失败，检查房间 ID / 邀请者 ID / 登录态"
+                toast(ltMessage)
+                return@launch
+            }
+            ltRoomId = rid
+            ltInviterId = inviterId
+            ltUsers = st.users
+            ltShareLink = ltShareUrl()
+            ltMessage = "加入房间成功：$rid"
+            if (ids.isNotEmpty()) {
+                ltPlaylistName = "房间播放列表"
+                ltTracks = withContext(Dispatchers.IO) { ListenTogetherApi.songDetail(ids) }
+                ltSongId = ids.firstOrNull() ?: 0L
+            }
+            toast(ltMessage)
+        }
+    }
+
+    /** 刷新房间状态：在线用户 */
+    fun ltRefresh() {
+        val id = ltRoomId ?: return
+        viewModelScope.launch {
+            val st = withContext(Dispatchers.IO) { ListenTogetherApi.status() }
+            ltUsers = st.users
+            ltMessage = if (st.inRoom || st.users.isNotEmpty()) "房间状态已刷新（${st.users.size} 人在线）"
+            else "房间状态获取失败，可能已退出房间"
+        }
+    }
+
+    /** 结束房间 */
+    fun ltClose() {
+        val id = ltRoomId ?: return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { ListenTogetherApi.endRoom(id) }
+            ltMessage = if (ok) "房间关闭成功" else "房间关闭失败（仍清掉本地房间号）"
+            toast(ltMessage)
+            ltRoomId = null
+            ltUsers = emptyList()
+            ltShareLink = ""
+            ltTracks = emptyList()
+            ltPlaylistName = "未获取"
+        }
+    }
+
+    /** 加载歌单并 REPLACE 同步到房间 */
+    fun ltLoadPlaylist(idText: String) {
+        val id = idText.trim().toLongOrNull()
+        if (id == null || id <= 0L) { toast("请填写数字歌单 ID"); return }
+        val room = ltRoomId
+        ltBusy = true
+        viewModelScope.launch {
+            val pl = withContext(Dispatchers.IO) { ListenTogetherApi.playlistDetail(id) }
+            ltPlaylistName = pl.name
+            ltTracks = pl.tracks
+            ltBusy = false
+            if (pl.trackIds.isEmpty()) { toast("歌单里没有歌曲"); return@launch }
+            if (room != null) {
+                val ok = withContext(Dispatchers.IO) {
+                    ListenTogetherApi.syncList(
+                        room, ltAccount.userId, ltClientSeq++,
+                        pl.trackIds.joinToString(","),
+                    )
+                }
+                toast(if (ok) "歌单已同步到房间" else "歌单已加载，但同步指令未确认")
+            } else toast("歌单已加载（未加入房间，不会同步）")
+        }
+    }
+
+    /** 切歌：GOTO 指令 + 本地播放 + 发一次心跳 */
+    fun ltGoto(trackId: Long) {
+        if (trackId <= 0L) return
+        val former = ltSongId.takeIf { it > 0L }?.toString() ?: "-1"
+        ltSongId = trackId
+        ltPlayStatus = "PLAY"
+        val t = ltTracks.firstOrNull { it.id == trackId }
+        val s = Song(
+            ssid = "$NM_PREFIX$trackId",
+            title = t?.name ?: "网易云歌曲 $trackId",
+            artist = t?.artist.orEmpty(),
+            coverUrl = t?.cover,
+            source = SRC_NETEASE, nmId = trackId,
+        )
+        playSongs(listOf(s), 0)
+        openPlayer()
+        val room = ltRoomId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            ListenTogetherApi.playCommand(room, "GOTO", trackId, 0L, "PLAY", ltClientSeq++, former)
+            ListenTogetherApi.heartbeat(room, trackId, "PLAY", 0L)
+            ltLastHeartbeat = System.currentTimeMillis()
+        }
+    }
+
+    /** 播放 / 暂停 / 同步进度，progress 用播放器当前位置（毫秒） */
+    fun ltPlay(action: String) {
+        val room = ltRoomId ?: return
+        val song = ltSongId
+        if (song <= 0L) { toast("请先在播放列表里选一首歌"); return }
+        val status = if (action == "PAUSE") "PAUSE" else "PLAY"
+        ltPlayStatus = status
+        when (action) {
+            "PLAY" -> { controller?.play(); }
+            "PAUSE" -> controller?.pause()
+            else -> controller?.play()
+        }
+        val progress = positionMs
+        viewModelScope.launch(Dispatchers.IO) {
+            ListenTogetherApi.playCommand(
+                room, action, song, progress, status, ltClientSeq++,
+            )
+        }
+    }
+
+    /** 轮询里调用：每 15 秒发一次心跳，切歌时会立即发一次 */
+    private fun ltHeartbeatTick() {
+        val room = ltRoomId ?: return
+        val song = ltSongId
+        if (song <= 0L) return
+        val now = System.currentTimeMillis()
+        if (now - ltLastHeartbeat < 15_000L) return
+        ltLastHeartbeat = now
+        val status = ltPlayStatus
+        val progress = positionMs
+        viewModelScope.launch(Dispatchers.IO) {
+            ListenTogetherApi.heartbeat(room, song, status, progress)
+        }
     }
 
 }

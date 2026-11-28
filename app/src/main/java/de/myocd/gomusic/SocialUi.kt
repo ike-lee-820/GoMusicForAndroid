@@ -2,6 +2,8 @@ package de.myocd.gomusic
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -241,74 +243,157 @@ private fun FindFriendPane(vm: MainViewModel) {
 @Composable
 private fun ListenTogetherPane(vm: MainViewModel) {
     val go = LocalGo.current
-    var url by remember { mutableStateOf("") }
-    HigSectionTitle("一起听 · 主机模式", go)
-    Spacer(Modifier.height(6.dp))
-    Text(
-        "两台设备连同一 WiFi。主机创建房间后把地址发给对方，对方填入地址即可" +
-            "看到主机正在播放的歌曲与进度，并可在本机曲库播放同名歌曲。",
-        fontSize = 12.sp, color = go.muted,
-    )
-    Spacer(Modifier.height(12.dp))
-    if (vm.listenHostUrl == null) {
-        GoButton("创建房间（同一 WiFi）", primary = true) { vm.startListenHost(0L) }
-    } else {
+    var roomIdInput by remember { mutableStateOf("") }
+    var inviterInput by remember { mutableStateOf("") }
+    var playlistInput by remember { mutableStateOf("") }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+    ) {
+        HigSectionTitle("一起听 · 官方房间", go)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "按网易云官方房间协议：创建 / 加入房间、同步歌单、下发播放指令与心跳。" +
+                "需要先在设置里登录网易云，房间链接可直接在私信里发给对方。",
+            fontSize = 12.sp, color = go.muted,
+        )
+        Spacer(Modifier.height(10.dp))
+        // 消息条（对应示例里的 .message）
         Box(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                 .background(go.surfaceHi).padding(12.dp),
         ) {
-            Column {
-                HigSectionTitle("房间已创建", go)
-                Spacer(Modifier.height(6.dp))
-                Text(vm.listenHostUrl.orEmpty(), fontSize = 12.sp, color = go.primary)
-                Spacer(Modifier.height(6.dp))
-                Text("把上面地址复制给朋友，或在私信里点「发起一起听」自动发送邀请", fontSize = 12.sp, color = go.muted)
-            }
+            Text("消息：${vm.ltMessage}", fontSize = 13.sp, color = go.on)
         }
-        Spacer(Modifier.height(10.dp))
-        GoButton("停止房间") { vm.stopListenHost() }
-    }
-    Spacer(Modifier.height(20.dp))
-    HigSectionTitle("加入别人的房间", go)
-    Spacer(Modifier.height(8.dp))
-    SocialInput(url, { url = it }, "http://主机IP:端口", go, keyboardType = KeyboardType.Uri)
-    Spacer(Modifier.height(10.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        GoButton("加入", primary = true, enabled = url.isNotBlank()) { vm.joinListen(url) }
-        if (vm.listenGuestUrl != null) GoButton("离开") { vm.leaveListen() }
-    }
-    val st = vm.listenGuestState
-    if (vm.listenGuestUrl != null) {
         Spacer(Modifier.height(12.dp))
+        if (!vm.ltAccount.login) {
+            GoButton("获取登录状态", primary = true, enabled = !vm.ltBusy) { vm.ltLogin() }
+            Spacer(Modifier.height(12.dp))
+        }
         Box(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
                 .background(go.surfaceHi).padding(12.dp),
         ) {
             Column {
+                HigSectionTitle("账号信息", go)
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    if (st == null) "正在连接主机…" else
-                        (st.title.ifBlank { "主机暂未播放" } +
-                            if (st.artist.isBlank()) "" else " · ${st.artist}"),
-                    fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = go.on,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (st == null) "" else
-                        "${if (st.playing) "播放中" else "已暂停"} · ${socialFmt(st.position)} / ${socialFmt(st.duration)}",
-                    fontSize = 12.sp, color = go.muted,
+                    "当前登录账号：${vm.ltAccount.nickname}" +
+                        (if (vm.ltAccount.userId > 0) "（${vm.ltAccount.userId}）" else ""),
+                    fontSize = 13.sp, color = go.on,
                 )
             }
         }
-        Spacer(Modifier.height(10.dp))
-        GoButton("在本机播放同名歌曲", enabled = st != null && st.title.isNotBlank()) {
-            vm.playListenSong()
+        Spacer(Modifier.height(14.dp))
+        HigSectionTitle("房间管理", go)
+        Spacer(Modifier.height(8.dp))
+        if (vm.ltRoomId == null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton("创建房间", primary = true, enabled = vm.ltAccount.login && !vm.ltBusy) {
+                    vm.ltCreateRoom()
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            HigSectionTitle("加入房间", go)
+            Spacer(Modifier.height(8.dp))
+            SocialInput(roomIdInput, { roomIdInput = it }, "房间 ID", go)
+            Spacer(Modifier.height(8.dp))
+            SocialInput(inviterInput, { inviterInput = it }, "邀请者 ID", go,
+                keyboardType = KeyboardType.Number)
+            Spacer(Modifier.height(10.dp))
+            GoButton("加入房间", enabled = roomIdInput.isNotBlank() && !vm.ltBusy) {
+                vm.ltJoin(roomIdInput, inviterInput.trim().toLongOrNull() ?: 0L)
+            }
+        } else {
+            Box(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                    .background(go.surfaceHi).padding(12.dp),
+            ) {
+                Column {
+                    HigSectionTitle("房间 ${vm.ltRoomId}", go)
+                    Spacer(Modifier.height(6.dp))
+                    Text("邀请者：${vm.ltInviterId}", fontSize = 12.sp, color = go.muted)
+                    Spacer(Modifier.height(8.dp))
+                    Text("分享链接", fontSize = 12.sp, color = go.muted)
+                    Spacer(Modifier.height(4.dp))
+                    Text(vm.ltShareLink, fontSize = 12.sp, color = go.primary)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GoButton("刷新房间状态") { vm.ltRefresh() }
+                GoButton("关闭房间") { vm.ltClose() }
+            }
+            Spacer(Modifier.height(14.dp))
+            HigSectionTitle("在线用户（${vm.ltUsers.size}）", go)
+            Spacer(Modifier.height(6.dp))
+            if (vm.ltUsers.isEmpty()) {
+                Text("还没有其他在线用户", fontSize = 13.sp, color = go.muted)
+            } else {
+                vm.ltUsers.forEach { u ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Cover(u.avatarUrl, Modifier.size(40.dp).clip(CircleShape), 20.dp, circle = true)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            u.nickname.ifBlank { "用户 ${u.userId}" },
+                            fontSize = 14.sp, color = go.on,
+                        )
+                    }
+                    Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+                }
+            }
         }
+        Spacer(Modifier.height(16.dp))
+        HigSectionTitle("播放控制", go)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "当前歌曲 ID：${vm.ltSongId.takeIf { it > 0 } ?: "未选择"} · ${vm.ltPlayStatus}",
+            fontSize = 12.sp, color = go.muted,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GoButton("播放") { vm.ltPlay("PLAY") }
+            GoButton("暂停") { vm.ltPlay("PAUSE") }
+            GoButton("同步进度") { vm.ltPlay("seek") }
+        }
+        Spacer(Modifier.height(16.dp))
+        HigSectionTitle("播放列表", go)
+        Spacer(Modifier.height(8.dp))
+        SocialInput(playlistInput, { playlistInput = it }, "歌单 ID", go,
+            keyboardType = KeyboardType.Number)
+        Spacer(Modifier.height(8.dp))
+        GoButton("加载歌单", enabled = playlistInput.isNotBlank() && !vm.ltBusy) {
+            vm.ltLoadPlaylist(playlistInput)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("歌单名称：${vm.ltPlaylistName}", fontSize = 13.sp, color = go.muted)
+        Spacer(Modifier.height(8.dp))
+        if (vm.ltTracks.isEmpty()) {
+            Text("还没有曲目，加载歌单或加入带歌单的房间", fontSize = 13.sp, color = go.muted)
+        } else {
+            vm.ltTracks.take(100).forEach { t ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        .clickable { vm.ltGoto(t.id) },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Cover(t.cover, Modifier.size(40.dp), 6.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(t.name, fontSize = 14.sp, color = go.on, maxLines = 1)
+                        if (t.artist.isNotBlank()) {
+                            Text(t.artist, fontSize = 11.sp, color = go.muted, maxLines = 1)
+                        }
+                    }
+                    Text("播放", fontSize = 12.sp, color = go.primary)
+                }
+                Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
-}
-
-private fun socialFmt(ms: Long): String {
-    val s = (ms / 1000).coerceAtLeast(0)
-    return "%d:%02d".format(s / 60, s % 60)
 }
 
 /** 聊天页：消息气泡 + 文本发送 + 资源分享 + 一起听邀请 */
@@ -342,7 +427,7 @@ private fun ChatPage(vm: MainViewModel) {
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GoButton("发起一起听") { vm.startListenHost(vm.chatUid) }
+            GoButton("发起一起听") { vm.ltCreateRoom(vm.chatUid) }
             GoButton("分享当前歌曲") {
                 val s = vm.currentSong
                 val nid = s?.nmId?.takeIf { it > 0 } ?: neteaseIdOf(s?.ssid) ?: 0L

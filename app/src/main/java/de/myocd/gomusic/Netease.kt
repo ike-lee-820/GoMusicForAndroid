@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.ConnectionPool
+import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.Request
@@ -2335,6 +2336,52 @@ object Netease {
      */
     fun socialGet(path: String, vararg params: Pair<String, String>): JsonObject =
         get(path, *params)
+
+    /**
+     * 26.11.83：官方「一起听」示例里大量接口是 POST + form data（cookie 也放在
+     * body 里），而 get() 只会拼 query。这里补一个同规格的 POST 入口，
+     * 日志 / JSON 解析 / 异常兜底与 get() 完全一致。
+     */
+    fun socialPost(path: String, vararg params: Pair<String, String>): JsonObject {
+        val ts = System.currentTimeMillis().toString()
+        val url = "$NM_BASE$path?timestamp=$ts"
+        val form = FormBody.Builder().apply {
+            params.forEach { add(it.first, it.second) }
+            if (cookie.isNotBlank()) add("cookie", cookie)
+            add("timestamp", ts)
+        }.build()
+        NmLog.req(url)
+        return try {
+            val req = Request.Builder().url(url).post(form).build()
+            Api.client.newCall(req).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                NmLog.res(url, r.code, t)
+                (runCatching { json.parseToJsonElement(t) }.getOrNull() as? JsonObject)
+                    ?: JsonObject(emptyMap())
+            }
+        } catch (e: Exception) {
+            NmLog.err(url, e)
+            JsonObject(emptyMap())
+        }
+    }
+
+    /**
+     * 一起听各接口在示例里 GET / POST 混用，不同部署支持的 method 也不一致。
+     * 先按示例发一次；不像成功就换另一种 method 再发，返回更像成功的那份。
+     */
+    fun socialCall(
+        path: String,
+        postFirst: Boolean,
+        vararg params: Pair<String, String>,
+    ): JsonObject {
+        fun looksOk(r: JsonObject): Boolean =
+            r.code() == 200 || r.containsKey("roomInfo") ||
+                r.containsKey("data") || r.containsKey("success")
+        val first = if (postFirst) socialPost(path, *params) else socialGet(path, *params)
+        if (looksOk(first)) return first
+        val second = if (postFirst) socialGet(path, *params) else socialPost(path, *params)
+        return if (looksOk(second) || second.size > first.size) second else first
+    }
 
     /** 通用 multipart 上传：声音文件 / 封面共用（字段名由调用方给） */
     fun socialUpload(

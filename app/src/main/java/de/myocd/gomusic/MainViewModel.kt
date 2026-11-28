@@ -4943,9 +4943,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private fun mergeChat(vararg parts: List<NmSocial.ChatMessage>): List<NmSocial.ChatMessage> =
         parts.asSequence().flatten()
             .distinctBy(::chatKey)
+            .toList()
             .sortedWith(compareBy<NmSocial.ChatMessage> { it.time }.thenBy { it.id })
             .takeLast(MAX_CHAT_CACHE)
-            .toList()
 
     private fun saveChatCache(uid: Long, list: List<NmSocial.ChatMessage>) {
         if (uid <= 0) return

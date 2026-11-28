@@ -418,6 +418,26 @@ class Prefs(ctx: Context) {
     // ---------- 26.11.86：会话列表缓存 ----------
 
     /** 进入社交页先读缓存，网络回来只合并新增/更新，不整体清空 */
+    /** 26.11.90：电台全量缓存。48 小时内进电台页直接用缓存，不再刷新 */
+    companion object { const val RADIO_CACHE_TTL = 48L * 60 * 60 * 1000 }
+
+    var radioCache: Map<String, RadioCacheEntry>
+        get() = runCatching {
+            json.decodeFromString<Map<String, RadioCacheEntry>>(
+                sp.getString("radio_cache_v1", "{}")!!,
+            )
+        }.getOrDefault(emptyMap())
+        set(v) {
+            sp.edit().putString("radio_cache_v1", json.encodeToString(v)).apply()
+        }
+
+    var radioCacheAt: Long
+        get() = sp.getLong("radio_cache_at_v1", 0L)
+        set(v) { sp.edit().putLong("radio_cache_at_v1", v).apply() }
+
+    fun radioCacheFresh(at: Long = radioCacheAt): Boolean =
+        at > 0L && System.currentTimeMillis() - at < RADIO_CACHE_TTL
+
     fun chatListCache(): List<CachedConversation> = runCatching {
         json.decodeFromString<List<CachedConversation>>(
             sp.getString("chat_list_cache", "[]")!!,
@@ -446,3 +466,10 @@ class Prefs(ctx: Context) {
         }
 
 }
+
+/** 26.11.90：单个电台板块的缓存（空列表也缓存，用于「无回应隐藏板块」） */
+@Serializable
+data class RadioCacheEntry(
+    val ts: Long = 0L,
+    val items: List<RadioItem> = emptyList(),
+)

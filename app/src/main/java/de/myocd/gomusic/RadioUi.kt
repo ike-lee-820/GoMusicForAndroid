@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,8 +36,8 @@ import androidx.compose.ui.unit.sp
 /**
  * 26.11.87：电台页（原播客页整体替换）。
  *
- * 按子页把 RadioFeeds 的所有电台接口列成目录，每个接口单独按需加载，
- * 不一次并发十几个请求。评论 / 动态 / 分享 / 点赞 / MV 等非电台功能不在这里。
+ * 26.11.90：删掉 Banner；进页面一次性并发获取全部板块，无返回的板块隐藏，
+ * 全量结果缓存 48 小时，期间不再自动刷新。评论 / 动态 / 分享等非电台功能不在这里。
  */
 @Composable
 fun RadioPage(vm: MainViewModel) {
@@ -55,6 +56,15 @@ fun RadioPage(vm: MainViewModel) {
 private fun RadioHome(vm: MainViewModel, go: GoColors) {
     val groups = RadioFeeds.groups()
     val feeds = vm.radioFeeds()
+    // 26.11.90：进页面一次性把全部板块排进请求队列；48h 内 loadRadioAll
+    // 会直接读缓存返回，不发任何请求。
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadRadioAll() }
+
+    val visible = feeds.filter { vm.radioResults[it.key]?.isNotEmpty() == true }
+    val hidden = if (vm.radioAllDone && !vm.radioLoading) {
+        feeds.filter { vm.radioResults[it.key].isNullOrEmpty() }
+    } else emptyList()
+
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(groups.size) { i ->
             GoButton(groups[i].first, primary = vm.radioTab == i) { vm.chooseRadioTab(i) }
@@ -62,24 +72,79 @@ private fun RadioHome(vm: MainViewModel, go: GoColors) {
     }
     Spacer(Modifier.height(10.dp))
     Text(
-        "只实现电台相关接口：推荐 / 分类 / 榜单 / 订阅 / 详情 / 节目 / 广播 / DIFM / 声音",
+        "全部板块一次性获取 · 无返回的自动隐藏 · 48 小时内直接使用缓存",
         fontSize = 11.sp, color = go.muted,
     )
-    Spacer(Modifier.height(8.dp))
-    if (vm.radioError.isNotBlank()) {
-        Box(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                .background(go.surfaceHi).padding(10.dp),
-        ) { Text(vm.radioError, fontSize = 12.sp, color = go.on) }
-        Spacer(Modifier.height(8.dp))
+    Spacer(Modifier.height(6.dp))
+    // 缓存状态条
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val stamp = if (vm.radioCacheAt > 0L) {
+            java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(vm.radioCacheAt))
+        } else ""
+        Text(
+            when {
+                vm.radioLoading -> "正在一次性获取全部板块…"
+                vm.radioCacheAt > 0L -> "缓存于 $stamp · 48h 内不自动刷新"
+                else -> "尚未缓存"
+            },
+            fontSize = 11.sp, color = go.muted, modifier = Modifier.weight(1f),
+        )
+        GoButton("强制刷新", enabled = !vm.radioLoading) { vm.forceRefreshRadio() }
+        if (hidden.isNotEmpty()) {
+            Spacer(Modifier.width(6.dp))
+            GoButton("隐藏 ${hidden.size}") { vm.toggleRadioHidden() }
+        }
     }
+    if (vm.radioLoading) {
+        Spacer(Modifier.height(6.dp))
+        LinearProgressIndicator(
+            modifier = Modifier.fillMaxWidth().height(2.dp), color = go.primary,
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+
     if (vm.radioTab == groups.size - 1) {
         RadioSearchBox(vm, go)
         return
     }
     LazyColumn(Modifier.fillMaxSize()) {
-        items(feeds, key = { it.key }) { feed ->
+        items(visible, key = { it.key }) { feed ->
             RadioFeedSection(vm, go, feed)
+        }
+        if (vm.radioHiddenShown && hidden.isNotEmpty()) {
+            item {
+                Text(
+                    "以下板块没有返回内容，已隐藏。改好参数后可单独重取：",
+                    fontSize = 11.sp, color = go.muted,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            items(hidden, key = { "hidden_${it.key}" }) { feed ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(feed.title, fontSize = 13.sp, color = go.on)
+                        if (feed.note.isNotBlank()) {
+                            Text(feed.note, fontSize = 10.sp, color = go.muted, maxLines = 1)
+                        }
+                        if (feed.paramName.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            SocialInput(
+                                vm.radioParams[feed.key].orEmpty(),
+                                { vm.setRadioParam(feed.key, it) },
+                                feed.paramName + if (feed.paramDefault.isNotBlank()) "（默认 ${feed.paramDefault}）" else "",
+                                go,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    GoButton("重取") { vm.loadRadioFeed(feed) }
+                }
+                Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))
+            }
         }
         item { Spacer(Modifier.height(30.dp)) }
     }
@@ -89,10 +154,11 @@ private fun RadioHome(vm: MainViewModel, go: GoColors) {
 private fun RadioFeedSection(vm: MainViewModel, go: GoColors, feed: RadioFeed) {
     val list = vm.radioResults[feed.key].orEmpty()
     val busy = feed.key in vm.radioBusyKeys
+    var expanded by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             HigSectionTitle(feed.title, go, Modifier.weight(1f))
-            GoButton("刷新", enabled = !busy) { vm.loadRadioFeed(feed) }
+            Text("${list.size} 条", fontSize = 11.sp, color = go.muted)
         }
         if (feed.note.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
@@ -106,17 +172,26 @@ private fun RadioFeedSection(vm: MainViewModel, go: GoColors, feed: RadioFeed) {
                 feed.paramName + if (feed.paramDefault.isNotBlank()) "（默认 ${feed.paramDefault}）" else "",
                 go,
             )
+            Spacer(Modifier.height(6.dp))
+            GoButton("应用参数并重取", enabled = !busy) { vm.loadRadioFeed(feed) }
         }
         Spacer(Modifier.height(8.dp))
-        when {
-            busy -> CircularProgressIndicator(color = go.primary, modifier = Modifier.size(20.dp))
-            list.isEmpty() -> Text(
-                "点「刷新」加载（未登录或接口无返回时会保持空）",
-                fontSize = 12.sp, color = go.muted,
+        if (busy) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(2.dp), color = go.primary,
             )
-            else -> list.take(20).forEach { item ->
-                RadioItemRow(vm, go, item)
-            }
+            Spacer(Modifier.height(6.dp))
+        }
+        val shown = if (expanded) list else list.take(8)
+        shown.forEach { item -> RadioItemRow(vm, go, item) }
+        if (list.size > 8) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (expanded) "收起" else "展开全部 ${list.size} 条",
+                fontSize = 12.sp, color = go.primary,
+                modifier = Modifier.clickable { expanded = !expanded }
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
+            )
         }
         Spacer(Modifier.height(6.dp))
         Box(Modifier.fillMaxWidth().height((0.5f).dp).background(go.separator))

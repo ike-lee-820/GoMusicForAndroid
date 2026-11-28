@@ -47,7 +47,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import java.util.UUID
 
 private const val MODE_LIST_LOOP = 0
@@ -5610,10 +5612,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // ================= 26.11.87：电台（原播客页） =================
 
     var radioTab by mutableIntStateOf(0); private set
-    /** feed.key -> 该接口返回的条目 */
+    /** feed.key -> 该接口返回的条目；空列表 = 无回应，该板块不渲染 */
     var radioResults by mutableStateOf<Map<String, List<RadioItem>>>(emptyMap()); private set
     var radioBusyKeys by mutableStateOf<Set<String>>(emptySet()); private set
     var radioError by mutableStateOf(""); private set
+    /** 26.11.90：一次性并发全量加载 / 48 小时缓存 */
+    var radioLoading by mutableStateOf(false); private set
+    var radioAllDone by mutableStateOf(false); private set
+    var radioCacheAt by mutableStateOf(0L); private set
+    var radioHiddenShown by mutableStateOf(false); private set
+    private val radioLoadMutex = Mutex()
     /** feed.key -> 用户填的参数（动态占位符） */
     var radioParams by mutableStateOf<Map<String, String>>(emptyMap()); private set
     var radioDetail by mutableStateOf<RadioItem?>(null); private set
@@ -5625,13 +5633,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var radioSearchBusy by mutableStateOf(false); private set
 
     fun chooseRadioTab(i: Int) { radioTab = i }
+    fun toggleRadioHidden() { radioHiddenShown = !radioHiddenShown }
     fun setRadioParam(feedKey: String, v: String) {
         radioParams = radioParams + (feedKey to v)
     }
 
     /** 把 {uid} / {xxx} 占位符换成真实值；未解析的一律丢掉，不发字面量花括号 */
-    private fun resolveRadio(feed: RadioFeed): List<Pair<String, String>> {
-        val uid = runCatching { Netease.uid() }.getOrDefault(0L).toString()
+    private fun resolveRadio(feed: RadioFeed, uid: String): List<Pair<String, String>> {
         val custom = radioParams[feed.key]?.trim().orEmpty()
         val parts = custom.split(',', '，')
         val blank = Regex("""\{[^}]*\}""")
@@ -5654,19 +5662,92 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun radioFeeds(): List<RadioFeed> =
         RadioFeeds.groups().getOrNull(radioTab)?.second.orEmpty()
 
-    /** 按需加载单个 feed，不一次并发十几个接口拖慢页面 */
+    /** 26.11.90：除「搜索」子页外，所有板块的 feed。搜索由关键词驱动，不预取 */
+    private fun radioAllFeeds(): List<RadioFeed> =
+        RadioFeeds.groups().dropLast(1).flatMap { it.second }
+
+    /**
+     * 进电台页时调用：48 小时内直接用缓存、不发任何请求；
+     * 缓存过期或为空时，把全部板块一次性排进请求队列（6 路并发），
+     * 谁先回来谁先显示，全部完成后整份写盘并记时间戳。
+     */
+    fun loadRadioAll(force: Boolean = false) {
+        if (radioLoading) return
+        val at = prefs.radioCacheAt
+        radioCacheAt = at
+        val cached = prefs.radioCache
+        if (!force && prefs.radioCacheFresh(at) && cached.isNotEmpty()) {
+            radioResults = cached.mapValues { it.value.items }
+            radioAllDone = true
+            return
+        }
+        // 同一次会话里已经请求过就不再重复（页面重组会再次调用本函数）
+        if (!force && radioAllDone && radioResults.isNotEmpty()) return
+        if (force) { radioResults = emptyMap(); radioAllDone = false }
+        radioLoading = true
+        radioError = ""
+        val feeds = radioAllFeeds()
+        viewModelScope.launch {
+            radioLoadMutex.withLock {
+                val uid = withContext(Dispatchers.IO) {
+                    runCatching { Netease.uid() }.getOrDefault(0L).toString()
+                }
+                val gate = Semaphore(6)
+                coroutineScope {
+                    feeds.map { f ->
+                        async(Dispatchers.IO) {
+                            gate.withPermit {
+                                val args = resolveRadio(f, uid)
+                                val list = runCatching { RadioApi.fetch(f, args) }
+                                    .getOrDefault(emptyList())
+                                // 谁先回来谁先显示，不必等全部板块都到齐
+                                withContext(Dispatchers.Main.immediate) {
+                                    radioResults = radioResults + (f.key to list)
+                                }
+                                f.key to list
+                            }
+                        }
+                    }.awaitAll()
+                }
+                // 全部完成后一次性落盘；期间 UI 也可以逐板块看到已回填的结果
+                val now = System.currentTimeMillis()
+                val snapshot = radioResults
+                withContext(Dispatchers.IO) {
+                    prefs.radioCache = snapshot.mapValues { RadioCacheEntry(now, it.value) }
+                    prefs.radioCacheAt = now
+                }
+                radioCacheAt = now
+                radioAllDone = true
+                radioLoading = false
+            }
+        }
+    }
+
+    /** 用户主动「强制刷新」：清掉结果重取全量并重置 48 小时起点 */
+    fun forceRefreshRadio() = loadRadioAll(force = true)
+
+    /**
+     * 只重取某一个板块（改了参数 / 从隐藏列表里点重取）。
+     * 这是用户主动操作，不算 48 小时内的自动刷新；结果写回缓存项，
+     * 但不动整体缓存时间戳，其余板块继续吃缓存。
+     */
     fun loadRadioFeed(feed: RadioFeed) {
         if (feed.key in radioBusyKeys) return
         radioBusyKeys = radioBusyKeys + feed.key
-        radioError = ""
         viewModelScope.launch {
-            val args = resolveRadio(feed)
-            val list = withContext(Dispatchers.IO) { RadioApi.fetch(feed, args) }
+            val uid = withContext(Dispatchers.IO) {
+                runCatching { Netease.uid() }.getOrDefault(0L).toString()
+            }
+            val args = resolveRadio(feed, uid)
+            val list = withContext(Dispatchers.IO) {
+                runCatching { RadioApi.fetch(feed, args) }.getOrDefault(emptyList())
+            }
             radioResults = radioResults + (feed.key to list)
             radioBusyKeys = radioBusyKeys - feed.key
-            if (list.isEmpty()) {
-                radioError = "「${feed.title}」没有返回内容：检查登录态 / 参数，可改参数后重试"
-            }
+            val cache = prefs.radioCache.toMutableMap()
+            cache[feed.key] = RadioCacheEntry(prefs.radioCacheAt, list)
+            prefs.radioCache = cache
+            if (list.isEmpty()) toast("「${feed.title}」仍没有返回内容，板块保持隐藏")
         }
     }
 
@@ -5679,7 +5760,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             val r = withContext(Dispatchers.IO) { RadioApi.search(k) }
             radioSearchResults = r
             radioSearchBusy = false
-            if (r.isEmpty()) radioError = "没搜到电台（type=1009 这一路可能没有返回结果）"
+            if (r.isEmpty()) toast("没搜到电台（type=1009 这一路可能没有返回结果）")
         }
     }
 

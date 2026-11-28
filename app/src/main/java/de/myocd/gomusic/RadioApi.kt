@@ -1,5 +1,7 @@
 package de.myocd.gomusic
 
+import kotlinx.serialization.Serializable
+
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -17,6 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * 再映射成 RadioItem，避免某个接口换字段就整页空白。
  */
 
+@Serializable
 data class RadioItem(
     val id: Long = 0,
     val title: String = "",
@@ -46,7 +49,7 @@ object RadioApi {
     private val ARRAY_KEYS = listOf(
         "data", "result", "list", "djRadios", "radios", "programs", "morePrograms",
         "recommend", "playlists", "channels", "toplist", "toplists", "hotRadios",
-        "categories", "subList", "subs", "records", "voices", "banners", "banner",
+        "categories", "subList", "subs", "records", "voices",
         "rank", "dataList", "songs", "albums", "artist", "dj", "program", "radio",
         "collectList", "channelList", "categoryList", "regionList", "styles",
         "playlist", "programList", "radioList", "voiceList", "tracks",
@@ -200,7 +203,6 @@ object RadioFeeds {
 
     fun groups(): List<Pair<String, List<RadioFeed>>> = listOf(
         "发现" to listOf(
-            RadioFeed("banner", "电台 Banner", "/dj/banner", kind = "station"),
             RadioFeed("rec", "推荐电台", "/dj/recommend", kind = "station"),
             RadioFeed("progrec", "推荐节目", "/program/recommend", listOf("limit" to "10"), "program"),
             RadioFeed("djprog", "推荐电台节目", "/personalized/djprogram", kind = "program"),

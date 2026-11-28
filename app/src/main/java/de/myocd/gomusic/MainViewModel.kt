@@ -4735,8 +4735,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     var podcastVoices by mutableStateOf<List<NmSocial.Voice>>(emptyList()); private set
     var voiceBusy by mutableStateOf(false); private set
 
-    fun setPodcastQuery(q: String) { podcastQuery = q }
-
     /** 进入播客页：最近播放 + 我创建的播客；同一会话只拉一次 */
     fun loadPodcastHome() {
         if (recentDj.isNotEmpty() || myCreated.isNotEmpty()) return

@@ -2368,7 +2368,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 .getOrDefault(emptyList<Song>())
                 .mapNotNull { neteaseIdOf(it.ssid) }
                 .filter { it > 0L }
-            if (ids.isNotEmpty()) Netease.likeRemove(pid, ids)
+            val ok = if (ids.isNotEmpty()) Netease.likeRemove(pid, ids) else 0
+            withContext(Dispatchers.Main) {
+                if (ok < ids.size) toast("云端红心未完全清除（本地已清空）")
+            }
         }
     }
 
@@ -3409,20 +3412,22 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 26.11.70：网易云歌单**全量**双向同步。
+     * 26.11.71：网易云歌单**全量**双向同步 + 「我喜欢的音乐」合并。
      *
-     * ① 取云端全部歌单：自建 + 收藏/订阅 + 「我喜欢的音乐」，不再按 creator
-     * 过滤（以前那句「收藏的歌单不属于我，混进来会和本地对不上」正是这次
-     * 要修的）；② 每张歌单按 trackIds 拉全量曲目，不是只拿前 10 首；
+     * ① 取云端全部歌单：自建 + 收藏/订阅，不再按 creator 过滤；
+     * ② 每张歌单按 trackIds 拉全量曲目，不是只拿前 10 首；
      * ③ 本地没有的下载下来，重名的那份加「云」标签，cloudBase 记住云端原名；
      * ④ 本地自建歌单反向在云端 create 并回填 nmId；⑤ 顺序也同步到云端。
      *
-     * 收藏 / 订阅歌单与「我喜欢的音乐」云端不允许写，标记为 cloudReadOnly：
-     * 本地仍可随意编辑，但改动不回写云端，也不参与云端排序。
+     * specialType=5 的「我喜欢的音乐」不进歌单列表：它的曲目与本地
+     * 「我的喜欢」取并集，本地多出来的网易云歌曲批量上传云端；旧版把它
+     * 当普通收藏歌单下载的那一份会被移除，曲目先兜底并入再删。
+     * 之后点星标 / 批量移除 / 清空都会实时回写云端，下次同步不会复活。
      *
-     * 自动同步用 updateTime+曲目数做指纹，没变化的歌单跳过重新拉曲目，
-     * 免得几十张收藏歌单每次进应用都发一轮请求；手动同步强制全量刷新。
+     * 收藏 / 订阅歌单云端不允许写，标记为 cloudReadOnly：本地仍可编辑，
+     * 但改动不回写云端，也不参与云端排序。
      *
+     * 自动同步用指纹跳过没变化的歌单与红心；手动同步强制全量刷新。
      * 云端删掉的歌单本地仍保留：接口偶发漏返回时直接删用户本地歌单代价太大。
      */
     fun syncNmPlaylists(quiet: Boolean = false) {
@@ -3458,15 +3463,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val mine = cloudAll.filterNot { it.cloudLike }
                 if (likeGroup != null) prefs.nmLikePid = likeGroup.nmId
                 val local = withContext(Dispatchers.Main) { playlists.toMutableList() }
-                // 清掉 26.11.70 把它当普通收藏歌单下载下来的那一份，避免重复显示
+                // 清掉 26.11.70 把它当普通收藏歌单下载下来的那一份，避免重复显示。
+                // 删之前先把曲目留下来：万一这次云端红心拉取失败，这些歌不能凭空消失。
                 val likePid = likeGroup?.nmId ?: prefs.nmLikePid
-                if (likePid > 0L) {
-                    local.removeAll {
-                        it.nmId == likePid ||
-                            (it.cloudReadOnly &&
-                                (it.cloudBase == "我喜欢的音乐" ||
-                                    it.name.removeSuffix(CLOUD_TAG) == "我喜欢的音乐"))
-                    }
+                val legacyLiked = local.filter {
+                    (likePid > 0L && it.nmId == likePid) ||
+                        (it.cloudReadOnly &&
+                            (it.cloudBase == "我喜欢的音乐" ||
+                                it.name.removeSuffix(CLOUD_TAG) == "我喜欢的音乐"))
+                }
+                val legacySsids = legacyLiked.flatMap { it.songs }.toSet()
+                if (legacyLiked.isNotEmpty()) {
+                    val legacyIds = legacyLiked.map { it.id }.toSet()
+                    local.removeAll { it.id in legacyIds }
                 }
                 val existing = local.filter { it.nmId > 0L }.associateBy { it.nmId }
                 // 每批 4 张并发：既不会一次打出几十个请求挤占播放链路，
@@ -3499,20 +3508,32 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val likeKey = "$likeStamp|${favBefore.sorted().joinToString(",").hashCode()}"
                 var likedFromCloud = 0
                 var likedToCloud = 0
+                var likedLocalOnly = 0
                 var mergedFav: Set<String> = favBefore
                 var favChanged = false
                 if (likeGroup != null && (!quiet || prefs.nmLikeStamp != likeKey)) {
                     val likeSongs = runCatching { Netease.playlistSongs(likeGroup.nmId) }
                         .getOrDefault(emptyList<Song>())
                     all.addAll(likeSongs)
-                    val cloudSsids = likeSongs.map { it.ssid }.toSet()
-                    mergedFav = favBefore + cloudSsids
-                    favChanged = true
+                    // trackCount 说云端有歌、却一首都没拉回来 = 这次请求失败。
+                    // 这时用上一版留下的曲目做差集基准，并跳过上传，避免把整批
+                    // 本地红心当成「云端没有」重复加一遍。trackCount=0 则是云端
+                    // 真的空，本地红心照样要传上去。
+                    val cloudFailed = likeGroup.trackCount > 0 && likeSongs.isEmpty()
+                    val cloudSsids = if (cloudFailed) legacySsids
+                    else likeSongs.map { it.ssid }.toSet()
+                    mergedFav = favBefore + cloudSsids + legacySsids
+                    favChanged = mergedFav != favBefore
                     likedFromCloud = mergedFav.size - favBefore.size
+                    likedLocalOnly = mergedFav.count { neteaseIdOf(it) == null }
                     val up = (mergedFav - cloudSsids)
                         .mapNotNull { neteaseIdOf(it) }
                         .filter { it > 0L }
-                    if (up.isNotEmpty()) likedToCloud = Netease.likeAdd(likeGroup.nmId, up)
+                    if (!cloudFailed && up.isNotEmpty()) {
+                        likedToCloud = Netease.likeAdd(likeGroup.nmId, up)
+                    } else if (cloudFailed) {
+                        NmLog.note("云端红心拉取失败，跳过本次上传 pid=${likeGroup.nmId}")
+                    }
                     prefs.nmLikeStamp =
                         "$likeStamp|${mergedFav.sorted().joinToString(",").hashCode()}"
                 } else if (likeGroup != null) {
@@ -3581,7 +3602,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     if (!quiet) toast(
                         "同步完成：云端 ${mine.size} 张（收藏 $readOnlyCount），" +
                             "新增 $added / 更新 $updated / 未变 $skipped，上传 $uploaded 个；" +
-                            "红心合并 +$likedFromCloud / 上传 $likedToCloud"
+                            "红心合并 +$likedFromCloud / 上传 $likedToCloud" +
+                            (if (likedLocalOnly > 0) " / 本地专属 $likedLocalOnly 首不上传" else "")
                     )
                 }
                 // 云端排序接口只接受本人创建的歌单，收藏歌单传过去会整批失败

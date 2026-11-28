@@ -1998,7 +1998,7 @@ object Netease {
         var ok = 0
         ids.distinct().chunked(50).forEach { batch ->
             if (playlistAdd(pid, batch)) ok += batch.size
-            else batch.forEach { if (likeSong(it, true)) ok++ }
+            else ok += likeBatch(batch, true)
         }
         NmLog.note("上传红心 $ok/${ids.size} 首 pid=$pid")
         return ok
@@ -2010,17 +2010,30 @@ object Netease {
         var ok = 0
         ids.distinct().chunked(50).forEach { batch ->
             if (playlistDel(pid, batch)) ok += batch.size
-            else batch.forEach { if (likeSong(it, false)) ok++ }
+            else ok += likeBatch(batch, false)
         }
         NmLog.note("移除红心 $ok/${ids.size} 首 pid=$pid")
         return ok
+    }
+
+    /**
+     * /playlist/tracks 整批失败时才逐首 /like。6 个一组并发：几百首红心
+     * 串行打会把同步拖成几分钟，也不该和播放解析抢 Api.client 的连接。
+     */
+    private fun likeBatch(ids: List<Long>, like: Boolean): Int = runBlocking(Dispatchers.IO) {
+        ids.chunked(6).sumOf { grp ->
+            grp.map { id -> async { likeSong(id, like) } }.awaitAll().count { it }
+        }
     }
 
     /** /like?id=&like=true|false：红心歌单的单曲写入兜底 */
     fun likeSong(id: Long, like: Boolean): Boolean {
         if (id <= 0L) return false
         val r = runCatching {
-            get("/like", "id" to id.toString(), "like" to like.toString(), tries = 1)
+            get(
+                "/like", "id" to id.toString(), "like" to like.toString(),
+                http = syncClient, tries = 1,
+            )
         }.getOrNull() ?: return false
         return r.code() == 200
     }

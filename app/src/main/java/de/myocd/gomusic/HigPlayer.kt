@@ -1189,8 +1189,17 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
     val lyricLineHeight = (lyricSizeSp * LYRIC_LINE_HEIGHT_RATIO).sp
     // 26.11.54：切进歌词页时列表初始就在当前行，不要从 index 0 一路动画
     // 滚到目标行。用 key(w) 让换歌时状态重建，并把初始行设成 activeIndex。
-    val initialIndex = w.activeIndex(vm.positionMs).coerceAtLeast(0)
+    val initialIndex = w.activeIndex(vm.positionMs).takeIf { it >= 0 }
+        ?: w.lastBodyIndex().coerceAtLeast(0)
     val state = key(w) { rememberLazyListState(initialFirstVisibleItemIndex = initialIndex) }
+    /**
+     * 26.11.92：老式（行级 LRC）歌词的高亮行。
+     * 逐字歌词必须严格按时间轴即时高亮，但行级歌词整句同时点亮时，
+     * 旧版「切句瞬间就亮、列表还在滚 520ms」看起来像先亮后挪、很卡。
+     * 现在行级歌词等滚动动画结束才把高亮切到新句 —— 滚动完成时
+     * 刚好跳转到该句。制作信息 / 前奏间奏行不受这个延迟影响。
+     */
+    val displayActive = remember(w) { mutableIntStateOf(initialIndex) }
     // 26.11.48：两种歌词都要自动跟随当前行滚动，区别只在刷新频率与是否逐字渲染。
     // 26.11.46 把「无高级歌词不要滚动」误解成列表完全静止，老歌词播到后面几行
     // 还停在顶部；实际要的是「行级跟随滚动」，不要的是逐字扫光那种逐帧滚。
@@ -1217,8 +1226,10 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                 if (vm.isPlaying) withFrameNanos { it } else delay(100)
                 framePos.longValue = vm.controller?.currentPosition?.coerceAtLeast(0) ?: vm.positionMs
             } else {
-                // 行级歌词：250ms 定位当前行就够，不逐帧刷新、不画任何光带
-                delay(250)
+                // 26.11.92：行级歌词从 250ms 收紧到 60ms。旧版最多晚
+                // 250ms 才发现切句，再叠 520ms 滚动，整句要 770ms 才到位，
+                // 看起来就是「卡顿 / 慢半拍」。
+                delay(60)
                 framePos.longValue = vm.positionMs
             }
             // 26.11.51：这里**不再**读 state.isScrollInProgress。
@@ -1228,26 +1239,45 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
             // 抑制窗口现在只由下面 pointerInput 里的真实手指事件设置。
             val held = System.currentTimeMillis() <= userScrollUntil.longValue
             val a = w.activeIndex(framePos.longValue)
+            // 行级歌词滚动更快一些：检测 60ms + 360ms 动画，约 420ms 到位
+            val scrollNs = if (wordTiming) 520_000_000L else 360_000_000L
             if (a != lastActive) {
                 lastActive = a
                 suppressed = false
-                if (a >= 0) {
-                    if (!positioned) {
+                if (wordTiming) displayActive.intValue = a
+                when {
+                    a < 0 -> {
+                        // 26.11.92：进入尾奏，不高亮任何歌词、不再滚动
+                        scrollJob?.cancel()
+                        if (!wordTiming) displayActive.intValue = -1
+                    }
+                    !positioned -> {
                         // 直接进入当前行，不播滚动动画；之后切句才平滑跟随
                         positioned = true
                         scrollJob?.cancel()
                         state.scrollToItem(a)
-                    } else if (held) {
+                        if (!wordTiming) displayActive.intValue = a
+                    }
+                    held -> {
                         suppressed = true
-                    } else {
+                        // 用户手动滑动期间不滚动，高亮直接跟上，别停在旧句
+                        if (!wordTiming) displayActive.intValue = a
+                    }
+                    else -> {
                         scrollJob?.cancel()
-                        scrollJob = launch { state.easeScrollToItem(a) { wobble.floatValue = it } }
+                        scrollJob = launch {
+                            state.easeScrollToItem(a, scrollNs) { wobble.floatValue = it }
+                            if (!wordTiming) displayActive.intValue = a
+                        }
                     }
                 }
             } else if (suppressed && !held && lastActive >= 0) {
                 suppressed = false
                 scrollJob?.cancel()
-                scrollJob = launch { state.easeScrollToItem(lastActive) { wobble.floatValue = it } }
+                scrollJob = launch {
+                    state.easeScrollToItem(lastActive, scrollNs) { wobble.floatValue = it }
+                    if (!wordTiming) displayActive.intValue = lastActive
+                }
             }
         }
     }
@@ -1273,13 +1303,19 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         itemsIndexed(w.lines) { i, line ->
-            val isActive by remember(w) {
-                derivedStateOf { w.activeIndex(framePos.longValue) == i }
+            val isActive by remember(w, i) {
+                derivedStateOf {
+                    // 逐字歌词 / 前奏间奏标记按真实时间即时判定；行级歌词
+                    // 用「滚动完成才切换」的 displayActive，做到滚到才亮。
+                    val a = if (wordTiming || line.breakKind == 1)
+                        w.activeIndex(framePos.longValue) else displayActive.intValue
+                    a == i
+                }
             }
             val alpha = if (isActive) 1f else 0.32f
             // 26.11.79：翻动时当前行微微扭一下。wobble 只在激活行读取，
-            // 非激活行不订阅这个逐帧 state，也不会变形。
-            val wob = if (isActive) wobble.floatValue else 0f
+            // 非激活行不订阅这个逐帧 state，也不会变形；间奏三点不参与。
+            val wob = if (isActive && line.breakKind == 0) wobble.floatValue else 0f
             val twist = if (isActive) sin(wob * 2f * PI.toFloat()) * (1f - wob) else 0f
             val squish = if (isActive) 1f + sin(wob * PI.toFloat()) * (1f - wob) * 0.014f else 1f
             Column(
@@ -1292,12 +1328,16 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
                     .padding(horizontal = 8.dp)
                     // 点击歌词跳到这一行；制作信息行不跳。
                     // 清掉手动滑动抑制窗口：用户主动选行，就该立刻跟到那一行
-                    .clickable(enabled = !line.meta) {
+                    .clickable(enabled = !line.meta && line.breakKind == 0) {
                         userScrollUntil.longValue = 0L
                         vm.seekTo(line.startMs)
                     },
             ) {
-                if (line.meta) {
+                if (line.breakKind == 1) {
+                    // 26.11.92：单句 "Music" = 前奏/间奏，隐藏这一句，
+                    // 改成间距增大 + 三点横向明暗 + 收起的三点动画
+                    InterludeDots(vm, line, go, isActive)
+                } else if (line.meta) {
                     // 26.11.66：监制栏（作词/作曲/编曲/制作人）固定 12sp，
                     // 调小歌词字号时它一动不动。改成按歌词字号等比缩放并留上下限。
                     Text(
@@ -1335,6 +1375,57 @@ private fun WordLyricsList(vm: MainViewModel, go: GoColors, compact: Boolean = f
 }
 
 /**
+ * 26.11.92：前奏 / 间奏的三点动画。
+ *
+ * 触发条件：当前行是单句 "Music"（M 大写）且后面还有歌词。播放位置进入
+ * 这一行时，行间间距先增大、三点浮现，随后沿横向由亮变暗逐个扫过；
+ * 段尾三点全部回到亮色并淡出、间距缩回，接着自然接上下一句。
+ * 逐帧直接读播放器位置，所以逐字歌词和行级 LRC 都不会 250ms 一跳。
+ */
+@Composable
+private fun InterludeDots(
+    vm: MainViewModel,
+    line: WordLine,
+    go: GoColors,
+    active: Boolean,
+) {
+    val p = remember(line.startMs, line.durMs) { mutableFloatStateOf(0f) }
+    LaunchedEffect(active, line.startMs) {
+        if (!active) { p.floatValue = 0f; return@LaunchedEffect }
+        val dur = line.durMs.coerceAtLeast(600L).toFloat()
+        while (true) {
+            val pos = vm.controller?.currentPosition?.coerceAtLeast(0L) ?: vm.positionMs
+            p.floatValue = ((pos - line.startMs).toFloat() / dur).coerceIn(0f, 1f)
+            withFrameNanos { it }
+        }
+    }
+    val t = p.floatValue
+    // 0..0.14 浮现并撑开间距，0.86..1 淡出并收回间距
+    val envelope = smoothstep((t / 0.14f).coerceIn(0f, 1f)) *
+        (1f - smoothstep(((t - 0.86f) / 0.14f).coerceIn(0f, 1f)))
+    val spread = 46f * envelope
+    // 三点从左到右由亮变暗；0.72 之后全部回到亮色
+    val scan = smoothstep(((t - 0.14f) / 0.58f).coerceIn(0f, 1f))
+    val allBright = smoothstep(((t - 0.72f) / 0.16f).coerceIn(0f, 1f))
+    Row(
+        Modifier.fillMaxWidth()
+            .padding(vertical = spread.dp)
+            .graphicsLayer { alpha = envelope },
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(3) { i ->
+            val dark = ((scan * 3f - i).coerceIn(0f, 1f)) * (1f - allBright)
+            Box(
+                Modifier.size(9.dp).clip(CircleShape)
+                    .background(mixColor(go.primary, go.muted.copy(alpha = 0.5f), dark)),
+            )
+            if (i < 2) Spacer(Modifier.width(12.dp))
+        }
+    }
+}
+
+/**
  * 26.11.78：纵向跟随滚动的果冻回弹。
  *
  * 轻微 easeOutBack：推进到位前多走约 6% 再收回，起止速度仍为 0，
@@ -1363,6 +1454,7 @@ private fun jellyScroll(t: Float): Float {
  */
 private suspend fun LazyListState.easeScrollToItem(
     index: Int,
+    durationNs: Long = 520_000_000L,
     onProgress: (Float) -> Unit = {},
 ) {
     if (index < 0) return
@@ -1373,7 +1465,6 @@ private suspend fun LazyListState.easeScrollToItem(
     }
     val total = target.offset.toFloat()
     if (abs(total) < 1f) return
-    val durationNs = 520_000_000L
     val t0 = withFrameNanos { it }
     var applied = 0f
     scroll {

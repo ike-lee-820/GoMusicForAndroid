@@ -244,27 +244,47 @@ object NmSocial {
         (msg + msg2) to (notice + notice2)
     }.getOrDefault(0 to 0)
 
-    /** /msg/private：会话列表 */
+    /**
+     * /msg/private：会话列表。
+     *
+     * 26.11.92：修「显示的用户和点进去的消息不一致」。旧版 name 取
+     * fromUser.nickname、uid 却在 fromUser 没解析出 id 时用顶层
+     * fromUserId/uid/userId 兜底——那些字段在部分部署里是**自己**的 id，
+     * 于是列表显示对方名字、点进去却打开了自己的会话（或另一个人的）。
+     * 现在 uid 与 name 必须来自同一个「对方」对象；fromUser 恰好是
+     * 最后一条消息发送者且等于自己时，改取 toUser。
+     */
     fun conversations(limit: Int = 30, offset: Int = 0): List<Conversation> = runCatching {
         val r = Netease.socialCall(
             "/msg/private", false,
             "limit" to limit.toString(), "offset" to offset.toString(),
         )
         if (!isOk(r)) return@runCatching emptyList()
-        array(r, "msgs", "list").map { m ->
-            val from = userOf(m["fromUser"] ?: m["user"] ?: m["friend"])
+        val me = runCatching { Netease.uid() }.getOrDefault(0L)
+        array(r, "msgs", "list").mapNotNull { m ->
+            var peer = userOf(m["fromUser"] ?: m["user"] ?: m["friend"])
+            // 最后一条是自己发的：fromUser 会是自己，真正的对方在 toUser
+            if (me > 0L && peer.id == me) {
+                val to = userOf(m["toUser"] ?: m["to"])
+                val toId = to.id.takeIf { it > 0L }
+                    ?: lng(m, "toUserId", "targetId").takeIf { it > 0L }
+                if (toId != null && toId != me) peer = to.copy(id = toId)
+            }
+            val uid = peer.id.takeIf { it > 0L && it != me }
+                ?: lng(m, "fromUserId", "uid").takeIf { it > 0L && it != me }
+                ?: return@mapNotNull null
             val lastRaw = str(m, "lastMsg", "msg", "lastMessage", "content")
             val (last0, _, _) = parseResource(lastRaw)
-            val last = cleanDisplayText(last0)
             Conversation(
-                uid = from.id.takeIf { it > 0 } ?: lng(m, "fromUserId", "uid", "userId"),
-                name = from.name.ifBlank { str(m, "nickname", "name") },
-                avatar = from.avatar ?: cover(m),
-                last = last,
+                uid = uid,
+                // 名字必须跟着同一个对象走，不能再拿顶层 nickname 兜底
+                name = peer.name.ifBlank { str(m, "nickname", "name") },
+                avatar = peer.avatar ?: cover(m),
+                last = cleanDisplayText(last0),
                 time = lng(m, "lastMsgTime", "time", "lastTime"),
                 unread = intOf(m, "unread", "unreadCount", "newMsgCount"),
             )
-        }.filter { it.uid > 0 || it.name.isNotBlank() }
+        }.distinctBy { it.uid }
     }.getOrDefault(emptyList())
 
     /** /msg/private/history：与某人的私信内容；before 取上一页最后一条 time */

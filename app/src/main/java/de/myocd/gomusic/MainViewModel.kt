@@ -1964,7 +1964,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** 热搜词 */
     var homeHotWords by mutableStateOf<List<String>>(emptyList()); private set
     /** 26.11.87：首页新增六个推荐位 */
-    var homePersonalized by mutableStateOf<List<Group>>(emptyList()); private set
     var homeRecommendPlaylists by mutableStateOf<List<Group>>(emptyList()); private set
     var homeTopPlaylists by mutableStateOf<List<Group>>(emptyList()); private set
     var homeHqPlaylists by mutableStateOf<List<Group>>(emptyList()); private set
@@ -1997,7 +1996,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             homeTopArtists = emptyList()
             homeNewAlbums = emptyList()
             homeTops = emptyList()
-            homePersonalized = emptyList()
             homeRecommendPlaylists = emptyList()
             homeTopPlaylists = emptyList()
             homeHqPlaylists = emptyList()
@@ -2018,11 +2016,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 val dT = async(Dispatchers.IO) {
                     runCatching { Netease.topList() }.getOrDefault(emptyList<Group>())
                 }
-                // 26.11.87：六个新推荐位各自独立，一路失败不影响其余
-                val dP = async(Dispatchers.IO) {
-                    runCatching { Netease.homeGroups("/personalized", "limit" to "10") }
-                        .getOrDefault(emptyList<Group>())
-                }
+                // 26.11.92：删掉 /personalized「推荐歌单」，保留每日推荐歌单；
+                // 其余推荐位各自独立，一路失败不影响其余
                 val dRp = async(Dispatchers.IO) {
                     runCatching { Netease.homeGroups("/recommend/resource") }
                         .getOrDefault(emptyList<Group>())
@@ -2058,7 +2053,6 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 homeTopArtists = artists
                 homeNewAlbums = albums
                 homeTops = tops
-                homePersonalized = dP.await()
                 homeRecommendPlaylists = dRp.await()
                 homeTopPlaylists = dTp.await()
                 homeHqPlaylists = dHq.await()
@@ -5298,8 +5292,12 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 26.11.92：切换会话时取消上一次未完成的拉取，避免旧响应盖到新会话 */
+    private var chatJob: Job? = null
+
     /** 进入会话：先把本地缓存铺出来（0 秒可见），再拉网络只补新消息 */
     fun openChat(uid: Long, name: String, avatar: String?) {
+        chatJob?.cancel()
         chatUid = uid
         chatName = name
         chatAvatar = avatar
@@ -5311,6 +5309,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun closeChat() {
+        chatJob?.cancel()
         // 关闭前把当前顺序（最老→最新）落盘，下次进来直接是这个顺序
         saveChatCache(chatUid, chatMessages)
         chatUid = 0L
@@ -5320,28 +5319,35 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     fun loadChat(more: Boolean = false) {
         val uid = chatUid
         if (uid <= 0) return
+        chatJob?.cancel()
         chatBusy = true
-        viewModelScope.launch {
+        chatJob = viewModelScope.launch {
             val before = if (more) chatBefore else 0L
             val fetched = withContext(Dispatchers.IO) {
                 NmSocial.history(uid, 30, before)
             }
-            // 只合并新增：缓存里的老消息不会因为首页只返回最近 30 条而丢掉
-            val merged = mergeChat(chatMessages, fetched)
-            chatMessages = merged
-            chatBefore = merged.minOfOrNull { it.time }?.takeIf { it > 0 } ?: chatBefore
-            saveChatCache(uid, merged)
-            // 每次刷新都把已读基线推到最新一条，避免未读红点复活
-            if (!more) {
-                val newest = merged.maxOfOrNull { it.time } ?: 0L
-                if (newest > 0L) {
-                    prefs.chatReadStamps = prefs.chatReadStamps +
-                        (uid.toString() to maxOf(
-                            prefs.chatReadStamps[uid.toString()] ?: 0L, newest,
-                        ))
+            // 26.11.92：响应回来时用户可能已经切到另一个会话。旧版直接把
+            // 结果 merge 进「当前 chatMessages」，A 的响应就会写进 B 的会话，
+            // 表现就是「显示的用户和点进去的消息不一致」。
+            val stillHere = chatUid == uid
+            if (stillHere) {
+                // 只合并新增：缓存里的老消息不会因为首页只返回最近 30 条而丢掉
+                val merged = mergeChat(chatMessages, fetched)
+                chatMessages = merged
+                chatBefore = merged.minOfOrNull { it.time }?.takeIf { it > 0 } ?: chatBefore
+                saveChatCache(uid, merged)
+                // 每次刷新都把已读基线推到最新一条，避免未读红点复活
+                if (!more) {
+                    val newest = merged.maxOfOrNull { it.time } ?: 0L
+                    if (newest > 0L) {
+                        prefs.chatReadStamps = prefs.chatReadStamps +
+                            (uid.toString() to maxOf(
+                                prefs.chatReadStamps[uid.toString()] ?: 0L, newest,
+                            ))
+                    }
                 }
+                chatBusy = false
             }
-            chatBusy = false
         }
     }
 
@@ -5671,6 +5677,73 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
                 toast(if (ok) "歌单已同步到房间" else "歌单已加载，但同步指令未确认")
             } else toast("歌单已加载（未加入房间，不会同步）")
+        }
+    }
+
+    /**
+     * 26.11.92：直接使用当前正在播放的播放列表和进度。
+     *
+     * 以前进房间必须先手动加载一张云端歌单，且 playCommand 的 progress
+     * 从 0 开始；现在把当前队列（当前这首 + 前后所有歌）按网易云 id
+     * 原样 REPLACE 同步到房间，并把此刻的 positionMs 作为进度下发，
+     * 不打断本地播放、不重新 playSongs。
+     */
+    fun ltUseCurrentQueue() {
+        val q = queue
+        if (q.isEmpty()) { toast("当前没有播放队列"); return }
+        val tracks = q.mapNotNull { e ->
+            val id = neteaseIdOf(e.ssid)
+                ?: queueSongs[e.ssid]?.nmId?.takeIf { it > 0L }
+            if (id == null || id <= 0L) return@mapNotNull null
+            val so = queueSongs[e.ssid]
+            ListenTrack(
+                id = id,
+                name = so?.title?.takeIf { it.isNotBlank() } ?: e.title,
+                cover = so?.coverUrl ?: e.cover,
+                artist = so?.artist?.takeIf { it.isNotBlank() } ?: e.artist,
+            )
+        }.distinctBy { it.id }
+        if (tracks.isEmpty()) {
+            toast("当前队列里没有网易云歌曲，无法同步到房间")
+            return
+        }
+        ltTracks = tracks
+        ltPlaylistName = "当前播放列表"
+        val cur = currentSong?.nmId?.takeIf { it > 0L }
+            ?: neteaseIdOf(curSsid)
+            ?: tracks.first().id
+        ltSongId = cur
+        val status = if (isPlaying) "PLAY" else "PAUSE"
+        ltPlayStatus = status
+        val progress = positionMs
+        val room = ltRoomId
+        if (room == null) {
+            toast("已载入当前播放列表（未加入房间，不会同步）")
+            return
+        }
+        ltBusy = true
+        viewModelScope.launch {
+            val (ok, cmd) = withContext(Dispatchers.IO) {
+                val synced = ListenTogetherApi.syncList(
+                    room, ltAccount.userId, ltClientSeq++,
+                    tracks.joinToString(",") { it.id.toString() },
+                )
+                val played = ListenTogetherApi.playCommand(
+                    room, "seek", cur, progress, status, ltClientSeq++,
+                )
+                ListenTogetherApi.heartbeat(room, cur, status, progress)
+                ltLastHeartbeat = System.currentTimeMillis()
+                synced to played
+            }
+            ltBusy = false
+            val sec = progress / 1000L
+            toast(
+                when {
+                    ok && cmd -> "已同步当前播放列表与进度（${tracks.size} 首 · ${sec}s）"
+                    ok -> "播放列表已同步，但进度指令未确认（${sec}s）"
+                    else -> "已载入当前播放列表，房间指令未确认"
+                },
+            )
         }
     }
 
@@ -6131,8 +6204,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** 歌词页全文：跳过制作信息行，保留正文行 */
     fun lyricShareLines(): List<String> =
-        wordLyric?.lines?.filter { !it.meta && it.text.isNotBlank() }
-            ?.map { it.text }.orEmpty()
+        wordLyric?.lines?.filter {
+            !it.meta && it.breakKind == 0 && it.text.isNotBlank()
+        }?.map { it.text }.orEmpty()
 
     /** 系统文本分享（歌词 / 选中片段） */
     fun sharePlainText(text: String) {

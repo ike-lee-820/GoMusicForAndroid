@@ -728,7 +728,6 @@ fun HomeTab(vm: MainViewModel) {
     val tops = vm.homeTops
     val his = vm.historySongs
     // 26.11.87：首页六个新增推荐位
-    val personalized = vm.homePersonalized
     val dailyPlaylists = vm.homeRecommendPlaylists
     val topPlaylists = vm.homeTopPlaylists
     val hqPlaylists = vm.homeHqPlaylists
@@ -832,9 +831,6 @@ fun HomeTab(vm: MainViewModel) {
                     HomeAlbumRow(vm, albums.take(20))
                 }
             }
-        }
-        if (personalized.isNotEmpty()) {
-            item { HomeFeedSection(vm, "推荐歌单", personalized) }
         }
         if (dailyPlaylists.isNotEmpty()) {
             item { HomeFeedSection(vm, "每日推荐歌单", dailyPlaylists) }

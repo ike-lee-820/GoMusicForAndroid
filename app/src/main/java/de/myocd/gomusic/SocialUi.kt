@@ -235,7 +235,7 @@ private fun ConversationsPane(vm: MainViewModel) {
             vm.socialError.ifBlank { "还没有私信会话，去「找朋友」发起一个" },
         )
         else -> LazyColumn(Modifier.fillMaxSize()) {
-            items(vm.conversations, key = { it.uid }) { c ->
+            items(vm.conversations.distinctBy { it.uid }, key = { it.uid }) { c ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 10.dp)
                         .clickable { vm.openChat(c.uid, c.name, c.avatar) },
@@ -430,8 +430,27 @@ private fun ListenTogetherPane(vm: MainViewModel) {
         Spacer(Modifier.height(16.dp))
         HigSectionTitle("播放列表", go)
         Spacer(Modifier.height(6.dp))
+        // 26.11.92：一键把「当前正在播放的队列 + 此刻进度」用于房间
+        Box(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                .background(go.surfaceHi).padding(12.dp),
+        ) {
+            Column {
+                Text(
+                    "当前：${vm.currentSong?.title?.takeIf { it.isNotBlank() } ?: "未播放"}" +
+                        " · ${vm.positionMs / 1000L}s · ${vm.queue.size} 首",
+                    fontSize = 13.sp, color = go.on, maxLines = 1,
+                )
+                Spacer(Modifier.height(8.dp))
+                GoButton(
+                    "使用当前播放列表和进度", primary = true,
+                    enabled = vm.queue.isNotEmpty() && !vm.ltBusy,
+                ) { vm.ltUseCurrentQueue() }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         Text(
-            "搜索歌单或直接选自己的歌单，选中后自动把曲目 REPLACE 同步到房间",
+            "也可以搜索歌单或直接选自己的歌单，选中后自动把曲目 REPLACE 同步到房间",
             fontSize = 12.sp, color = go.muted,
         )
         Spacer(Modifier.height(8.dp))

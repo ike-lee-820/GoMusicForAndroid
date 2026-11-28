@@ -47,6 +47,12 @@ data class WordLine(
     val roman: String? = null,
     /** true = 制作信息行，不高亮不滚动 */
     val meta: Boolean = false,
+    /**
+     * 26.11.92：单句恰好是 "Music"（M 大写）时判定为前奏 / 间奏 / 尾奏。
+     * 0 普通歌词，1 前奏或间奏（隐藏文字，改显示三点动画），2 尾奏
+     * （直接从列表移除，见 [WordLyric.outroStartMs]）。
+     */
+    val breakKind: Int = 0,
 )
 
 enum class LyricSource { YRC, LRC, TEXT }
@@ -57,9 +63,15 @@ data class WordLyric(
     val hasWordTiming: Boolean,
     val hasTranslation: Boolean,
     val hasRoman: Boolean,
+    /** 26.11.92：尾奏起点。进入尾奏后不再高亮任何一句、不再滚动 */
+    val outroStartMs: Long? = null,
 ) {
-    /** 当前播放位置落在哪一行；制作信息行跳过 */
+    /** 最后一句真正的歌词（不含制作信息 / 间奏标记），尾奏时列表停在它附近 */
+    fun lastBodyIndex(): Int = lines.indexOfLast { !it.meta && it.breakKind == 0 }
+
+    /** 当前播放位置落在哪一行；制作信息行跳过，尾奏返回 -1 */
     fun activeIndex(posMs: Long): Int {
+        outroStartMs?.let { if (posMs >= it) return -1 }
         var last = -1
         for (i in lines.indices) {
             val l = lines[i]
@@ -79,7 +91,7 @@ data class WordLyric(
      * 保证「新接口成功但老界面一片空白」不会发生。
      */
     fun toLrc(): String = lines
-        .filter { !it.meta && it.text.isNotEmpty() }
+        .filter { !it.meta && it.breakKind == 0 && it.text.isNotEmpty() }
         .joinToString("\n") { l ->
             val mm = l.startMs / 60_000L
             val ss = (l.startMs % 60_000L) / 1000L
@@ -126,9 +138,11 @@ object WordLyricParser {
     ): WordLyric {
         val hasWordTiming = yrc.isNotBlank()
         val raw = if (hasWordTiming) parseYrc(yrc) else parseLrcAsWord(lrc)
+        // 26.11.92：把 "Music" 行转成前奏/间奏/尾奏，尾奏整行移除
+        val (marked, outroStart) = markBreaks(raw)
         val trans = prefer(ytlrc, tlyric)
         val roman = prefer(yromalrc, romalrc)
-        val lines = attach(raw, trans, roman)
+        val lines = attach(marked, trans, roman)
         return WordLyric(
             lines = lines,
             source = when {
@@ -139,12 +153,46 @@ object WordLyricParser {
             hasWordTiming = hasWordTiming,
             hasTranslation = lines.any { !it.trans.isNullOrBlank() },
             hasRoman = lines.any { !it.roman.isNullOrBlank() },
+            outroStartMs = outroStart,
         )
     }
 
+    /**
+     * 26.11.92：单句只有 "Music" 且 M 大写 = 前奏 / 间奏 / 尾奏标记。
+     * 全小写 "music" 是正常的歌词正文（比如歌词里真唱了 music），不处理。
+     */
+    private fun isMusicMarker(text: String): Boolean = text.trim() == "Music"
+
+    private fun markBreaks(raw: List<WordLine>): Pair<List<WordLine>, Long?> {
+        // 后缀计数：第 i 行之后还有多少句真正的歌词
+        val after = IntArray(raw.size)
+        var n = 0
+        for (i in raw.indices.reversed()) {
+            after[i] = n
+            val l = raw[i]
+            if (!l.meta && l.text.isNotBlank() && !isMusicMarker(l.text)) n++
+        }
+        var outro: Long? = null
+        val out = ArrayList<WordLine>(raw.size)
+        raw.forEachIndexed { i, l ->
+            when {
+                l.meta || !isMusicMarker(l.text) -> out += l
+                after[i] == 0 -> {
+                    // 尾奏：隐藏且不做其它处理，只记起点
+                    if (outro == null) outro = l.startMs
+                }
+                else -> out += l.copy(breakKind = 1)
+            }
+        }
+        return out to outro
+    }
+
     private fun prefer(a: String, b: String): List<Pair<Long, String>> {
-        val x = parseLrc(a)
-        return if (x.any { it.second.isNotEmpty() }) x else parseLrc(b)
+        // 26.11.92：译文/罗马音轨里的 "Music" 也去掉，否则按序补齐时
+        // 会把间奏标记贴到后一句正文上
+        fun clean(x: List<Pair<Long, String>>) = x.filterNot { it.second.trim() == "Music" }
+        val x = clean(parseLrc(a))
+        return if (x.any { it.second.isNotEmpty() }) x else clean(parseLrc(b))
     }
 
     /**
@@ -256,7 +304,7 @@ object WordLyricParser {
         val out = HashMap<Int, String>()
         for (i in raw.indices) {
             val l = raw[i]
-            if (l.meta || l.text.isEmpty()) continue
+            if (l.meta || l.breakKind != 0 || l.text.isEmpty()) continue
             var best = ALIGN_TOLERANCE_MS + 1
             var bestJ = -1
             for (j in track.indices) {

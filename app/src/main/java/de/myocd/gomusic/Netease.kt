@@ -2082,6 +2082,21 @@ object Netease {
     }
 
     /** 删除云端歌单（id 可多个，这里一次删一个） */
+    /**
+     * 26.11.73：取消收藏（取消订阅）别人的歌单。
+     *
+     * 收藏 / 订阅歌单不能走 /playlist/delete（那是删自己创建的），
+     * 要用 /playlist/subscribe?t=0。用户点「删除」时本地和云端一起移除，
+     * 下次同步才不会又把它下载回来。
+     */
+    fun playlistUnsubscribe(pid: Long): Boolean {
+        if (pid <= 0L) return false
+        val r = get("/playlist/subscribe", "t" to "0", "id" to pid.toString())
+        val ok = r.code() == 200
+        NmLog.note("取消收藏歌单 pid=$pid -> ${if (ok) "成功" else "失败 code=${r.code()}"}")
+        return ok
+    }
+
     fun playlistDelete(pid: Long): Boolean {
         if (pid <= 0L) return false
         val r = get("/playlist/delete", "id" to pid.toString())

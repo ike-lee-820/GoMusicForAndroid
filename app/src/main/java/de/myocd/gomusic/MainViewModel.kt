@@ -3458,9 +3458,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     }
                     return@launch
                 }
+                // 26.11.73：云端已不再返回的 id 说明删除 / 取消收藏已生效，
+                // 黑名单清掉；仍返回的继续屏蔽，避免「删了又回来」。
+                val cloudIds = cloudAll.map { it.nmId.toString() }.toSet()
+                prefs.nmDeletedPids = prefs.nmDeletedPids.intersect(cloudIds)
+                val deleted = prefs.nmDeletedPids
                 // 26.11.71：「我喜欢的音乐」不与本地歌单并列，单独合并进「我的喜欢」
                 val likeGroup = cloudAll.firstOrNull { it.cloudLike }
-                val mine = cloudAll.filterNot { it.cloudLike }
+                val mine = cloudAll.filterNot {
+                    it.cloudLike || it.nmId.toString() in deleted
+                }
                 if (likeGroup != null) prefs.nmLikePid = likeGroup.nmId
                 val local = withContext(Dispatchers.Main) { playlists.toMutableList() }
                 // 清掉 26.11.70 把它当普通收藏歌单下载下来的那一份，避免重复显示。
@@ -3765,13 +3772,41 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 26.11.73：删除歌单，本地与云端一起删。
+     *
+     * - 收藏 / 订阅歌单：走 /playlist/subscribe?t=0 取消收藏（以前被
+     *   cloudReadOnly 直接跳过云端，只删了本地，同步又给拉回来）
+     * - 我创建的歌单：走 /playlist/delete 真正删掉云端那份
+     * - 纯本地歌单：没有云端 id，只删本地
+     *
+     * nmId 记入黑名单：云端接口偶发失败时下次同步不会把它重新下载回来。
+     */
     fun deletePlaylist(id: String) {
         val p = playlists.firstOrNull { it.id == id } ?: return
         savePl(playlists.filter { it.id != id })
-        if (p.nmId > 0L && !p.cloudReadOnly && canSyncCloud()) {
-            viewModelScope.launch(Dispatchers.IO) {
-                val ok = runCatching { Netease.playlistDelete(p.nmId) }.getOrDefault(false)
-                withContext(Dispatchers.Main) { if (!ok) toast("云端歌单删除未成功（本地已删）") }
+        if (p.nmId > 0L) {
+            prefs.nmDeletedPids = prefs.nmDeletedPids + p.nmId.toString()
+        }
+        if (p.nmId > 0L && canSyncCloud()) {
+            // 「我喜欢的音乐」是特殊歌单，已合并进「我的喜欢」，不允许删除 / 取消订阅
+            val isLikedSpecial = p.cloudBase == "我喜欢的音乐" ||
+                p.name.removeSuffix(CLOUD_TAG) == "我喜欢的音乐"
+            if (!isLikedSpecial) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    Netease.cookie = prefs.nmCookie
+                    val ok = if (p.cloudReadOnly) {
+                        runCatching { Netease.playlistUnsubscribe(p.nmId) }.getOrDefault(false)
+                    } else {
+                        runCatching { Netease.playlistDelete(p.nmId) }.getOrDefault(false)
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (!ok) toast(
+                            if (p.cloudReadOnly) "云端取消收藏未成功（本地已删）"
+                            else "云端歌单删除未成功（本地已删）"
+                        )
+                    }
+                }
             }
         }
         syncPlaylistOrder()

@@ -295,6 +295,20 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("nm_like_pid", 0L)
         set(v) { sp.edit().putLong("nm_like_pid", v).apply() }
 
+    /**
+     * 26.11.73：用户手动删掉的云端歌单 id。
+     *
+     * 云端删除 / 取消收藏偶发失败时，下次同步仍会返回这张歌单，
+     * 若不屏蔽就会被重新下载回来，看起来像「删了又回来」。
+     * 同步时按云端实际返回做清理：云端已消失的 id 自动移出黑名单，
+     * 以后用户在网页端重新收藏还能正常同步。
+     */
+    var nmDeletedPids: Set<String>
+        get() = runCatching {
+            json.decodeFromString<List<String>>(sp.getString("nm_deleted_pids", "[]")!!).toSet()
+        }.getOrDefault(emptySet())
+        set(v) { sp.edit().putString("nm_deleted_pids", json.encodeToString(v.toList())).apply() }
+
     /** 合并指纹：云端歌单更新时间+曲目数 与 本地喜欢集合的组合，没变就跳过自动合并 */
     var nmLikeStamp: String
         get() = sp.getString("nm_like_stamp", "").orEmpty()

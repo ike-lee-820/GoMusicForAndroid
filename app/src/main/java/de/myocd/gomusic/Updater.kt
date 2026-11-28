@@ -24,6 +24,8 @@ object Updater {
     /** 发布列表：用来在多个发布里挑版本号最大的那个 */
     private const val API_RELEASES = "https://api.github.com/repos/$OWNER/$REPO/releases?per_page=20"
     val RELEASES_PAGE = "https://github.com/$OWNER/$REPO/releases"
+    /** 约定命名的 APK 直链前缀：tag 页面绝不能当下载链接用 */
+    private const val DOWNLOAD_BASE = "https://github.com/$OWNER/$REPO/releases/download"
     /** 每版完整更新说明在仓库里的归档目录（纯 ASCII 路径，便于走加速代理） */
     private const val RAW_NOTES_BASE =
         "https://raw.githubusercontent.com/$OWNER/$REPO/main/docs/release-notes/"
@@ -51,6 +53,8 @@ object Updater {
     data class Info(
         val latest: String,          // 最新版本号，如 1.3.6
         val url: String,             // APK 下载直链
+        val tag: String = "",        // 原始 tag，用于按约定拼直链
+        val extraUrls: List<String> = emptyList(), // 其它 .apk asset 直链
         val page: String,            // Releases 页面
         val notes: String,           // 更新说明（release body 全文，不再截断）
         val size: Long,              // APK 大小（字节），0 = 未知
@@ -81,23 +85,30 @@ object Updater {
         return 0
     }
 
-    /** 依次尝试加速地址与直连，先成功的先用 */
-    private fun getBody(url: String): String? {
-        val urls = listOf(PROXY + url, url)
-        for (u in urls) {
+    /**
+     * 加速地址与直连**都**取回来。
+     *
+     * 26.11.73：以前 getBody() 先成功的就返回，加速节点常缓存到「release 刚创建、
+     * APK 还没上传完」那一瞬的旧快照 —— assets 是空数组，解析出的下载直链为空，
+     * 后面的 downloadUrl() 就把 html_url（tag 页面）当成 APK 地址去下载，
+     * 日志里正是「开始下载 APK：https://github.com/.../releases/tag/v26.11.72」。
+     */
+    private fun getBodies(url: String): List<String> {
+        val out = ArrayList<String>()
+        for (u in listOf(PROXY + url, url)) {
             NmLog.note("更新检查请求：$u")
             try {
                 val req = Request.Builder().url(u).build()
                 client.newCall(req).execute().use { r ->
                     val t = r.body?.string().orEmpty()
-                    if (r.isSuccessful && t.isNotBlank()) return t
-                    NmLog.note("更新检查失败 HTTP ${r.code}：$u")
+                    if (r.isSuccessful && t.isNotBlank()) out += t
+                    else NmLog.note("更新检查失败 HTTP ${r.code}：$u")
                 }
             } catch (e: Exception) {
                 NmLog.note("更新检查异常 ${e.message}：$u")
             }
         }
-        return null
+        return out
     }
 
     /** 解析单个发布条目 */
@@ -106,23 +117,26 @@ object Updater {
             ?: (root["name"] as? JsonPrimitive)?.content
             ?: return null
         val latest = norm(tag)
-        var url = ""
         var size = 0L
+        val assetUrls = ArrayList<String>()
         (root["assets"] as? JsonElement)?.jsonArray?.forEach { e ->
             val o = e as? JsonObject ?: return@forEach
             val name = (o["name"] as? JsonPrimitive)?.content ?: ""
             if (name.endsWith(".apk", true)) {
-                url = (o["browser_download_url"] as? JsonPrimitive)?.content ?: ""
-                size = (o["size"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-                return@forEach
+                val u = (o["browser_download_url"] as? JsonPrimitive)?.content.orEmpty()
+                if (u.isNotBlank()) assetUrls += u
+                if (size == 0L) size = (o["size"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
             }
         }
+        val url = assetUrls.firstOrNull().orEmpty()
         // 以前这里 .take(600) 把说明截断，长文档在应用内永远看不全。
         // GitHub release body 上限 65536 字符，正常更新说明远小于它，直接保留全文。
         val notes = (root["body"] as? JsonPrimitive)?.content.orEmpty()
         Info(
             latest = latest,
             url = url,
+            tag = tag,
+            extraUrls = assetUrls.drop(1),
             page = (root["html_url"] as? JsonPrimitive)?.content ?: RELEASES_PAGE,
             notes = notes,
             size = size,
@@ -142,25 +156,34 @@ object Updater {
      * 预发布时它会漏掉，导致明明有新版却不提示。列表取最大则不受这些影响。
      */
     fun check(): Info? {
-        val listBody = getBody(API_RELEASES)
-        if (listBody != null) {
+        val all = ArrayList<Info>()
+        // 列表接口：代理与直连都解析。代理那份可能缺 assets，直连那份能补上。
+        for (body in getBodies(API_RELEASES)) {
             val arr = runCatching {
-                json.parseToJsonElement(listBody) as? kotlinx.serialization.json.JsonArray
-            }.getOrNull()
-            val infos = arr?.mapNotNull { (it as? JsonObject)?.let(::parseInfo) }
-                ?.filter { !it.draft }
-            if (!infos.isNullOrEmpty()) {
-                val best = infos.maxWith(Comparator { a, b -> compare(a.latest, b.latest) })
-                NmLog.note("更新检查：列表里最新为 ${best.latest}（当前 ${current()}）")
-                return best
+                json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonArray
+            }.getOrNull() ?: continue
+            all += arr.mapNotNull { (it as? JsonObject)?.let(::parseInfo) }
+                .filter { !it.draft }
+        }
+        // 列表里已经拿到直链就不必再打单条接口，启动检查不额外多两次请求
+        if (all.none { it.url.isNotBlank() }) {
+            for (body in getBodies(API_LATEST)) {
+                val root = runCatching {
+                    json.parseToJsonElement(body) as? JsonObject
+                }.getOrNull() ?: continue
+                parseInfo(root)?.let { if (!it.draft) all += it }
             }
         }
-        // 列表拿不到就退回单条接口
-        val body = getBody(API_LATEST) ?: return null
-        val root = runCatching {
-            json.parseToJsonElement(body) as? JsonObject
-        }.getOrNull() ?: return null
-        return parseInfo(root)
+        if (all.isEmpty()) return null
+        // 版本号最大优先；同一版本里「拿到 APK 直链」的优先，
+        // 免得选中 assets 为空的那份缓存快照。
+        val best = all.maxWith(Comparator { a, b ->
+            val c = compare(a.latest, b.latest)
+            if (c != 0) c
+            else (if (a.url.isNotBlank()) 1 else 0) - (if (b.url.isNotBlank()) 1 else 0)
+        })
+        NmLog.note("更新检查：最新为 ${best.latest}（当前 ${current()}），直链=${best.url.ifBlank { "空，走约定兜底" }}")
+        return best
     }
 
     /** 某版本完整更新说明的 raw 地址 */
@@ -206,11 +229,29 @@ object Updater {
         )
 
     /**
-     * APK 下载地址：套一层加速，方便在国内网络下直接下载。
-     * 原始直链作为兜底交给调用方。
+     * 26.11.73：所有可用于下载的 APK 直链。
+     *
+     * ① API 给的 browser_download_url；② 按仓库约定命名拼出来的直链。
+     * **绝不包含 tag 页面 / releases 页面** —— 那是给人看的 HTML，
+     * 拿去当 APK 下载会下到一个网页，安装必然失败。
      */
+    fun apkUrls(info: Info): List<String> {
+        val out = LinkedHashSet<String>()
+        if (info.url.isNotBlank()) out += info.url
+        out += info.extraUrls
+        val t = info.tag.ifBlank { "v${info.latest}" }
+        val variants = listOf(t, if (t.startsWith("v") || t.startsWith("V")) t.substring(1) else "v$t")
+        variants.distinct().forEach { v ->
+            out += "$DOWNLOAD_BASE/$v/GoMusic-$v.apk"
+        }
+        return out.filter {
+            it.startsWith("http") && !it.contains("/releases/tag/") && !it.endsWith("/releases")
+        }
+    }
+
+    /** 应用外更新用的地址：API 确认过的直链；没拿到就打开页面让人手动下 */
     fun downloadUrl(info: Info): String =
-        if (info.url.isBlank()) info.page else PROXY + info.url
+        if (info.url.isNotBlank()) PROXY + info.url else info.page
 
     /**
      * 下载 APK 到应用私有目录，返回本地文件。
@@ -223,17 +264,25 @@ object Updater {
         dir: java.io.File,
         onProgress: (Long, Long) -> Unit,
     ): java.io.File? {
-        val urls = listOf(downloadUrl(info), info.url).filter { it.isNotBlank() }.distinct()
+        // 每个直链都试加速 + 原始两种，但候选里永远不会有 tag 页面
+        val urls = apkUrls(info).flatMap { listOf(PROXY + it, it) }.distinct()
+        if (urls.isEmpty()) return null
+        if (!dir.exists()) dir.mkdirs()
         for (u in urls) {
             NmLog.note("开始下载 APK：$u")
+            val out = java.io.File(dir, "GoMusic-${info.latest}.apk")
+            if (out.exists()) out.delete()
+            var ok = false
             try {
-                if (!dir.exists()) dir.mkdirs()
-                val out = java.io.File(dir, "GoMusic-${info.latest}.apk")
-                if (out.exists()) out.delete()
                 val req = Request.Builder().url(u).build()
                 client.newCall(req).execute().use { r ->
                     if (!r.isSuccessful) {
                         NmLog.note("APK 下载失败 HTTP ${r.code}：$u")
+                        return@use
+                    }
+                    val ct = r.header("Content-Type").orEmpty()
+                    if (ct.contains("text/html", true) || ct.contains("text/plain", true)) {
+                        NmLog.note("APK 下载拿到网页 Content-Type=$ct，跳过：$u")
                         return@use
                     }
                     val body = r.body ?: return@use
@@ -252,14 +301,33 @@ object Updater {
                         }
                     }
                 }
-                if (out.exists() && out.length() > 0) {
-                    NmLog.note("APK 下载完成：${out.absolutePath}（${out.length()} 字节）")
-                    return out
-                }
+                ok = looksLikeApk(out) &&
+                    (info.size <= 0L || out.length() >= info.size / 2)
+                if (!ok) NmLog.note("下载内容不是 APK（字节=${out.length()}），跳过：$u")
             } catch (e: Exception) {
                 NmLog.note("APK 下载异常 ${e.message}：$u")
             }
+            if (ok) {
+                NmLog.note("APK 下载完成：${out.absolutePath}（${out.length()} 字节）")
+                return out
+            }
+            out.delete()
         }
         return null
+    }
+
+    /** APK 就是 ZIP，必须以 PK 开头；HTML 页面 / 错误页一律挡掉 */
+    private fun looksLikeApk(f: java.io.File): Boolean {
+        if (!f.exists() || f.length() < 1024 * 1024) return false
+        return runCatching {
+            f.inputStream().use { i ->
+                val h = ByteArray(4)
+                if (i.read(h) != 4) false
+                else h[0] == 'P'.code.toByte() && h[1] == 'K'.code.toByte() &&
+                    ((h[2] == 3.toByte() && h[3] == 4.toByte()) ||
+                        (h[2] == 5.toByte() && h[3] == 6.toByte()) ||
+                        (h[2] == 7.toByte() && h[3] == 8.toByte()))
+            }
+        }.getOrDefault(false)
     }
 }
